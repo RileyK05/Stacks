@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local course data and generated artifacts (never committed)
+data/raw/
+data/processed/
+runs/
+
+# OS
+.DS_Store
+Thumbs.db
