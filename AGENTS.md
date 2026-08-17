@@ -26,6 +26,13 @@ for the full plan. Read it before making structural decisions.
 5. **ML earns its role.** Begin with retrieval, structure, and simple baselines.
    Add fine-tuning only for a documented, versioned baseline failure.
 
+## Engineering tradeoff
+
+Code is cheap to write (LLMs generate it); rework and brittleness are expensive.
+When a better engineering decision costs slightly more code, prefer the better
+decision. Don't gold-plate — but don't pick a fragile shortcut just to save lines.
+Prioritize correctness, clear seams, and future extensibility over brevity.
+
 ## Structure
 
 ```
