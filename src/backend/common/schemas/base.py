@@ -71,16 +71,12 @@ class ErrorCategory(StrEnum):
     INCOMPLETE = "incomplete"
 
 
-class LocatorType(StrEnum):
-    PAGE = "page"
-    SLIDE = "slide"
-    SECTION = "section"
-    TIMESTAMP = "timestamp"
-    LINE_RANGE = "line_range"
-    FUNCTION = "function"
-    CHAPTER = "chapter"
-
-
 class PrereqKind(StrEnum):
     IN_COURSE = "in_course"
     EXTERNAL = "external"
+
+
+class MessageRole(StrEnum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"

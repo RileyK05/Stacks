@@ -16,13 +16,14 @@ from src.backend.common.schemas import (
     Dependency,
     EvidenceLevel,
     Locator,
-    LocatorType,
     MasteryState,
     MemoryObject,
     MemoryObjectKind,
+    MessageRole,
+    ModelDecision,
     PrereqKind,
-    ProvenanceRecord,
     Recommendation,
+    Response,
     RetrievalTrace,
     Source,
     SourceStatus,
@@ -98,7 +99,7 @@ def test_dependency_defaults_in_course() -> None:
 def test_locator_holds_arbitrary_format() -> None:
     locator = Locator(
         source_id=uuid4(),
-        locator_type=LocatorType.TIMESTAMP,
+        locator_type="timestamp",
         start="12:30",
         end="14:00",
         label="Timestamp 12:30-14:00",
@@ -106,9 +107,20 @@ def test_locator_holds_arbitrary_format() -> None:
     assert locator.label.startswith("Timestamp")
 
 
-def test_chunk_embedding_optional() -> None:
+def test_locator_type_is_free_string() -> None:
+    locator = Locator(
+        source_id=uuid4(),
+        locator_type="cell_range",  # a format we haven't thought of yet
+        start="A1",
+        end="D20",
+        label="Sheet1 A1:D20",
+    )
+    assert locator.locator_type == "cell_range"
+
+
+def test_chunk_has_no_embedding() -> None:
     chunk = Chunk(source_id=uuid4(), locator_id=uuid4(), chunk_index=0, text="x")
-    assert chunk.embedding is None
+    assert not hasattr(chunk, "embedding")
 
 
 def test_course_object_new_kind() -> None:
@@ -167,7 +179,7 @@ def test_attempt_confidence_bounds() -> None:
             user_id=uuid4(),
             course_id=uuid4(),
             item_id=uuid4(),
-            concept_id=uuid4(),
+            concept_ids=[uuid4()],
             answer="x",
             confidence_before=150,
             evaluation="correct",
@@ -175,7 +187,7 @@ def test_attempt_confidence_bounds() -> None:
 
 
 def test_concept_mastery_defaults_unseen() -> None:
-    mastery = ConceptMastery(concept_id=uuid4())
+    mastery = ConceptMastery(user_id=uuid4(), concept_id=uuid4())
     assert mastery.state == MasteryState.UNSEEN
 
 
@@ -219,8 +231,25 @@ def test_claim_citation_chain() -> None:
     assert citation.target_type == "chunk"
 
 
-def test_provenance_record_stores_decision() -> None:
-    record = ProvenanceRecord(source_id=uuid4(), decision={"store_as": "slides"})
+def test_response_grounds_claims() -> None:
+    response = Response(
+        conversation_id=uuid4(),
+        content="Sufficiency is ...",
+        model="deepseek-v4-flash",
+    )
+    claim = Claim(response_id=response.response_id, claim_type="academic", text="...")
+    assert claim.response_id == response.response_id
+
+
+def test_message_role_is_enum() -> None:
+    turn = ConversationTurn(
+        conversation_id=uuid4(), role=MessageRole.ASSISTANT, content="hi"
+    )
+    assert turn.role == MessageRole.ASSISTANT
+
+
+def test_model_decision_stores_decision() -> None:
+    record = ModelDecision(source_id=uuid4(), decision={"store_as": "slides"})
     assert record.decision["store_as"] == "slides"
 
 

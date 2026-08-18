@@ -7,20 +7,21 @@ helpers live in `base`.
 from src.backend.common.schemas.base import (
     ErrorCategory,
     EvidenceLevel,
-    LocatorType,
     MasteryState,
     MemoryObjectKind,
+    MessageRole,
     PrereqKind,
     SourceStatus,
     SourceType,
 )
 from src.backend.common.schemas.chat import ChatSummary, Conversation, ConversationTurn
 from src.backend.common.schemas.evidence import (
-    ArtifactProvenance,
+    ArtifactOrigin,
     Citation,
     Claim,
     MemoryObjectEvidence,
-    ProvenanceRecord,
+    ModelDecision,
+    Response,
     RetrievalTrace,
 )
 from src.backend.common.schemas.identity import (
@@ -45,7 +46,7 @@ from src.backend.common.schemas.student_model import (
 )
 
 __all__ = [
-    "ArtifactProvenance",
+    "ArtifactOrigin",
     "AssessmentItem",
     "Attempt",
     "ChatSummary",
@@ -62,14 +63,15 @@ __all__ = [
     "ErrorCategory",
     "EvidenceLevel",
     "Locator",
-    "LocatorType",
     "MasteryState",
     "MemoryObject",
     "MemoryObjectEvidence",
     "MemoryObjectKind",
+    "MessageRole",
+    "ModelDecision",
     "PrereqKind",
-    "ProvenanceRecord",
     "Recommendation",
+    "Response",
     "RetrievalTrace",
     "Source",
     "SourceStatus",

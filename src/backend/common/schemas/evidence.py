@@ -25,6 +25,23 @@ class RetrievalTrace(BaseRecord):
     created_at: datetime = Field(default_factory=_now)
 
 
+class Response(BaseRecord):
+    """A tutor's answer to a user question. The object that claims attach to.
+
+    `response_id` is what `Claim.response_id` references. A response is produced
+    by the tutor, grounded in a retrieval trace, and rendered as a conversation
+    turn.
+    """
+
+    response_id: UUID = Field(default_factory=_new_id)
+    conversation_id: UUID
+    turn_id: UUID | None = None
+    trace_id: UUID | None = None
+    content: str
+    model: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
 class Claim(BaseRecord):
     """A single claim the system makes, with the evidence that grounds it."""
 
@@ -49,12 +66,13 @@ class MemoryObjectEvidence(BaseRecord):
     """Direct link between a memory object and the chunk that supports it.
     Lets a citation on a memory object resolve to a chunk within 2 hops."""
 
+    evidence_id: UUID = Field(default_factory=_new_id)
     memory_id: UUID
     chunk_id: UUID
     evidence_level: str = "direct"
 
 
-class ArtifactProvenance(BaseRecord):
+class ArtifactOrigin(BaseRecord):
     """How a generated artifact was produced: which sources, concepts, and
     model. Lets an artifact's origin be audited and regenerated."""
 
@@ -66,7 +84,7 @@ class ArtifactProvenance(BaseRecord):
     created_at: datetime = Field(default_factory=_now)
 
 
-class ProvenanceRecord(BaseRecord):
+class ModelDecision(BaseRecord):
     """Records a model's storage/description decisions, so they can be audited
     and regenerated if the model improves."""
 

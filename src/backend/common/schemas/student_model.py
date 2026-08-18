@@ -32,7 +32,7 @@ class Attempt(BaseRecord):
     user_id: UUID
     course_id: UUID
     item_id: UUID
-    concept_id: UUID
+    concept_ids: list[UUID] = Field(default_factory=list)
     chunk_id: UUID | None = None
     answer: str
     confidence_before: int = Field(ge=0, le=100)
@@ -50,6 +50,7 @@ class ConceptMastery(BaseRecord):
     """
 
     mastery_id: UUID = Field(default_factory=_new_id)
+    user_id: UUID
     concept_id: UUID
     state: MasteryState = MasteryState.UNSEEN
     confidence: int | None = Field(default=None, ge=0, le=100)

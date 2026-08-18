@@ -6,7 +6,6 @@ from uuid import UUID
 from pydantic import Field
 from src.backend.common.schemas.base import (
     BaseRecord,
-    LocatorType,
     SourceStatus,
     SourceType,
     _new_id,
@@ -32,14 +31,15 @@ class Source(BaseRecord):
 class Locator(BaseRecord):
     """A reference to a location inside a source.
 
-    `type` is free (slide, page, section, timestamp, line_range, ...) so each
-    format keeps its natural unit. Citations use the locator label. The object
-    is stored whole; locators form its table of contents.
+    `locator_type` is a free string (slide, page, section, timestamp,
+    line_range, cell_range, scene, ...) so each format keeps its natural unit
+    and new formats need no schema change. Citations use the locator label. The
+    object is stored whole; locators form its table of contents.
     """
 
     locator_id: UUID = Field(default_factory=_new_id)
     source_id: UUID
-    locator_type: LocatorType
+    locator_type: str
     start: str
     end: str | None = None
     label: str
@@ -57,4 +57,3 @@ class Chunk(BaseRecord):
     locator_id: UUID
     chunk_index: int
     text: str
-    embedding: list[float] | None = None

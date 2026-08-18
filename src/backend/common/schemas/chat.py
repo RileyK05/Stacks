@@ -4,7 +4,12 @@ from datetime import datetime
 from uuid import UUID
 
 from pydantic import Field
-from src.backend.common.schemas.base import BaseRecord, _new_id, _now
+from src.backend.common.schemas.base import (
+    BaseRecord,
+    MessageRole,
+    _new_id,
+    _now,
+)
 
 
 class Conversation(BaseRecord):
@@ -18,11 +23,11 @@ class Conversation(BaseRecord):
 
 
 class ConversationTurn(BaseRecord):
-    """One message in a conversation. `role` is 'user' or 'assistant'."""
+    """One message in a conversation."""
 
     turn_id: UUID = Field(default_factory=_new_id)
     conversation_id: UUID
-    role: str
+    role: MessageRole
     content: str
     created_at: datetime = Field(default_factory=_now)
 

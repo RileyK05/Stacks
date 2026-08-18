@@ -51,6 +51,6 @@ class CourseObject(BaseRecord):
     content_type: str
     content_uri: str | None = None
     content: dict[str, Any] | None = None
-    provenance: str | None = None
+    origin: str | None = None
     status: str = "draft"
     created_at: datetime = Field(default_factory=_now)
