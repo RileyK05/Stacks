@@ -37,6 +37,7 @@ class Attempt(BaseRecord):
     answer: str
     confidence_before: int = Field(ge=0, le=100)
     evaluation: str
+    score: int | None = Field(default=None, ge=0, le=100)
     error_category: ErrorCategory | None = None
     used_help: bool = False
     time_spent: int | None = None

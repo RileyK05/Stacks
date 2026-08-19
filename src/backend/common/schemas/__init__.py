@@ -5,6 +5,8 @@ helpers live in `base`.
 """
 
 from src.backend.common.schemas.base import (
+    KNOWN_CITATION_TARGETS,
+    KNOWN_CLAIM_TYPES,
     ErrorCategory,
     EvidenceLevel,
     MasteryState,
@@ -62,6 +64,8 @@ __all__ = [
     "Dependency",
     "ErrorCategory",
     "EvidenceLevel",
+    "KNOWN_CLAIM_TYPES",
+    "KNOWN_CITATION_TARGETS",
     "Locator",
     "MasteryState",
     "MemoryObject",

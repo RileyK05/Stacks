@@ -5,7 +5,7 @@ from typing import Any
 from uuid import UUID
 
 from pydantic import Field
-from src.backend.common.schemas.base import BaseRecord, _new_id, _now
+from src.backend.common.schemas.base import BaseRecord, EvidenceLevel, _new_id, _now
 
 
 class RetrievalTrace(BaseRecord):
@@ -69,7 +69,7 @@ class MemoryObjectEvidence(BaseRecord):
     evidence_id: UUID = Field(default_factory=_new_id)
     memory_id: UUID
     chunk_id: UUID
-    evidence_level: str = "direct"
+    evidence_level: EvidenceLevel = EvidenceLevel.DIRECT
 
 
 class ArtifactOrigin(BaseRecord):

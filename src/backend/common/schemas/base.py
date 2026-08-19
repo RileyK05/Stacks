@@ -80,3 +80,14 @@ class MessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
+
+
+# Canonical free-string values. These fields stay free strings for extensibility,
+# but this is the single source of truth for the values the system emits, so
+# different parts of the code agree on spelling.
+KNOWN_CLAIM_TYPES = frozenset(
+    {"academic", "inference", "hypothesis", "recommendation"}
+)
+KNOWN_CITATION_TARGETS = frozenset(
+    {"chunk", "memory_object", "toc_entry", "source", "conversation_turn"}
+)

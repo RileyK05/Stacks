@@ -20,6 +20,7 @@ class Conversation(BaseRecord):
     course_id: UUID
     title: str
     created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
 
 
 class ConversationTurn(BaseRecord):

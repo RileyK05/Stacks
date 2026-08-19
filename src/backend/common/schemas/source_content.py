@@ -25,6 +25,8 @@ class Source(BaseRecord):
     version: str | None = None
     uri: str | None = None
     status: SourceStatus = SourceStatus.UPLOADED
+    file_hash: str | None = None
+    error_message: str | None = None
     created_at: datetime = Field(default_factory=_now)
 
 

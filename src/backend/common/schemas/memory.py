@@ -19,6 +19,7 @@ class Concept(BaseRecord):
     course_id: UUID
     name: str
     definition: str
+    synonyms: list[str] = Field(default_factory=list)
     evidence_level: EvidenceLevel = EvidenceLevel.DERIVED
 
 
@@ -64,3 +65,4 @@ class TocEntry(BaseRecord):
     title: str
     description: str
     concepts: list[UUID] = Field(default_factory=list)
+    position: int = 0

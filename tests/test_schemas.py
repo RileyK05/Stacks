@@ -145,6 +145,16 @@ def test_course_object_kind_is_free_string() -> None:
     assert obj.kind == "holodeck"
 
 
+def test_course_object_requires_content_or_uri() -> None:
+    with pytest.raises(ValidationError):
+        CourseObject(
+            course_id=uuid4(),
+            user_id=uuid4(),
+            kind="flashcard",
+            content_type="application/json",
+        )
+
+
 def test_memory_object_evidence_level() -> None:
     obj = MemoryObject(
         concept_id=uuid4(),

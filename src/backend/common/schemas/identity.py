@@ -4,7 +4,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from src.backend.common.schemas.base import BaseRecord, _new_id, _now
 
 
@@ -54,3 +54,9 @@ class CourseObject(BaseRecord):
     origin: str | None = None
     status: str = "draft"
     created_at: datetime = Field(default_factory=_now)
+
+    @model_validator(mode="after")
+    def _content_or_uri(self) -> CourseObject:
+        if self.content_uri is None and self.content is None:
+            raise ValueError("course object must have content_uri or content")
+        return self
