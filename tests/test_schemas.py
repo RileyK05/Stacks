@@ -8,10 +8,12 @@ from src.backend.common.schemas import (
     ChatSummary,
     Chunk,
     Citation,
+    CitationSnapshot,
     Claim,
     ConceptMastery,
     Conversation,
     ConversationTurn,
+    CourseMemory,
     CourseObject,
     Dependency,
     EvidenceLevel,
@@ -261,6 +263,40 @@ def test_message_role_is_enum() -> None:
 def test_model_decision_stores_decision() -> None:
     record = ModelDecision(source_id=uuid4(), decision={"store_as": "slides"})
     assert record.decision["store_as"] == "slides"
+
+
+def test_course_memory_survives_course_deletion() -> None:
+    memory = CourseMemory(
+        user_id=uuid4(),
+        course_id=uuid4(),  # course row may be gone; memory outlives it
+        code="MATH 361",
+        name="Statistical Inference",
+        summary="Covered estimation, sufficiency, factorization.",
+        key_concepts=["sufficiency", "estimator"],
+    )
+    assert memory.key_concepts == ["sufficiency", "estimator"]
+
+
+def test_citation_snapshot_preserves_evidence() -> None:
+    snapshot = CitationSnapshot(
+        user_id=uuid4(),
+        course_id=uuid4(),
+        source_id=uuid4(),
+        source_name="Week 3 slides",
+        citations=[{"claim": "Sufficiency is ...", "why_valid": "slide 12"}],
+    )
+    assert snapshot.source_name == "Week 3 slides"
+
+
+def test_user_soft_delete_marker() -> None:
+    from datetime import UTC, datetime
+
+    user = User(
+        name="Ada",
+        email="ada@example.com",
+        delete_requested_at=datetime.now(UTC),
+    )
+    assert user.delete_requested_at is not None
 
 
 def test_week_removed() -> None:

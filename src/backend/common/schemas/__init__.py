@@ -20,6 +20,7 @@ from src.backend.common.schemas.chat import ChatSummary, Conversation, Conversat
 from src.backend.common.schemas.evidence import (
     ArtifactOrigin,
     Citation,
+    CitationSnapshot,
     Claim,
     MemoryObjectEvidence,
     ModelDecision,
@@ -28,6 +29,7 @@ from src.backend.common.schemas.evidence import (
 )
 from src.backend.common.schemas.identity import (
     Course,
+    CourseMemory,
     CourseObject,
     StudyPeriod,
     User,
@@ -54,12 +56,14 @@ __all__ = [
     "ChatSummary",
     "Chunk",
     "Citation",
+    "CitationSnapshot",
     "Claim",
     "Concept",
     "ConceptMastery",
     "Conversation",
     "ConversationTurn",
     "Course",
+    "CourseMemory",
     "CourseObject",
     "Dependency",
     "ErrorCategory",

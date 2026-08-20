@@ -11,6 +11,9 @@ from src.backend.common.schemas.base import BaseRecord, _new_id, _now
 class User(BaseRecord):
     user_id: UUID = Field(default_factory=_new_id)
     name: str
+    email: str | None = None
+    password_hash: str | None = None
+    delete_requested_at: datetime | None = None
     created_at: datetime = Field(default_factory=_now)
 
 
@@ -60,3 +63,16 @@ class CourseObject(BaseRecord):
         if self.content_uri is None and self.content is None:
             raise ValueError("course object must have content_uri or content")
         return self
+
+
+class CourseMemory(BaseRecord):
+    """Distilled record of a course that survives course deletion."""
+
+    memory_id: UUID = Field(default_factory=_new_id)
+    user_id: UUID
+    course_id: UUID
+    code: str
+    name: str
+    summary: str
+    key_concepts: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_now)

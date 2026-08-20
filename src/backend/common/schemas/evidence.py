@@ -93,3 +93,16 @@ class ModelDecision(BaseRecord):
     model: str | None = None
     decision: dict[str, Any]
     created_at: datetime = Field(default_factory=_now)
+
+
+class CitationSnapshot(BaseRecord):
+    """Compressed record of citations + why each was valid, written before a
+    source's citations are removed. Survives the source row being deleted."""
+
+    snapshot_id: UUID = Field(default_factory=_new_id)
+    user_id: UUID
+    course_id: UUID
+    source_id: UUID
+    source_name: str
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=_now)

@@ -135,3 +135,47 @@ Code review pass on the full schema. Renames and structural fixes:
 - **[schema] `MemoryObjectEvidence` had no primary key.** Added surrogate
   `evidence_id` UUID, consistent with every other table and avoiding composite-key
   friction in raw SQL. Implemented in `schemas/evidence.py`.
+
+## Deletion & account lifecycle design (2026-08-20)
+
+Unifying principle: **destruction leaves a distilled record.** Instead of hard
+cascading deletes that silently wipe everything, we archive a distilled summary
+before removal. Implemented across migrations `001`/`002` + schemas.
+
+- **[design] Course deletion keeps a memory.** Before a course row is removed, a
+  distilled `course_memories` record is written (code, name, summary, key concepts)
+  so the course can still be referenced/answered-about later. The `course_id` in
+  `course_memories` is stored without a hard FK so the memory outlives the course.
+  Tables: `course_memories`. Closed 2026-08-20.
+- **[design] Source removal compresses its citations.** Before a source's citations
+  are removed, a `citation_snapshots` record is written (the citations + why each
+  was valid) so grounding evidence is preserved even after the source is gone.
+  Tables: `citation_snapshots`. Closed 2026-08-20.
+- **[design] Account deletion uses a 7-day grace period.** `users` gained
+  `delete_requested_at`; a delete is a soft marker, and the account is hard-removed
+  after 7 days (cancel = clear the marker). Closed 2026-08-20.
+- **[design] `ON DELETE` split, not blanket cascade.** Ownership trees (course →
+  content, user → courses) cascade; evidence/grounding links (chunk → citation,
+  memory_object → evidence) `RESTRICT` so the app is forced to snapshot before
+  removing evidence. Implemented via app-layer archive-then-delete.
+- **[auth] Added `users.email` + `users.password_hash`.** Auth is planned for the
+  MVP (not deferred) since it's a known, easily-implemented problem. Email is
+  unique (partial index, non-null emails only). Password hashing (bcrypt/argon2)
+  and sessions are still to be built. Closed 2026-08-20.
+
+## Migration layer (2026-08-20)
+
+- `src/backend/common/migrations/001_init.sql` — full six-layer schema (9 enums,
+  26 tables, indexes). Applied against `course_assistant`.
+- `src/backend/common/migrations/002_auth_and_distilled_records.sql` — auth columns
+  + `course_memories` + `citation_snapshots`. Applied.
+- Cross-check fixes folded into `001` (re-applied cleanly): `idx_attempts_concept`
+  → GIN (JSONB containment); UNIQUE `(user_id, concept_id)` on `concept_mastery`;
+  UNIQUE `(course_id, version)` on `tables_of_contents`; hot-path FK indexes
+  (`memory_object_evidence`, `dependencies.dependent_id`, `responses.trace_id`,
+  `chat_summaries.conversation_id`, `attempts.course_id`); `idx_sources_course_hash`
+  for dedup.
+- `Locator.end` → `end_value` in SQL (reserved word); data layer maps it back to
+  the Pydantic field `end`.
+- **Pending:** a migrations runner to apply versioned `.sql` in order (currently
+  applied manually via `psql`).

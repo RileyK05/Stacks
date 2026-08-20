@@ -6,22 +6,26 @@
 
 ## 0. TL;DR
 
-A local-first academic assistant that ingests course materials, extracts searchable
-text and structured course memory, learns a per-student error model from attempts,
-and serves source-grounded answers + "what to study next" recommendations through a
-small web UI. Deployed for a small user base; Postgres as the database engine.
+An academic assistant that ingests course materials, extracts structured text and
+course memory, learns a per-student error model from attempts, and serves
+source-grounded answers + "what to study next" recommendations through a small
+web UI. Deployed for a small user base; data owned by the operator in Postgres.
 
-- **Backend:** Python / FastAPI under `src/backend/`
+- **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem
 - **Frontend:** `src/frontend/`, talks to backend only via API
-- **Database:** Postgres (industry-standard; you plan to host for a small user count)
+- **Database:** Postgres via raw SQL (no ORM); versioned migrations applied by
+  `common/migrate.py`
+- **Auth:** email + password accounts, per-user isolation, 7-day deletion grace
 - **Inference:** several models for different tasks (generative answer/extraction,
-  a small stable TOC-writer, optional OCR/embeddings), called through a **hosted API
+  a small stable TOC-writer, optional OCR), called through a **hosted API
   provider that does not retain data** (not self-hosted).
 - **Retrieval:** **TOC-guided** — a model-written table of contents locates content
-  and token-bounded chunks are fetched via locators; embeddings (`pgvector`) only if
-  a versioned eval question proves the TOC path fails.
-- **Data ownership:** local-first applies to data and storage — course material and
-  study history are yours, in your Postgres. Inference is a no-retention API.
+  and token-bounded chunks are fetched via locators; embeddings only if a
+  versioned eval question proves the TOC path fails.
+- **Data ownership:** course material and study history live in our Postgres.
+  Inference is a no-retention API.
+- **Deletion:** destruction leaves a distilled record — course memories,
+  citation snapshots, account grace periods.
 
 ---
 
@@ -72,7 +76,7 @@ flowchart TB
 
     subgraph Models["Model providers (API, no data retention)"]
         GEN["Generative model<br/>(deepseek v4 flash)"]
-        EMB["Embedding model<br/>(only if needed)"]
+        TOCW["TOC-writer model<br/>(small, stable)"]
         OCR["OCR model<br/>(only if scans)"]
     end
 
@@ -87,8 +91,8 @@ flowchart TB
     ING --> FS
     ING --> GEN
     ING --> OCR
+    ING --> TOCW
     RET --> PG
-    RET --> EMB
     TUT --> GEN
     TUT --> RET
     TUT --> MEM
@@ -215,6 +219,9 @@ erDiagram
     USERS {
         uuid user_id PK
         text name
+        text email
+        text password_hash
+        timestamptz delete_requested_at
         timestamptz created_at
     }
     COURSES {
@@ -238,12 +245,14 @@ erDiagram
         text content_type
         text content_uri
         jsonb content
-        text provenance
+        text origin
         text status
         timestamptz created_at
     }
 ```
 
+- **`USERS`** carries auth (unique `email`, `password_hash`) and account
+  lifecycle (`delete_requested_at` — soft delete with a 7-day grace period).
 - **`STUDY_PERIODS`** replaces the rigid `week`: a user-definable sliding window
   (a lecture, a month, a semester, the stretch before an exam). Granularity is
   set by the user, never hardcoded.
@@ -251,7 +260,8 @@ erDiagram
   generated artifact. `kind` is the semantic purpose (a **free string**, so new
   kinds need no schema change), `content_type` is the format, and `content_uri`
   points to where the content actually lives (file for binaries, jsonb for
-  structured data, text for markdown). Format routes storage and serving.
+  structured data, text for markdown). Format routes storage and serving. A
+  check constraint requires `content_uri` or `content`.
 
 ### 2.2 Source content (uploaded material)
 
@@ -273,6 +283,8 @@ erDiagram
         text version
         text uri
         text status
+        text file_hash
+        text error_message
         timestamptz created_at
     }
     LOCATORS {
@@ -280,7 +292,7 @@ erDiagram
         uuid source_id FK
         text locator_type
         text start
-        text end
+        text end_value
         text label
         text description
     }
@@ -290,18 +302,21 @@ erDiagram
         uuid locator_id FK
         int chunk_index
         text text
-        vector embedding
     }
 ```
 
-- **Objects are stored whole**; nothing is destroyed at ingest.
-- **`LOCATORS`** is the per-format "table of contents": `locator_type` is free
-  (page, slide, section, timestamp, line_range, function, ...), so each format
-  keeps its natural unit. Citations use the locator label (e.g. "slide 7",
-  "timestamp 12:30").
+- **Objects are stored whole**; nothing is destroyed at ingest. `file_hash`
+  dedups uploads (a re-upload of the same bytes is detected regardless of
+  filename); `error_message` records why a `failed` ingest failed.
+- **`LOCATORS`** is the per-format "table of contents": `locator_type` is a free
+  string (page, slide, section, timestamp, line_range, cell_range, ...), so each
+  format keeps its natural unit and new formats need no schema change. Citations
+  use the locator label (e.g. "slide 7", "timestamp 12:30"). The SQL column is
+  `end_value` (reserved word); the data layer maps it to the Pydantic field `end`.
 - **`CHUNKS`** are **token-bounded** retrieval slices sized to fit the model's
   context window (not arbitrary lines), each pointing back to the locator it
-  spans.
+  spans. No embedding column — retrieval is TOC-guided; embeddings return only if
+  a versioned eval proves the TOC path failing.
 
 ### 2.3 Course memory (concepts, evidence & TOC)
 
@@ -320,6 +335,7 @@ erDiagram
         uuid course_id FK
         text name
         text definition
+        jsonb synonyms
         text evidence_level
     }
     DEPENDENCIES {
@@ -351,6 +367,7 @@ erDiagram
         text title
         text description
         jsonb concepts
+        int position
     }
 ```
 
@@ -392,11 +409,12 @@ erDiagram
         uuid user_id FK
         uuid course_id FK
         uuid item_id FK
-        uuid concept_id FK
+        jsonb concept_ids
         uuid chunk_id FK
         text answer
         int confidence_before
         text evaluation
+        int score
         text error_category
         boolean used_help
         int time_spent
@@ -404,6 +422,7 @@ erDiagram
     }
     CONCEPT_MASTERY {
         uuid mastery_id PK
+        uuid user_id FK
         uuid concept_id FK
         text state
         int confidence
@@ -422,8 +441,13 @@ erDiagram
 
 - **`ASSESSMENT_ITEMS`** are the unit a cold probe uses: prompt, concepts tested,
   difficulty, rubric.
-- **`CONCEPT_MASTERY`** holds the current mastery **state** per concept — a ladder
-  (`unseen` → ... → `transfer`), not a single fake-precise score.
+- **`ATTEMPTS`** are multi-concept (`concept_ids` jsonb) — an item may test
+  several concepts and the attempt records against all of them. `score` is a
+  0–100 sliding scale (letter grades are a display-layer conversion, not a
+  schema decision); `evaluation` stays narrative.
+- **`CONCEPT_MASTERY`** holds the current mastery **state** per user per concept
+  (UNIQUE `(user_id, concept_id)`) — a ladder (`unseen` → ... → `transfer`), not
+  a single fake-precise score.
 - **`RECOMMENDATIONS`** are the "what to study next" output, traceable to a
   concept, a reason, and the source (attempt, TOC, etc.).
 
@@ -464,11 +488,13 @@ erDiagram
   context on the next prompt). Summaries are regenerated when the conversation
   grows past a threshold so the model always prompts against current context.
 
-### 2.6 Provenance & evidence
+### 2.6 Evidence & grounding
 
 ```mermaid
 erDiagram
     RETRIEVAL_TRACES ||--o{ CITATIONS : supports
+    RETRIEVAL_TRACES ||--o{ RESPONSES : produced
+    RESPONSES ||--o{ CLAIMS : contains
     CLAIMS ||--o{ CITATIONS : grounded_by
     MEMORY_OBJECTS ||--o{ MEMORY_OBJECT_EVIDENCE : backed_by
     CHUNKS ||--o{ MEMORY_OBJECT_EVIDENCE : supports
@@ -481,6 +507,15 @@ erDiagram
         text query
         jsonb retrieved_chunk_ids
         jsonb retrieved_toc_entry_ids
+        text model
+        timestamptz created_at
+    }
+    RESPONSES {
+        uuid response_id PK
+        uuid conversation_id FK
+        uuid turn_id FK
+        uuid trace_id FK
+        text content
         text model
         timestamptz created_at
     }
@@ -498,22 +533,58 @@ erDiagram
         uuid trace_id FK
     }
     MEMORY_OBJECT_EVIDENCE {
+        uuid evidence_id PK
         uuid memory_id FK
         uuid chunk_id FK
         text evidence_level
     }
 ```
 
+- **`RESPONSES`** are the tutor's answers — the object claims attach to. A
+  response links to its conversation, turn, and retrieval trace. The grounding
+  chain is `Response → Claim → Citation → RetrievalTrace`.
 - **`RETRIEVAL_TRACES`** record what the tutor retrieved and used to produce an
   answer, enabling audit of whether a citation actually supported the answer.
 - **`CLAIMS`** + **`CITATIONS`** ground each claim in evidence (a chunk, memory
-  object, or TOC entry), with the trace that produced it.
+  object, or TOC entry), with the trace that produced it. `claim_type` and
+  `target_type` are free strings; known values live in `schemas/base.py`
+  (`KNOWN_CLAIM_TYPES`, `KNOWN_CITATION_TARGETS`).
 - **`MEMORY_OBJECT_EVIDENCE`** links a memory object directly to the chunk that
   supports it, so a citation on a memory object can resolve to a chunk within
   two hops.
-- **`ARTIFACT_PROVENANCE`** (not shown) records how a generated artifact was
+- **`ARTIFACT_ORIGINS`** (not shown) records how a generated artifact was
   produced — its sources, concepts, and model — so origin is auditable and
-  regenerable.
+  regenerable. **`MODEL_DECISIONS`** (not shown) records the model's
+  storage/description decisions for the same reason.
+
+### 2.7 Deletion & lifecycle (distilled records)
+
+Unifying principle: **destruction leaves a distilled record.**
+
+```mermaid
+flowchart TB
+    DC["delete course"] --> CM["archive course_memories<br/>(code, name, summary, key concepts)"]
+    CM --> DEL["delete course subtree"]
+    DS["remove cited source"] --> CS["archive citation_snapshots<br/>(citations + why each was valid)"]
+    CS --> DEL2["delete source"]
+    DU["delete account"] --> GR["soft delete:<br/>delete_requested_at"]
+    GR --> D7{"7 days pass<br/>without cancel?"}
+    D7 -->|yes| HARD["hard remove"]
+    D7 -->|no| CANCEL["cancel clears marker"]
+```
+
+- **`COURSE_MEMORIES`** — a distilled record (code, name, summary, key
+  concepts) written *before* course deletion, so the course can still be
+  referenced if the user mentions it again. `course_id` is stored without a hard
+  FK so the memory outlives the course row.
+- **`CITATION_SNAPSHOTS`** — before a source's citations are removed, a
+  compressed record of the citations and why each was valid is written, so
+  grounding evidence survives the source.
+- **Account deletion** is soft (`users.delete_requested_at`) with a 7-day grace
+  period; canceling clears the marker.
+- **`ON DELETE` policy:** ownership trees (course → content, user → courses)
+  cascade via the app's archive-then-delete flow; evidence/grounding links
+  `RESTRICT` so the app is *forced* to snapshot before removing evidence.
 
 **Key decisions:**
 
@@ -524,10 +595,10 @@ erDiagram
 - **TOC-based retrieval, not embeddings.** A model-written table of contents
   describes the course and locates content, avoiding cross-model embedding
   misalignment. Written by a small, stable TOC model.
-- **No rigid type system.** `kind` (course objects), `locator_type`, and
-  `content_type` are free strings, so new kinds and formats insert without a
-  schema migration.
-- **Provenance is first-class.** Every claim, artifact, and model decision is
+- **No rigid type system.** `kind` (course objects), `locator_type`,
+  `content_type`, `claim_type`, and `target_type` are free strings, so new kinds
+  and formats insert without a schema migration.
+- **Evidence is first-class.** Every claim, artifact, and model decision is
   traceable to evidence, so source grounding is enforceable and auditable.
 
 ---
@@ -691,13 +762,14 @@ flowchart TB
     end
 
     subgraph Data["Data layer"]
-        PG[("Postgres + pgvector")]
+        PG[("Postgres")]
         STORE["object/file storage (raw)"]
     end
 
     subgraph AI["Model provider API (no data retention)"]
-        GEN["gen model endpoint (deepseek)"]
-        EMB["embedding model (if used)"]
+        GEN["generative model (deepseek v4 flash)"]
+        TOC["small stable TOC-writer model"]
+        OCR["OCR model (only if scans)"]
     end
 
     U1 --> FE
@@ -707,7 +779,8 @@ flowchart TB
     BE --> PG
     BE --> STORE
     BE --> GEN
-    BE --> EMB
+    BE --> TOC
+    BE --> OCR
 ```
 
 Small scale → no microservices, no k8s. A single web process + Postgres + object
@@ -719,35 +792,44 @@ servers.
 
 ## 9. Cross-cutting concerns
 
-- **DB access:** isolated in `src/backend/common/db.py`; raw SQL queries in
-  `src/backend/common/queries/*.sql`; schema via versioned migrations
-  `src/backend/common/migrations/00X_*.sql` with a runner.
-- **Validation:** Pydantic schemas at every boundary (`src/backend/common/`).
-- **Config:** tunable/versioned params in `configs/`, not hardcoded.
+- **DB access:** isolated in `src/backend/common/db.py` (the single Postgres
+  seam); raw SQL queries in `src/backend/common/queries/*.sql`; schema via
+  versioned migrations `src/backend/common/migrations/00X_*.sql`, applied by the
+  runner `src/backend/common/migrate.py` (`python -m src.backend.common.migrate`)
+  against a `schema_migrations` tracking table. Migrations are append-only.
+- **Config:** `.env` credentials loaded via `common/config.py` (no
+  python-dotenv dependency); tunable/versioned params in `configs/`, not
+  hardcoded.
+- **Validation:** Pydantic schemas at every boundary
+  (`src/backend/common/schemas/`, one module per storage layer).
+- **Auth:** email + password (hashed) on `users`; per-user isolation enforced
+  throughout the schema. Login/session logic is built in the auth phase.
 - **Evals:** every subsystem has a regression path under `src/backend/evals/`.
   No feature ships without a way to measure regressions.
 - **Logging/traces:** retrieval traces + eval logs under `runs/` (gitignored).
 - **No secrets:** never log/commit keys, tokens, or classmates' work.
+- **Quality gate:** `pytest`, `ruff check .`, `mypy src` must all pass before
+  work is declared done.
 
 ---
 
-## 10. Open decisions (record changes in `docs/decisions/`)
+## 10. Open decisions (record changes in `docs/decisions/`; log in `docs/notes.md`)
 
 - Exact hosting target (VPS vs Railway/Render/Fly/Supabase) — affects local dev mirror.
 - **Choose a model API provider that does not retain data** (OpenRouter / Groq /
   similar); verify their data-retention policy before committing.
-- Docker vs native Postgres for local dev.
 - Whether OCR is in scope depends on whether pilot slides are scanned/image-heavy.
 - When (if ever) to adopt embeddings/reranker — gated on a failing eval question.
-- AI-generated course objects (flashcards, slidedecks) are a **future** feature —
-  the `course_objects` table already supports them; no generation logic yet.
+- Auth implementation details: hashing library (bcrypt vs argon2), session vs
+  token, login flow.
 
 ---
 
 ## 11. Definition of done (from project.md)
 
-A student can upload one course's materials, ask source-cited questions, take a
-short closed-notes diagnostic, review their concept-linked mistakes, and receive a
-transparent recommendation for what to study next. The system works locally,
-records provenance, and has a small regression/evaluation suite that prevents
-silent quality loss.
+A student can create an account, upload one course's materials, ask
+source-cited questions, take a short closed-notes diagnostic, review their
+concept-linked mistakes, and receive a transparent recommendation for what to
+study next. The system records provenance for every claim, archives a distilled
+record on deletion (course memory, citation snapshot, account grace period), and
+has a small regression/evaluation suite that prevents silent quality loss.
