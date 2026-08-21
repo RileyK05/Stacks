@@ -179,3 +179,43 @@ before removal. Implemented across migrations `001`/`002` + schemas.
   the Pydantic field `end`.
 - **Pending:** a migrations runner to apply versioned `.sql` in order (currently
   applied manually via `psql`).
+  *(Resolved 2026-08-20: `common/migrate.py` runner built — tracks applied
+  versions in a `schema_migrations` table and applies pending `.sql` in order.
+  Run via `python -m src.backend.common.migrate`.)*
+
+## Auth foundation (2026-08-20)
+
+- **[auth] Decided: JWT + bcrypt.** Stateless tokens (no session table), pairs
+  with FastAPI + separate frontend. bcrypt is battle-tested and simple. Deps
+  added: `bcrypt`, `PyJWT`. Closed 2026-08-20.
+- **[infra] `common/config.py`** — minimal `.env` loader (no python-dotenv dep)
+  exposing `Settings` (Postgres DSN + `jwt_secret` + `jwt_expire_minutes`).
+  Closed 2026-08-20.
+- **[infra] `common/db.py`** — the single Postgres connection seam (`connect()` +
+  `connection()` context manager). Closed 2026-08-20.
+- **[auth] `common/auth.py`** — pure auth utilities: `hash_password`/
+  `verify_password` (bcrypt, salt-random), `create_access_token`/
+  `decode_access_token`/`token_user_id` (JWT HS256, 7-day expiry from config).
+  No FastAPI coupling; fully unit-tested. Closed 2026-08-20.
+- **[config] `JWT_SECRET` required in `.env`.** Dev default is short and emits an
+  `InsecureKeyLengthWarning`; a real 32+ byte secret silences it. User to set.
+
+## Auth API + query layer (2026-08-20)
+
+- **[infra] `common/queries/`** — raw SQL lives in `.sql` files (per AGENTS.md
+  convention). A tiny loader (`common/queries/__init__.py`) splits files into
+  named blocks via `-- name: block` markers and caches them. Every subsystem
+  uses this; no inline SQL strings. Closed 2026-08-20.
+- **[repo] `common/users_repo.py`** — user CRUD via the query loader + `db.py`.
+  `create` uses autocommit (INSERT...RETURNING); reads use `dict_row` cursors.
+  Closed 2026-08-20.
+- **[api] `src/backend/api/auth.py`** — FastAPI router: `POST /auth/register`,
+  `POST /auth/login` (returns JWT), `GET /auth/me` (protected). `current_user`
+  dependency decodes the bearer token, looks up the user, and blocks
+  pending-deletion accounts. Closed 2026-08-20.
+- **[api] `src/backend/main.py`** — FastAPI app factory (`create_app`) + `app`
+  instance. Run with `uvicorn src.backend.main:app`. Closed 2026-08-20.
+- **[deps] Added `fastapi`, `uvicorn[standard]`, `httpx` (dev/test).** Closed
+  2026-08-20.
+- **[tests] Repository + endpoint tests** against the live Postgres (autouse
+  fixture cleans `*@test.invalid` users). 46 tests total, all green.
