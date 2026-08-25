@@ -11,15 +11,13 @@ def test_register_then_me(client: TestClient) -> None:
     email = _email()
     r = client.post(
         "/auth/register",
-        params={"name": "Ada", "email": email, "password": "pw123"},
+        json={"name": "Ada", "email": email, "password": "pw123"},
     )
     assert r.status_code == 200
     user = r.json()
     assert user["email"] == email
 
-    token_resp = client.post(
-        "/auth/login", params={"email": email, "password": "pw123"}
-    )
+    token_resp = client.post("/auth/login", json={"email": email, "password": "pw123"})
     assert token_resp.status_code == 200
     token = token_resp.json()["access_token"]
 
@@ -31,10 +29,10 @@ def test_register_then_me(client: TestClient) -> None:
 def test_register_duplicate_email_conflicts(client: TestClient) -> None:
     email = _email()
     client.post(
-        "/auth/register", params={"name": "A", "email": email, "password": "p"}
+        "/auth/register", json={"name": "A", "email": email, "password": "p"}
     )
     dup = client.post(
-        "/auth/register", params={"name": "B", "email": email, "password": "p"}
+        "/auth/register", json={"name": "B", "email": email, "password": "p"}
     )
     assert dup.status_code == 409
 
@@ -42,15 +40,15 @@ def test_register_duplicate_email_conflicts(client: TestClient) -> None:
 def test_login_wrong_password_rejected(client: TestClient) -> None:
     email = _email()
     client.post(
-        "/auth/register", params={"name": "A", "email": email, "password": "right"}
+        "/auth/register", json={"name": "A", "email": email, "password": "right"}
     )
-    bad = client.post("/auth/login", params={"email": email, "password": "wrong"})
+    bad = client.post("/auth/login", json={"email": email, "password": "wrong"})
     assert bad.status_code == 401
 
 
 def test_login_unknown_user_rejected(client: TestClient) -> None:
     bad = client.post(
-        "/auth/login", params={"email": "nope@nope.test", "password": "x"}
+        "/auth/login", json={"email": "nope@nope.test", "password": "x"}
     )
     assert bad.status_code == 401
 

@@ -2,11 +2,16 @@ from uuid import uuid4
 
 import pytest
 from src.backend.common import auth, users_repo
+from src.backend.common.queries import get
 
 
 def _email() -> str:
     return f"{uuid4().hex}@test.invalid"
 
+
+def test_query_loader_raises_on_missing_block() -> None:
+    with pytest.raises(KeyError, match="no_such_block"):
+        get("users", "no_such_block")
 
 def test_create_and_get_by_email() -> None:
     email = _email()

@@ -12,11 +12,11 @@ _FILE = "users"
 
 def create(name: str, email: str, password_hash: str) -> User:
     with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        conn.autocommit = True
         row = cur.execute(
             get(_FILE, "create"),
             {"name": name, "email": email, "password_hash": password_hash},
         ).fetchone()
+        conn.commit()
     assert row is not None
     return User(
         user_id=row["user_id"],

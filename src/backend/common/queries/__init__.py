@@ -22,5 +22,12 @@ def load(file_name: str) -> dict[str, str]:
 
 
 def get(file_name: str, block_name: str) -> str:
-    """Return the SQL for a named block, or the whole file if no markers."""
-    return load(file_name).get(block_name) or load(file_name).get("") or ""
+    """Return the SQL for a named block. Raises if the block is missing."""
+    blocks = load(file_name)
+    if block_name in blocks:
+        return blocks[block_name]
+    available = ", ".join(sorted(name for name in blocks if name))
+    hint = available or "(no named blocks)"
+    raise KeyError(
+        f"query block '{block_name}' not found in {file_name}.sql (has: {hint})"
+    )
