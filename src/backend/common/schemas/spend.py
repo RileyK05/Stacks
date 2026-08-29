@@ -39,3 +39,17 @@ class GenerationLedgerEntry(BaseRecord):
     output_tokens: int = Field(default=0, ge=0)
     overhead_tokens: int = Field(default=0, ge=0)
     created_at: datetime = Field(default_factory=_now)
+
+
+class PremiumCode(BaseRecord):
+    """An operator-issued claim code. `code_hash` never leaves the repo;
+    the plaintext is shown exactly once at issue time."""
+
+    code_id: UUID = Field(default_factory=_new_id)
+    issued_for_user_id: UUID | None = None
+    grants_premium: bool = False
+    claimed_by_user_id: UUID | None = None
+    claimed_at: datetime | None = None
+    revoked_at: datetime | None = None
+    note: str | None = None
+    created_at: datetime = Field(default_factory=_now)

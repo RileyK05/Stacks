@@ -603,3 +603,29 @@ changeset; migrations 009/010/011 + `tiers.toml` v5 implement them.
     sweep for post-grace downgrades waits on the archive-then-delete service.
 
 Gate after implementation: 99 tests, ruff, mypy green.
+
+## Premium claim codes (2026-08-29)
+
+Operator request: every account can hold a code that may or may not grant
+premium, serving as a recovery path ("enter premium code") if authentication
+misbehaves, plus easy manual testing before Stripe. Migration 012 +
+`premium_codes_repo`.
+
+- **[security] Codes stored as SHA-256 hashes** (plaintext shown once at
+  issue, code alphabet excludes ambiguous glyphs, normalization strips
+  separators and case). A DB leak reveals no usable codes — same principle
+  as password hashing.
+- **[design] Claim requires an authenticated user.** Anonymous callers can
+  never flip tiers (decision 003 boundary holds). Tiers are granted by
+  `redeem` starting a paid subscription through the existing machinery.
+- **[schema] Bound codes:** `issued_for_user_id` binds a code to one account;
+  claiming user deletion fully releases the claim (trigger resets claimed_at
+  and grants_premium so the code is claimable again — caught via teardown
+  FK-SET-NULL probing).
+- **[bugfix from tests] `mark_claimed` originally forced
+  `grants_premium = TRUE`**, which would have made every personal recovery
+  code a premium code on claim. Fixed: claiming never changes what a code
+  grants; the operator flag decides.
+- Duplicate code issue surfaces as `ValueError("code already exists")`.
+- Still open: registration wiring to auto-issue a personal code per account
+  (repo seam ready), operator CLI/endpoint for issuing and flagging codes.

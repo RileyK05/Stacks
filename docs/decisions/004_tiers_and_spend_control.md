@@ -89,3 +89,17 @@ inspectable per user and per week; entries are never edited or updated.
   will drive.
 - New tiers are a new enum value + config section, not a schema redesign; the
   `user_tier` enum may gain values (e.g. `pro`) without touching existing rows.
+
+## Claim codes (2026-08-29, amendment)
+
+Every account can be issued a personal claim code; the operator flags codes
+as premium-granting (`grants_premium`). Codes are stored as SHA-256 hashes
+(plaintext shown once at issue), normalized case-insensitively with
+separators stripped. Claiming requires an authenticated user (anonymous
+callers can never flip tiers) and goes through `premium_codes.redeem`, which
+starts the paid subscription through the standard subscription machinery —
+tier state stays single-sourced in `users.tier`. Codes issued for a specific
+user are bound to that account. A code whose claiming user is deleted is
+fully released (claim reset, claimable again). Purpose: premium recovery
+when authentication is broken ("enter your premium code" path) and easy
+manual testing without a payment provider.

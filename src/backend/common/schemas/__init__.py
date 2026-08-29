@@ -61,7 +61,11 @@ from src.backend.common.schemas.memory import (
     TocEntry,
 )
 from src.backend.common.schemas.source_content import Chunk, Locator, Source
-from src.backend.common.schemas.spend import GenerationLedgerEntry, UserSubscription
+from src.backend.common.schemas.spend import (
+    GenerationLedgerEntry,
+    PremiumCode,
+    UserSubscription,
+)
 from src.backend.common.schemas.student_model import (
     AssessmentItem,
     Attempt,
@@ -113,6 +117,7 @@ __all__ = [
     "ModelDecision",
     "ObjectAccessScope",
     "PrereqKind",
+    "PremiumCode",
     "Recommendation",
     "Response",
     "ResponseStructure",
