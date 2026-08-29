@@ -31,6 +31,12 @@ web UI. Deployed for a small user base; data owned by the operator in Postgres.
 
 ## 1. High-level architecture
 
+Implementation status matters throughout this document: schemas, auth,
+owner/enrollment permission rules, source-to-course-object identity, and ingestion
+run state are implemented. File parsing, retrieval, tutor orchestration, and the
+archive-then-delete services remain planned. Diagrams for those later flows are
+the intended design, not claims that the code already performs them.
+
 The system is a **pipeline with a memory**. Think of it like a **library that
 learns about you**:
 
@@ -213,22 +219,44 @@ them in order; each layer builds on the previous. These map to the modules in
 ```mermaid
 erDiagram
     USERS ||--o{ COURSES : owns
+    USERS ||--o{ COURSE_ENROLLMENTS : receives
+    COURSES ||--o{ COURSE_ENROLLMENTS : enrolls
     COURSES ||--o{ STUDY_PERIODS : schedules
     COURSES ||--o{ COURSE_OBJECTS : owns
+    USERS ||--o{ USER_ARTIFACTS : privately_owns
+    COURSES ||--o{ USER_ARTIFACTS : generated_from
 
     USERS {
         uuid user_id PK
         text name
         text email
         text password_hash
+        text tier
         timestamptz delete_requested_at
         timestamptz created_at
     }
     COURSES {
         uuid course_id PK
-        uuid user_id FK
+        uuid owner_user_id FK
         text code
         text name
+        text visibility
+    }
+    COURSE_ENROLLMENTS {
+        uuid enrollment_id PK
+        uuid course_id FK
+        uuid user_id FK
+        text role
+        text status
+        text enrollment_source
+    }
+    USER_ARTIFACTS {
+        uuid artifact_id PK
+        uuid user_id FK
+        uuid source_course_id FK
+        text kind
+        text content_type
+        jsonb content
     }
     STUDY_PERIODS {
         uuid period_id PK
@@ -240,19 +268,32 @@ erDiagram
     COURSE_OBJECTS {
         uuid object_id PK
         uuid course_id FK
-        uuid user_id FK
+        uuid created_by_user_id FK
         text kind
         text content_type
         text content_uri
         jsonb content
         text origin
         text status
+        text access_scope
         timestamptz created_at
     }
 ```
 
-- **`USERS`** carries auth (unique `email`, `password_hash`) and account
-  lifecycle (`delete_requested_at` — soft delete with a 7-day grace period).
+- **`USERS`** carries auth (unique `email`, `password_hash`), account
+  lifecycle (`delete_requested_at` — soft delete with a 7-day grace period),
+  and the current **tier** (`free` default / `paid`), synced from the
+  append-only `user_subscriptions` history by a trigger. Tier gates the
+  weekly generation budget and model routing (see §6a).
+- **`COURSES`** has one owner. Anonymous visitors may view published objects on
+  public courses. `COURSE_ENROLLMENTS` grants an authenticated learner source
+  use and generation without canonical-content mutation. Public courses allow
+  self-enrollment; private courses require an owner invitation. Only the owner
+  may add, replace, or remove canonical objects and base sources.
+- **`USER_ARTIFACTS`** stores learner-generated materials outside the canonical
+  course object collection. They remain visible only to their user, including
+  after enrollment revocation; neither the course owner nor other learners
+  inherit access.
 - **`STUDY_PERIODS`** replaces the rigid `week`: a user-definable sliding window
   (a lecture, a month, a semester, the stretch before an exam). Granularity is
   set by the user, never hardcoded.
@@ -269,13 +310,15 @@ erDiagram
 erDiagram
     USERS ||--o{ SOURCES : owns
     COURSES ||--o{ SOURCES : contains
+    COURSE_OBJECTS ||--|| SOURCES : specializes_as
     SOURCES ||--o{ LOCATORS : indexed_by
     SOURCES ||--o{ CHUNKS : chunked_into
     LOCATORS ||--o{ CHUNKS : within
 
     SOURCES {
         uuid source_id PK
-        uuid user_id FK
+        uuid object_id FK
+        uuid uploaded_by_user_id FK
         uuid course_id FK
         text filename
         text mime_type
@@ -308,6 +351,10 @@ erDiagram
 - **Objects are stored whole**; nothing is destroyed at ingest. `file_hash`
   dedups uploads (a re-upload of the same bytes is detected regardless of
   filename); `error_message` records why a `failed` ingest failed.
+- Every `SOURCE` is also a canonical `COURSE_OBJECT`. The generic row carries
+  ownership, storage, access, and creator information; the source row carries
+  upload and parsing details. Raw sources use enrolled scope, so public course
+  visibility does not publish uploaded originals.
 - **`LOCATORS`** is the per-format "table of contents": `locator_type` is a free
   string (page, slide, section, timestamp, line_range, cell_range, ...), so each
   format keeps its natural unit and new formats need no schema change. Citations
@@ -582,16 +629,19 @@ flowchart TB
   grounding evidence survives the source.
 - **Account deletion** is soft (`users.delete_requested_at`) with a 7-day grace
   period; canceling clears the marker.
-- **`ON DELETE` policy:** ownership trees (course → content, user → courses)
-  cascade via the app's archive-then-delete flow; evidence/grounding links
-  `RESTRICT` so the app is *forced* to snapshot before removing evidence.
+- **Planned delete policy:** the archive-then-delete services are not yet
+  implemented. When built, ownership trees will be removed through one
+  transaction, while evidence links prevent removal until a typed citation
+  snapshot has captured the excerpt, locator, source hash, and validity reason.
 
 **Key decisions:**
 
 - **Objects are stored whole; extracted, token-bounded chunks are the retrieval
   unit.** Raw files are kept only while cheap, then trimmed (see §5).
-- **Per-user isolation:** `users` root, everything resolves back to a `user_id`
-  either directly or through `sources`/`courses`. Clean per-user delete.
+- **Access isolation:** public visibility grants anonymous access only to
+  published canonical objects. Enrollment grants source use and generation,
+  never canonical mutation. Learner generations are private user artifacts;
+  student history and tutor preferences also stay private per user.
 - **TOC-based retrieval, not embeddings.** A model-written table of contents
   describes the course and locates content, avoiding cross-model embedding
   misalignment. Written by a small, stable TOC model.
@@ -633,6 +683,13 @@ course table of contents → flag uncertain extractions for review.
 
 **Rules:** block solution documents from cold-probe context; prefer instructor
 sources over student notes; store a retrieval trace for every query.
+
+The persisted pipeline order is text extraction → locators → chunks → cascading
+TOC update → memory extraction. Each stage depends on the previous successful
+stage. Stage attempts and handler/configuration versions are recorded; the MVP
+configuration allows two total attempts, after which the run becomes failed and
+later stages remain unstarted. Handlers must be idempotent so retrying a stage
+does not duplicate derived data.
 
 ---
 
@@ -724,6 +781,50 @@ failure on a measured eval task.
 
 ---
 
+## 6a. Tiers and spend control
+
+Model compute is metered and tier-routed. Every user has a tier (`free`
+default, `paid` via an active subscription; history in `user_subscriptions`,
+synced to `users.tier` by a trigger). Every model call writes one append-only
+row to `generation_ledger` (user, course, task, model, tokens).
+
+- **Weekly budget:** rolling Monday 00:00 UTC window; each tier's
+  `weekly_token_budget` (input + output tokens) lives in the versioned
+  `configs/tiers.toml`. Generation paths call `budget.check_budget` before
+  compute; exceeded budgets raise at the boundary. The check returns an
+  inspectable state (spent / budget / remaining / week start) — no opaque
+  scores. It gates but does not reserve; brief overshoot under concurrency is
+  accepted at this scale.
+- **Course limits:** each tier also caps owned courses (`max_owned_courses`:
+  free 2, paid 20) via `budget.check_course_limit`; enrollment is not capped,
+  and deleted courses free their slot. Per-course storage is capped
+  (`max_course_storage_bytes`: free 100 MB, paid 1 GB) via
+  `budget.check_course_storage`, and aggregate storage across all owned
+  courses is capped (`max_total_storage_bytes`: free 1 GB, paid 10 GB) via
+  `budget.check_total_storage` — so storage cannot be multiplied by making
+  more courses. Both enforced pre-upload against recorded `sources.size_bytes`
+  (stored, post-compression bytes).
+- **Free-tier overhead:** free users pay an extra 5% of each generation's
+  tokens (`overhead_tokens` in the ledger, counted toward the weekly budget).
+  Applied at record time, never mid-generation — in-flight answers are never
+  cut off; the overhead only tightens the next gate.
+- **Downgrade grace:** downgraded users keep over-cap data, blocked from new
+  creation only; a 60-day deadline (`users.downgrade_grace_deadline`) bounds
+  the soft landing. Tier is double-verified (`budget.verify_tier`) against
+  `users.tier` at the limit gates.
+- **Model routing:** the same config maps each generation task
+  (`KNOWN_GENERATION_TASKS` — `tutor_answer`, `toc_update`,
+  `probe_generation`, `probe_evaluation`, `memory_extraction`,
+  `artifact_generation`) to a model per tier — free gets the cheap generative
+  model, paid gets the newer one, the small stable TOC-writer is shared. The
+  loader rejects a config that omits a task for any tier.
+- **Charging:** ingestion model calls (`toc_update`, `memory_extraction`) are
+  charged to the uploading owner's budget. Payment processing is out of scope;
+  subscriptions are operator-managed until a billing flow exists.
+- Decision record: `docs/decisions/004_tiers_and_spend_control.md`.
+
+---
+
 ## 7. Student model & tutor flow
 
 ```mermaid
@@ -745,6 +846,15 @@ confidence before feedback, correctness, error category, time, date, help used.
 
 **Mastery is a ladder, not one fake-precise score.** Recommendations must be
 traceable to specific attempts and concept evidence.
+
+**Tutor presentation is requester-scoped.** The owner may use their own
+structured profile for interactive responses; non-owners use the versioned
+generic profile in `configs/tutor.toml`. Profiles control presentation only
+(verbosity, analogy use, response structure, and source-quotation balance).
+They cannot change TOC construction, retrieval, selected evidence, citation
+requirements, correctness evaluation, or mastery state. This prevents the
+owner's personal communication style from becoming another learner's tutor
+behavior while keeping the shared course knowledge neutral.
 
 ---
 
@@ -802,8 +912,13 @@ servers.
   hardcoded.
 - **Validation:** Pydantic schemas at every boundary
   (`src/backend/common/schemas/`, one module per storage layer).
-- **Auth:** email + password (hashed) on `users`; per-user isolation enforced
-  throughout the schema. Login/session logic is built in the auth phase.
+- **Auth:** public user responses are separate from internal credential records.
+  Email is normalized, registration enforces bcrypt-safe password bounds, JWTs
+  validate issuer/audience/required claims, pending-deletion accounts cannot log
+  in, and production rejects the development signing secret.
+- **Course access:** public discovery, enrollment, canonical-content ownership,
+  and private learner artifacts are separate authorization concerns. See
+  `docs/decisions/003_public_enrollment_and_personal_artifacts.md`.
 - **Evals:** every subsystem has a regression path under `src/backend/evals/`.
   No feature ships without a way to measure regressions.
 - **Logging/traces:** retrieval traces + eval logs under `runs/` (gitignored).
@@ -820,8 +935,7 @@ servers.
   similar); verify their data-retention policy before committing.
 - Whether OCR is in scope depends on whether pilot slides are scanned/image-heavy.
 - When (if ever) to adopt embeddings/reranker — gated on a failing eval question.
-- Auth implementation details: hashing library (bcrypt vs argon2), session vs
-  token, login flow.
+- Login throttling and token revocation policy before external deployment.
 
 ---
 

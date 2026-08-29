@@ -1,0 +1,22 @@
+pipeline_version = "1"
+max_attempts = 2
+
+[[stages]]
+name = "extract_text"
+handler_version = "1"
+
+[[stages]]
+name = "build_locators"
+handler_version = "1"
+
+[[stages]]
+name = "build_chunks"
+handler_version = "1"
+
+[[stages]]
+name = "update_toc"
+handler_version = "1"
+
+[[stages]]
+name = "extract_memory"
+handler_version = "1"

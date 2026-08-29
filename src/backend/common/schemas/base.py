@@ -82,6 +82,75 @@ class MessageRole(StrEnum):
     SYSTEM = "system"
 
 
+class CourseVisibility(StrEnum):
+    PRIVATE = "private"
+    PUBLIC = "public"
+
+
+class CourseEnrollmentRole(StrEnum):
+    LEARNER = "learner"
+
+
+class EnrollmentStatus(StrEnum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+
+class EnrollmentSource(StrEnum):
+    SELF_SERVICE = "self_service"
+    INVITATION = "invitation"
+
+
+class ObjectAccessScope(StrEnum):
+    PUBLISHED = "published"
+    ENROLLED = "enrolled"
+    PRIVATE = "private"
+
+
+class TutorVerbosity(StrEnum):
+    CONCISE = "concise"
+    BALANCED = "balanced"
+    DETAILED = "detailed"
+
+
+class AnalogyUsage(StrEnum):
+    RARE = "rare"
+    WHEN_HELPFUL = "when_helpful"
+    FREQUENT = "frequent"
+
+
+class ResponseStructure(StrEnum):
+    PROSE = "prose"
+    MIXED = "mixed"
+    BULLETS = "bullets"
+
+
+class SourcePresentation(StrEnum):
+    PARAPHRASE_FIRST = "paraphrase_first"
+    BALANCED = "balanced"
+    QUOTE_FORWARD = "quote_forward"
+
+
+class IngestionStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class IngestionStage(StrEnum):
+    EXTRACT_TEXT = "extract_text"
+    BUILD_LOCATORS = "build_locators"
+    BUILD_CHUNKS = "build_chunks"
+    UPDATE_TOC = "update_toc"
+    EXTRACT_MEMORY = "extract_memory"
+
+
+class UserTier(StrEnum):
+    FREE = "free"
+    PAID = "paid"
+
+
 # Canonical free-string values. These fields stay free strings for extensibility,
 # but this is the single source of truth for the values the system emits, so
 # different parts of the code agree on spelling.
@@ -90,4 +159,14 @@ KNOWN_CLAIM_TYPES = frozenset(
 )
 KNOWN_CITATION_TARGETS = frozenset(
     {"chunk", "memory_object", "toc_entry", "source", "conversation_turn"}
+)
+KNOWN_GENERATION_TASKS = frozenset(
+    {
+        "tutor_answer",
+        "probe_generation",
+        "probe_evaluation",
+        "toc_update",
+        "memory_extraction",
+        "artifact_generation",
+    }
 )

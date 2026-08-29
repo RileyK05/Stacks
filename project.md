@@ -41,6 +41,10 @@ instrument that can be evaluated on real courses.
 - **Inspectable:** the system shows what it retrieved, what it inferred, and why it believes a concept is weak or mastered.
 - **Data ownership:** course material and study history live in our own Postgres. Inference goes to hosted model APIs that contractually do not retain data.
 - **Course-specific:** preserve a professor's notation, definitions, rubrics, and examples rather than replacing them with generic explanations.
+- **Metered compute:** model calls are budgeted per user per week and routed by
+  tier (free gets the cheap model, paid gets the newer one); every call is
+  logged in an append-only ledger. Generation is never anonymous and never
+  unbudgeted.
 - **Learning over completion:** the tool helps practice and diagnose understanding, not produce assignments for submission.
 - **ML earns its role:** begin with retrieval, structure, and simple measurable baselines; add fine-tuning only for documented failures.
 - **Extensible by design:** new content kinds, locator types, and formats are free strings — they insert without schema redesign.
@@ -61,12 +65,29 @@ Postgres migrations).
 
 ### 1. Identity & course structure
 
-Users (email + password auth, 7-day deletion grace), courses, **study periods** —
-user-definable sliding time windows (a lecture, a month, the stretch before an
-exam — never a hardcoded "week"), and **course objects** — any object a course
-owns: uploaded sources today, generated artifacts (flashcards, slidedecks,
-spreadsheets, documents) later. `kind` is a free string; `content_type` routes
+Users (email + password auth, 7-day deletion grace, customer tier — free or
+paid, controlling the weekly generation budget and which models answer),
+courses, **study periods** — user-definable sliding time windows (a lecture, a
+month, the stretch before an exam — never a hardcoded "week"), and **course
+objects** — any object a course owns and the owner publishes: uploaded sources
+and shared study materials. `kind` is a free string; `content_type` routes
 storage/serving; `content_uri` points at the format-appropriate store.
+
+Each course has one owner and may be private or public. Anonymous visitors may
+view published objects on public courses, but cannot use model compute. An
+authenticated learner self-enrolls in a public course (or accepts an owner
+invitation to a private course) before using its source collection for retrieval
+or generation. Only the owner may change canonical course objects or base
+sources. Learner generations live as private user artifacts outside the course's
+canonical objects; the course owner and other learners cannot view them.
+Attempts, mastery, conversations, recommendations, and tutor preferences are
+also private to the learner. An uploaded source is a specialized course object
+linked 1:1 to its generic object record.
+
+Tutor preferences change presentation, not truth or retrieval. The owner may
+use a private structured profile for interactive responses in their course;
+non-owners use a versioned generic profile for now. Neither profile may alter
+the TOC, evidence selection, citations, or mastery evaluation.
 
 ### 2. Source content
 
@@ -75,7 +96,10 @@ Materials are stored **whole** — nothing is destroyed at ingest. Each source g
 timestamp 12:30, cell range A1:D20 — each format keeps its natural unit).
 Retrieval units are **token-bounded chunks** sized to fit the model's context
 window, each pointing back to the locator it spans. Sources carry `file_hash` for
-dedup and `status`/`error_message` for ingestion lifecycle.
+dedup. Ingestion is an ordered, versioned pipeline: text extraction → locators →
+chunks → cascading TOC update → memory extraction. A stage runs only after its
+dependency succeeds, retries according to versioned configuration, and stops the
+pipeline with an inspectable error when its attempts are exhausted.
 
 ### 3. Course memory
 
@@ -198,6 +222,11 @@ for course concepts, a reranker, a probe generator, an error classifier.
 - Do not automatically submit answers, solve graded assignments on demand, or conceal source use.
 - Separate practice mode from assignment-reference mode.
 - Visible evidence for every response based on course material.
+- Public visibility exposes published course objects without granting compute or
+  raw-source access. Enrollment unlocks source-backed retrieval and generation,
+  never access to another student's attempts, conversations, mastery,
+  recommendations, preferences, or private artifacts. Only the owner can mutate
+  canonical course objects and base sources.
 - **Deletion:** course deletion archives a distilled course memory first; source
   removal archives a citation snapshot first; account deletion has a 7-day grace
   period before full removal.

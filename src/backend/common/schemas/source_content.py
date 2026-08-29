@@ -17,7 +17,8 @@ class Source(BaseRecord):
     """An uploaded course file, stored whole. Nothing is destroyed at ingest."""
 
     source_id: UUID = Field(default_factory=_new_id)
-    user_id: UUID
+    object_id: UUID
+    uploaded_by_user_id: UUID
     course_id: UUID
     filename: str
     mime_type: str
@@ -25,6 +26,7 @@ class Source(BaseRecord):
     version: str | None = None
     uri: str | None = None
     status: SourceStatus = SourceStatus.UPLOADED
+    size_bytes: int | None = Field(default=None, ge=0)
     file_hash: str | None = None
     error_message: str | None = None
     created_at: datetime = Field(default_factory=_now)

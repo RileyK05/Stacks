@@ -84,6 +84,16 @@ class ArtifactOrigin(BaseRecord):
     created_at: datetime = Field(default_factory=_now)
 
 
+class UserArtifactOrigin(BaseRecord):
+    artifact_id: UUID
+    source_ids: list[UUID] = Field(default_factory=list)
+    concept_ids: list[UUID] = Field(default_factory=list)
+    model: str | None = None
+    prompt_version: str | None = None
+    tutor_profile_version: str | None = None
+    created_at: datetime = Field(default_factory=_now)
+
+
 class ModelDecision(BaseRecord):
     """Records a model's storage/description decisions, so they can be audited
     and regenerated if the model improves."""
@@ -95,6 +105,16 @@ class ModelDecision(BaseRecord):
     created_at: datetime = Field(default_factory=_now)
 
 
+class ArchivedCitation(BaseRecord):
+    claim_text: str
+    target_type: str
+    target_id: UUID
+    locator_type: str
+    locator_label: str
+    excerpt: str
+    why_valid: str
+
+
 class CitationSnapshot(BaseRecord):
     """Compressed record of citations + why each was valid, written before a
     source's citations are removed. Survives the source row being deleted."""
@@ -104,5 +124,7 @@ class CitationSnapshot(BaseRecord):
     course_id: UUID
     source_id: UUID
     source_name: str
-    citations: list[dict[str, Any]] = Field(default_factory=list)
+    source_hash: str | None = None
+    archive_reason: str = "source_deleted"
+    citations: list[ArchivedCitation] = Field(min_length=1)
     created_at: datetime = Field(default_factory=_now)

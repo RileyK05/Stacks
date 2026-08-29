@@ -3,6 +3,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 from src.backend.common.schemas import (
+    ArchivedCitation,
     AssessmentItem,
     Attempt,
     ChatSummary,
@@ -13,9 +14,11 @@ from src.backend.common.schemas import (
     ConceptMastery,
     Conversation,
     ConversationTurn,
+    CourseEnrollment,
     CourseMemory,
     CourseObject,
     Dependency,
+    EnrollmentSource,
     EvidenceLevel,
     Locator,
     MasteryState,
@@ -34,6 +37,9 @@ from src.backend.common.schemas import (
     TableOfContents,
     TocEntry,
     User,
+    UserAccount,
+    UserArtifact,
+    UserArtifactOrigin,
 )
 
 
@@ -46,7 +52,8 @@ def test_user_defaults() -> None:
 def test_source_rejects_invalid_source_type() -> None:
     with pytest.raises(ValidationError):
         Source(
-            user_id=uuid4(),
+            object_id=uuid4(),
+            uploaded_by_user_id=uuid4(),
             course_id=uuid4(),
             filename="week1.pdf",
             mime_type="application/pdf",
@@ -56,7 +63,8 @@ def test_source_rejects_invalid_source_type() -> None:
 
 def test_source_status_defaults_uploaded() -> None:
     source = Source(
-        user_id=uuid4(),
+        object_id=uuid4(),
+        uploaded_by_user_id=uuid4(),
         course_id=uuid4(),
         filename="week1.pdf",
         mime_type="application/pdf",
@@ -128,7 +136,7 @@ def test_chunk_has_no_embedding() -> None:
 def test_course_object_new_kind() -> None:
     obj = CourseObject(
         course_id=uuid4(),
-        user_id=uuid4(),
+        created_by_user_id=uuid4(),
         kind="flashcard",
         content_type="application/json",
         content={"front": "What is sufficiency?", "back": "..."},
@@ -139,7 +147,7 @@ def test_course_object_new_kind() -> None:
 def test_course_object_kind_is_free_string() -> None:
     obj = CourseObject(
         course_id=uuid4(),
-        user_id=uuid4(),
+        created_by_user_id=uuid4(),
         kind="holodeck",  # a kind we haven't thought of yet
         content_type="application/json",
         content={"scene": "..."},
@@ -151,7 +159,7 @@ def test_course_object_requires_content_or_uri() -> None:
     with pytest.raises(ValidationError):
         CourseObject(
             course_id=uuid4(),
-            user_id=uuid4(),
+            created_by_user_id=uuid4(),
             kind="flashcard",
             content_type="application/json",
         )
@@ -283,7 +291,17 @@ def test_citation_snapshot_preserves_evidence() -> None:
         course_id=uuid4(),
         source_id=uuid4(),
         source_name="Week 3 slides",
-        citations=[{"claim": "Sufficiency is ...", "why_valid": "slide 12"}],
+        citations=[
+            ArchivedCitation(
+                claim_text="Sufficiency is ...",
+                target_type="chunk",
+                target_id=uuid4(),
+                locator_type="slide",
+                locator_label="Slide 12",
+                excerpt="A statistic is sufficient when ...",
+                why_valid="The slide states the course definition.",
+            )
+        ],
     )
     assert snapshot.source_name == "Week 3 slides"
 
@@ -291,12 +309,63 @@ def test_citation_snapshot_preserves_evidence() -> None:
 def test_user_soft_delete_marker() -> None:
     from datetime import UTC, datetime
 
-    user = User(
+    user = UserAccount(
         name="Ada",
         email="ada@example.com",
         delete_requested_at=datetime.now(UTC),
     )
     assert user.delete_requested_at is not None
+
+
+def test_public_user_has_no_credential_fields() -> None:
+    user = User(name="Ada", email="ada@example.com")
+    assert not hasattr(user, "password_hash")
+    assert not hasattr(user, "delete_requested_at")
+
+
+def test_internal_password_hash_masks_if_accidentally_serialized() -> None:
+    account = UserAccount(
+        name="Ada", email="ada@example.com", password_hash="sensitive-hash"
+    )
+    assert "sensitive-hash" not in account.model_dump_json()
+
+
+def test_course_enrollment_defaults_to_active_learner() -> None:
+    enrollment = CourseEnrollment(
+        course_id=uuid4(),
+        user_id=uuid4(),
+        enrollment_source=EnrollmentSource.INVITATION,
+        invited_by_user_id=uuid4(),
+    )
+    assert enrollment.status == "active"
+    assert enrollment.role == "learner"
+
+
+def test_self_service_enrollment_cannot_have_inviter() -> None:
+    with pytest.raises(ValidationError):
+        CourseEnrollment(
+            course_id=uuid4(),
+            user_id=uuid4(),
+            enrollment_source=EnrollmentSource.SELF_SERVICE,
+            invited_by_user_id=uuid4(),
+        )
+
+
+def test_user_artifact_has_separate_private_identity() -> None:
+    artifact = UserArtifact(
+        user_id=uuid4(),
+        source_course_id=uuid4(),
+        source_course_label="MATH 361",
+        kind="study_guide",
+        content_type="application/json",
+        content={"body": "private"},
+    )
+    origin = UserArtifactOrigin(
+        artifact_id=artifact.artifact_id,
+        tutor_profile_version="generic-v1",
+    )
+    assert artifact.user_id is not None
+    assert origin.artifact_id == artifact.artifact_id
 
 
 def test_week_removed() -> None:

@@ -13,17 +13,28 @@ from src.backend.common.auth import (
 
 
 def test_hash_and_verify_password() -> None:
-    hashed = hash_password("hunter2")
-    assert hashed != "hunterr2"
+    hashed = hash_password("correct-horse-battery")
+    assert hashed != "correct-horse-batterz"
     assert verify_password("huntere2", hashed) is False
-    assert verify_password("hunter2", hashed) is True
+    assert verify_password("correct-horse-battery", hashed) is True
 
 
 def test_hash_is_salt_random() -> None:
-    a = hash_password("same")
-    b = hash_password("same")
+    a = hash_password("same-password-value")
+    b = hash_password("same-password-value")
     assert a != b
-    assert verify_password("same", a) and verify_password("same", b)
+    assert verify_password("same-password-value", a)
+    assert verify_password("same-password-value", b)
+
+
+def test_short_password_rejected() -> None:
+    with pytest.raises(ValueError, match="at least 12"):
+        hash_password("too-short")
+
+
+def test_oversized_password_candidate_is_rejected_without_bcrypt_error() -> None:
+    hashed = hash_password("correct-horse-battery")
+    assert verify_password("x" * 1000, hashed) is False
 
 
 def test_token_roundtrip() -> None:
@@ -48,7 +59,10 @@ def test_expired_token_rejected() -> None:
     expired_payload = {
         "sub": str(uuid4()),
         "iat": int((now - timedelta(minutes=10)).timestamp()),
+        "nbf": int((now - timedelta(minutes=10)).timestamp()),
         "exp": int((now - timedelta(minutes=1)).timestamp()),
+        "iss": settings.jwt_issuer,
+        "aud": settings.jwt_audience,
     }
     expired = jwt.encode(expired_payload, settings.jwt_secret, algorithm=ALGORITHM)
     with pytest.raises(jwt.ExpiredSignatureError):

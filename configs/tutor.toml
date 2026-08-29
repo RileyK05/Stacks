@@ -1,0 +1,5 @@
+profile_version = "1"
+verbosity = "balanced"
+analogy_usage = "when_helpful"
+response_structure = "mixed"
+source_presentation = "balanced"
