@@ -277,10 +277,12 @@ def test_course_memory_survives_course_deletion() -> None:
     memory = CourseMemory(
         user_id=uuid4(),
         course_id=uuid4(),  # course row may be gone; memory outlives it
-        code="MATH 361",
+        course_ref="former-course-id",
         name="Statistical Inference",
         summary="Covered estimation, sufficiency, factorization.",
         key_concepts=["sufficiency", "estimator"],
+        token_budget=1000,
+        summary_version="deterministic-v1",
     )
     assert memory.key_concepts == ["sufficiency", "estimator"]
 

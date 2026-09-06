@@ -629,3 +629,316 @@ misbehaves, plus easy manual testing before Stripe. Migration 012 +
 - Duplicate code issue surfaces as `ValueError("code already exists")`.
 - Still open: registration wiring to auto-issue a personal code per account
   (repo seam ready), operator CLI/endpoint for issuing and flagging codes.
+
+## Customer-support code clarification (2026-08-30)
+
+The per-account claim code is a customer-support and entitlement-pipeline
+identifier, not a primary login factor, authentication fallback, or course
+sharing credential. It supports cases such as subscriptions or payments handled
+through another avenue. Registration displays the code once and stores only its
+hash. Course invitation/share codes, if adopted, are a separate future concept
+with their own lifecycle and permissions; course creation must not mint another
+account support code.
+
+## Superseding support-code and archive decision (2026-08-30)
+
+The sentence above saying registration displays the support code is rejected.
+Registration creates the bound hash record but **no API ever returns the
+plaintext or code metadata**. The initial plaintext is discarded; support must
+rotate internally and deliver a replacement out of band. Redemption requires an
+already authenticated account and grants an entitlement only. It never proves
+identity, replaces login, or participates in ordinary billing.
+
+Course sharing now uses a distinct server-generated random join code with
+private / invite-only / public exposure rules and explicit invitation
+acceptance. Deletion retains the exact course for a 90-day copy grace period,
+then purges it through a durable cleanup job. Each participant's bounded
+course-memory record, including a compact evidence snapshot, is the only
+permanent course-derived record. Public-to-restricted changes archive the old
+public version and return a new restricted successor. Full decision:
+`docs/decisions/005_course_sharing_archives_and_support_codes.md`.
+
+## Second-model review fixes (2026-08-30)
+
+Independent adversarial review of the same changeset found seven defects and
+a set of consistency gaps; all were fixed in this pass. Migration 016 +
+`lifecycle.toml` v2 implement the schema-level ones.
+
+- **[bugfix] Redeeming a premium code while already subscribed was a 500.**
+  `user_subscription_one_active` raised through `insert_subscription` with no
+  ValueError mapping. Redeem now locks the user row, checks the active
+  subscription first, and rejects with "already has an active subscription"
+  (code stays unclaimed, transaction atomic). Support-code rotation also no
+  longer grants premium by default — the entitlement is opt-in so a pure
+  re-identification rotation cannot mint premium.
+- **[bugfix] `assert` was request-path error handling.** `update_course` /
+  `rotate_join_code` repo `None` returns (raced archival) became
+  `AssertionError` 500s and vanish under `python -O`. Now explicit 404s.
+- **[bugfix] Enrollment mutations didn't map policy-trigger failures.**
+  invite/accept/decline/revoke/leave could 500 on a concurrent archive;
+  `join_course` mislabeled the CheckViolation as "already enrolled" (409).
+  All CheckViolations now map to 404 "course not available for enrollment".
+- **[bugfix] Learner leave now declines pending invitations.** A learner
+  refusing their own invitation was recorded as owner-revoked
+  (`revoked_at` set); semantics now: learner-refused → `declined`,
+  owner-rescinded → `revoked` (separate `withdraw_enrollment` query).
+- **[schema] Public→restricted is enforced at the repo seam.**
+  `courses_repo.update_course` now raises `RestrictedTransitionError` for
+  public→restricted plain UPDATEs; only the versioned lifecycle path may
+  perform it. Previously the 90-day-grace invariant lived in exactly one API
+  caller, silently bypassable by any future script/endpoint.
+- **[schema] `course_memories`/`citation_snapshots` user FKs now CASCADE**
+  (migration 016). Account hard-delete previously landmined on any user with
+  a memory bank — i.e. every course owner — and conftest quietly pre-deleted
+  both tables to work around it. Deletion ceremony ownership stays with the
+  account-deletion service; the FK just no longer contradicts it.
+- **[schema] Cleanup jobs have a terminal `dead` state.** Attempt counts were
+  tracked but never bounded: a wedged directory retried every 5 minutes
+  forever. `cleanup_max_attempts` (5) + `retry_delay_seconds` (300) in
+  `lifecycle.toml` `[cleanup]`; expired-lease reclaim and failure handling
+  both dead-end at the cap; `claim_cleanup` no longer re-claims 'running'
+  rows directly — `reclaim_expired_cleanup_leases` is the only re-entry.
+- **[schema] `course_memories.updated_at` added** (migration 016); upsert no
+  longer rewrites `created_at`, and the memory-bank listing orders by it.
+- **[bugfix] Archive copy now refuses file-backed-only objects.** Courses
+  with `content_uri`-only course objects (no jsonb `content`) previously
+  copied them as silently-empty objects; copy now fails loudly with
+  `UncopyableCourseError` (409) instead. Cross-course concept prereqs are
+  dropped rather than NULLed during copy.
+- **[infra] Storage orphan sweep added.** Upload's crash window between file
+  write and DB commit (and any future rename/delete gap) left orphaned
+  directories with no cleanup path; the maintenance loop now sweeps
+  UUID-named directories with no `courses` row, ignoring non-UUID entries.
+  *(Amended 2026-08-30, second review: the first version only swept
+  directories whose course row was gone — an upload crash orphans a FILE
+  inside a live course directory, which the directory sweep never touched,
+  and it had no age guard, so it could race an in-flight copy. The sweep now
+  also removes source files whose source row is absent, guarded by
+  `cleanup.orphan_min_age_seconds` (3600) so in-flight uploads are never
+  swept. The sweep is the fallback of last resort, not the primary cleanup.)*
+- **[hygiene] Exception/request-model consistency.**
+  `storage.StorageLimitExceededError` renamed
+  `RawUploadLimitExceededError` (body-size 413) to stop colliding with
+  `budget.StorageLimitExceededError` (quota 403). All mutating request models
+  now `extra="forbid"` like `CourseCreate`. Register's UniqueViolation
+  handler distinguishes the email index (409) from a code-table collision
+  (503, retry-safe) instead of reporting "email already registered" for both.
+- **[test-infra] Lifespan maintenance loop is now exercised** (was zero-
+  tested; `TestClient` outside a `with` never started it).
+- **Known cosmetic, deliberately not fixed:** migration 013's header comment
+  says `013_storage_foundations.sql` but the file is
+  `013_upload_foundations.sql`. The migration is applied; editing an applied
+  file's comment is not worth breaking the append-only rule. Recorded here
+  instead. Evidence-snapshot wording in decision 005 softened to
+  "representative first-chunk excerpts of up to ten sources" to match the
+  implementation honestly.
+
+## Self-review of the fallback-audit fixes (2026-09-04)
+
+- The 2026-09-03 fix pass itself got a second review. Findings:
+- **[design] The dir-level sweep still had the race**: the mtime grace
+  applied to file removals only; the directory-level branch rmtree'd any
+  dir with no courses row regardless of file age, so an in-flight
+  restrict/copy target dir (files written pre-commit) could still be
+  deleted mid-transaction. The grace is now applied uniformly: a course
+  dir is removed only when every file in it is older than the grace, and
+  the sweep uses `all(...)` not `any(...)` over entries (the first draft
+  of the rewrite inverted this; caught in self-review before commit).
+- **[design] Staging debris was never swept**: crash mid-`_atomic_write`
+  leaves `.{source_id}-{rand}.tmp` staging files; `course_source_files`
+  skipped them (warning hourly, removing nothing) so they accumulated
+  unboundedly. New `storage.course_staging_files()` + sweep branch removes
+  aged staging files; fresh staging files (in-flight writes) are kept.
+- **[test-infra] `api/auth.py` redeem-path assert replaced** with an
+  explicit 401 (was planned 2026-09-03 but the session cut off before
+  the edit). Request paths are now assert-free.
+- **[design] RawUploadLimitExceededError message said "storage
+  allowance"** - misleading: it is the per-request raw-body ceiling (413),
+  not the stored-bytes quota (403). Message corrected.
+- **[test-infra] New sweep tests**: fresh orphan dir survives the grace
+  and is removed without it; interrupted staging file removed once aged;
+  fresh staging file kept. Existing sweep tests age their files with
+  `os.utime` since the grace now protects fresh artifacts by default.
+- **Verified sound in the same pass** (business-logic review of the
+  full uncommitted changeset): subscription double-start blocked by the
+  partial unique index + user-row lock in redeem; archive copy-once via
+  get_archive_access FOR UPDATE + mark_copied; upload quota serialization
+  on the owner user-row lock; restrict/copy storage math (owner_size
+  already includes the source course); enrollment trigger fires on INSERT
+  OR UPDATE (011) so upsert re-activations are policy-checked; subtree
+  deletion spares course_memories by design (no FK, survives course row).
+
+## Canonical code format + API tightening (2026-09-05)
+
+- **[design] One canonical shareable-code format.** Join codes (courses) and
+  support/premium codes now share `common/codes.py`: 16 characters from a
+  31-symbol alphabet (I/L/O/0/1 removed), display form XXXX-XXXX-XXXX-XXXX
+  (20 chars with dashes). Previously join codes were 12 chars and premium
+  codes 16 with a duplicated alphabet/generation implementation.
+  Migration `017_canonical_code_format.sql` adds DB CHECKs (course code
+  alphabet/length; premium hash is 64-hex) and regenerates existing course
+  codes. Closed 2026-09-05.
+- **[api] Format validation at the boundary.** `JoinCourseRequest.join_code`
+  and `SupportCodeRequest.code` now normalize + validate via
+  `codes.require_valid` (422 on garbage) before any lookup.
+- **[api] Enum-typed API views.** `EnrollmentView.status`/
+  `enrollment_source` and `MemberView.status` are now the `EnrollmentStatus`
+  / `EnrollmentSource` enums instead of plain strings — identical JSON wire
+  format, but self-documenting OpenAPI and typo-proof at the boundary.
+- **[design][OPEN] MemberView exposes learner emails to the course owner.**
+  `GET /courses/{id}/members` returns each learner's email (decision 003
+  allows owner visibility of enrollment emails). Risk: emails are personal
+  contact data; an owner seeing emails may enable off-platform contact or
+  spam. Options if this matters later: return user_id + display name only,
+  gate behind an owner-only setting, or drop emails entirely. Revisit if
+  the member list ever grows beyond trusted/operator-run courses.
+
+## The three course shapes pinned as a contract (2026-09-05)
+
+- **[design] Foundational fact recorded.** Every course is exactly one of
+  `public` / `invite_only` / `private`; that closed set is the standing
+  contract for all current and future development. Existing permissions
+  (owner-only canonical mutation, enrollment-grants-use, learner privacy)
+  are unchanged in every shape. Decision:
+  `docs/decisions/006_three_course_shapes.md`. Closed 2026-09-05.
+- **[design] `permissions.py` drift caught and fixed.** The module was orphaned
+  (no endpoint imported it; the API re-derived checks inline) and
+  `can_self_enroll` required `enrollment is None`, which silently contradicted
+  migration 011's revoked-learner re-enrollment path. Fixed: re-enroll allowed
+  when the enrollment is not active; added `can_join_with_code` encoding the
+  two-joinable-shapes rule (public, invite_only; never private). Tests added.
+  Standing rule: policy changes must touch permissions.py AND the DB triggers
+  together. Closed 2026-09-05.
+
+## Docs resync to implementation (2026-09-05)
+
+- **[docs] project.md + system.md updated to the current truth** (overwrite,
+  per convention — notes stay append-only). Key additions:
+  - Three course shapes recorded as the closed contract (decision 006) in
+    both docs, including per-shape join-code exposure and the
+    permissions.py + triggers change-together rule.
+  - Canonical code format (16 chars, XXXX-XXXX-XXXX-XXXX display,
+    `common/codes.py`, migration 017 CHECKs) in project.md principles +
+    system.md cross-cutting.
+  - project.md milestones: new Milestone 0.5 marked done (auth, course CRUD,
+    shapes, enrollment, storage, tiers/spend, claim codes, two-phase
+    archive); Milestone 1 reworded to retrieval only.
+  - system.md §2.1 ER: courses gained lifecycle_status/archived_at/
+    purge_after; enrollments gained responded_at; per-shape semantics
+    spelled out. §2.2 SOURCES gained size_bytes + stored_encoding with the
+    streaming-upload/conditional-gzip rules.
+  - system.md §9: support-code redemption flow documented (transactional
+    redeem, tier single-sourced).
+  - superseded content removed: "sessions" (JWT), "private or public"
+    two-shape wording, single-model inference framing, pre-017 code format.
+- **[docs] Decisions ledger now:** 001 course access, 002 auth boundary +
+  ingestion runs, 003 public enrollment + personal artifacts, 004 tiers +
+  spend, 005 sharing/archives/support codes, 006 three course shapes.
+
+## Self-enroll UX signal for invite-only courses (2026-09-05)
+
+- **[api] `self_enroll` now differentiates the two non-public shapes:**
+  `private` → 404 (course existence never revealed), `invite_only` → 409 with
+  detail "course is not self-enrollable; invite-only courses require a join
+  code". The 409 is the machine-readable hook for the frontend's
+  "invite-only — enter a join code?" prompt. Pinned in
+  `tests/test_courses_api.py::test_self_enroll_invite_only_course_signals_join_code`.
+- **[design] Where the redirect UX lives — split:**
+  - **Backend (done):** return a distinct, documented status + message per
+    shape. The API stays a JSON API; it never "renders a page" or decides UI
+    flow. 409-vs-404 carries the distinction without leaking course
+    existence to strangers.
+  - **Frontend (todo, no backend change needed):** on 409 from `/enroll`,
+    render the join-code entry view (the `/courses/join` endpoint already
+    exists). Private-course 404s and generic 404s render a plain
+    not-found/no-access state.
+  - **Convention for future endpoints:** distinguishable, user-actionable
+    failures get a specific status + stable detail string; the frontend maps
+    (status, detail) to UI states. If these grow, consider a typed error
+    body (`error_code` field) instead of string matching — noted as a
+    possible refactor once there are several such cases.
+
+## Policy decisions from the business-logic review (2026-09-05)
+
+Decisions made during the human review of business-logic-heavy files; all
+implemented and pinned by tests this session.
+
+- **Copy-any-time (was copy-once).** An archive participant may copy their
+  archive as many times as they like during the 90-day grace period.
+  Removed `ArchiveAlreadyCopiedError`, the `mark_copied` query, and the
+  `copied_course_id` column (migration `018_copy_any_time.sql` drops it).
+  Tier limits (courses/storage) remain the natural brake. Pinned by
+  `test_archive_can_be_copied_repeatedly_during_grace`.
+- **Nothing survives purge.** The memory bank is written at archive time as a
+  distilled record for the grace window, but is destroyed at purge with
+  everything else: `course_deletion.sql` now deletes `course_memories`.
+  Golden rule 6 (distilled record) applies to the grace window, not beyond.
+  Pinned by `test_purge_removes_distilled_memory_bank_entries`.
+- **Re-enrollment openness confirmed.** Revoked/declined learners can always
+  re-enroll in public courses (and re-join by code / re-accept invites on
+  invite-only); declined-then-rejoin is deliberate misclick protection. No
+  change.
+- **Join-code visibility confirmed.** On invite_only courses only the owner
+  sees the code; learners cannot share access. No change.
+- **Members list no longer exposes learner emails.** `MemberView` dropped
+  `email`; the owner gets ids + status only and identifies members
+  out-of-band. Closes the OPEN item in the earlier API-tightening note.
+- **90-day grace is a set knob** (`configs/lifecycle.toml`), not to be
+  tuned casually. The restrict flow (public → restricted archives the
+  original so learners keep copy access; owner gets a clean successor)
+  stays as designed.
+- **Hardening from the same review:** `sweep_storage_orphans` now *requires*
+  `min_age` (keyword-only, no default) — the guard that protects in-flight
+  transactions' files can no longer be silently disabled by a bare call.
+  The cross-connection lock ordering in `premium_codes_repo.redeem` is
+  documented as load-bearing (do not "optimize away" the unused
+  `fetchone()` on the user row lock).
+
+## Known-gaps closure from the audit (2026-09-05)
+
+- **Per-course purge isolation.** `purge_expired_archives` now purges each
+  due archive in its own transaction (`_purge_one`): one course's failure
+  rolls back only that course and is logged + skipped; the rest of the queue
+  proceeds. A failing course stays archived with `purge_after` in the past,
+  so every sweep retries it — a persistently failing purge shows up as a
+  repeated error log, which is the operator signal. The old all-or-nothing
+  transaction is gone; `test_purge_rolls_back_archive_and_cleanup_job_on_failure`
+  updated to the new contract (failed purge returns [] and leaves everything
+  intact), and `test_purge_failure_is_isolated_per_course` pins isolation +
+  retry.
+- **Mechanical FK-coverage guard.**
+  `test_purge_block_covers_every_fk_referencing_table` derives, from
+  `pg_constraint`, every table that can reference the course subtree via a
+  foreign key and asserts the purge block mentions it. A future migration
+  adding a referencing table without a purge statement now fails in CI
+  instead of wedging production purges. (course_memories,
+  course_archive_access, storage_cleanup_jobs are the documented
+  exclusions/indirect handles.)
+- **Copy/restrict failure branches now tested.** Three new tests pin:
+  mid-copy OSError → successor rolled back, partial directory removed,
+  archive stays copyable (retry succeeds); mid-restrict OSError → original
+  stays public/active, partial directory removed, retry succeeds;
+  uncopyable-object guard fires before any mutation in restrict, leaving
+  the course public and active.
+- **Test hygiene learned:** `monkeypatch.undo()` reverts autouse fixtures
+  too (breaks the storage sandbox); restore specific targets with
+  `monkeypatch.setattr(..., original)` instead.
+
+## Remaining audit fixes (2026-09-05)
+
+- **Redeem's double-redeem check is now structurally same-connection.** New
+  `spend_repo.active_subscription_on(conn, user_id)` runs on the caller's
+  transaction; `premium_codes_repo.redeem` uses it. The old cross-connection
+  read was correct only via an implicit lock-ordering invariant; the
+  invariant is now expressed in the API surface (the docstring on the
+  variant says money-path checks must use it). Pinned by
+  `test_concurrent_double_redeem_admits_only_one` (8/8 runs: exactly one
+  winner, one subscription).
+- **`rotate_support_code` race closed.** Concurrent rotations could leave
+  two open codes (READ COMMITTED lets the second revoke miss the first's
+  inserted replacement). The user-row `FOR UPDATE` now serializes rotations.
+- **017's data rewrite is regression-tested.**
+  `test_017_rewrites_legacy_codes_and_check_rejects_old_format` applies the
+  migration chain to a scratch schema, injects a 015-era 24-hex code after
+  015, and verifies the 017 DO block rewrites it into the canonical alphabet
+  and the `courses_join_code_known` CHECK rejects the legacy form by name.

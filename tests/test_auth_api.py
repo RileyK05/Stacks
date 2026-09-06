@@ -1,6 +1,8 @@
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
+from src.backend.common import premium_codes_repo, users_repo
 from src.backend.common.db import connection
 
 PASSWORD = "correct-horse-battery"
@@ -16,7 +18,7 @@ def test_register_then_me(client: TestClient) -> None:
         "/auth/register",
         json={"name": "Ada", "email": email, "password": PASSWORD},
     )
-    assert r.status_code == 200
+    assert r.status_code == 201
     user = r.json()
     assert user["email"] == email
     assert "password_hash" not in user
@@ -36,6 +38,45 @@ def test_register_then_me(client: TestClient) -> None:
     assert "delete_requested_at" not in me.json()
 
 
+def test_support_code_is_authenticated_write_only_entitlement_flow(
+    client: TestClient,
+) -> None:
+    email = _email()
+    registered = client.post(
+        "/auth/register",
+        json={"name": "Support", "email": email, "password": PASSWORD},
+    )
+    assert "support_code" not in registered.json()
+    user_id = UUID(registered.json()["user_id"])
+    _, plaintext = premium_codes_repo.rotate_support_code(
+        user_id, grants_premium=True
+    )
+    login = client.post(
+        "/auth/login", json={"email": email, "password": PASSWORD}
+    )
+    token = login.json()["access_token"]
+
+    anonymous = client.post(
+        "/auth/support-code/redeem", json={"code": plaintext}
+    )
+    assert anonymous.status_code in (401, 403)
+    redeemed = client.post(
+        "/auth/support-code/redeem",
+        json={"code": plaintext},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert redeemed.status_code == 200
+    assert redeemed.json()["tier"] == "paid"
+    assert "support_code" not in redeemed.json()
+
+    reused = client.post(
+        "/auth/support-code/redeem",
+        json={"code": plaintext},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert reused.status_code == 400
+
+
 def test_register_duplicate_email_conflicts(client: TestClient) -> None:
     email = _email()
     client.post(
@@ -45,6 +86,25 @@ def test_register_duplicate_email_conflicts(client: TestClient) -> None:
         "/auth/register", json={"name": "B", "email": email, "password": PASSWORD}
     )
     assert dup.status_code == 409
+
+
+def test_registration_rolls_back_when_support_code_fails(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    email = _email()
+
+    def fail_code_issue(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("code service failed")
+
+    monkeypatch.setattr(
+        "src.backend.api.auth.premium_codes_repo.insert_code", fail_code_issue
+    )
+    with pytest.raises(RuntimeError, match="code service failed"):
+        client.post(
+            "/auth/register",
+            json={"name": "Atomic", "email": email, "password": PASSWORD},
+        )
+    assert users_repo.get_by_email(email) is None
 
 
 def test_login_wrong_password_rejected(client: TestClient) -> None:
@@ -70,7 +130,7 @@ def test_registration_normalizes_email(client: TestClient) -> None:
         "/auth/register",
         json={"name": "Ada", "email": f"  {email.upper()}  ", "password": PASSWORD},
     )
-    assert response.status_code == 200
+    assert response.status_code == 201
     assert response.json()["email"] == email
 
 

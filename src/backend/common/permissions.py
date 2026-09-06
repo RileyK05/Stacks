@@ -31,6 +31,15 @@ def _is_actively_accessible_to_course(
     )
 
 
+def _has_active_enrollment(
+    enrollment: CourseEnrollment | None, user_id: UUID | None, course_id: UUID
+) -> bool:
+    """True when this user already holds an active enrollment row for this
+    course. No row (fresh learner), revoked, invited, and declined all permit
+    enrollment actions."""
+    return _is_actively_accessible_to_course(enrollment, user_id, course_id)
+
+
 def can_view_course(
     course: Course,
     user_id: UUID | None,
@@ -48,11 +57,31 @@ def can_self_enroll(
     user_id: UUID | None,
     enrollment: CourseEnrollment | None = None,
 ) -> bool:
+    """Self-service enrollment is public-only. Blocked only by an *active*
+    enrollment: a fresh learner (no row), a revoked, or a declined learner
+    may all enroll (revoked re-enrollment is migration 011's validated path)."""
     return (
         user_id is not None
         and not _is_owner(course, user_id)
         and course.visibility == CourseVisibility.PUBLIC
-        and enrollment is None
+        and not _has_active_enrollment(enrollment, user_id, course.course_id)
+    )
+
+
+def can_join_with_code(
+    course: Course,
+    user_id: UUID | None,
+    enrollment: CourseEnrollment | None = None,
+) -> bool:
+    """Join codes unlock the two joinable shapes: public and invite_only.
+    Private courses are reachable only through an owner invitation. Blocked
+    only by an active enrollment."""
+    return (
+        user_id is not None
+        and not _is_owner(course, user_id)
+        and course.visibility
+        in (CourseVisibility.PUBLIC, CourseVisibility.INVITE_ONLY)
+        and not _has_active_enrollment(enrollment, user_id, course.course_id)
     )
 
 

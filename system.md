@@ -24,17 +24,18 @@ web UI. Deployed for a small user base; data owned by the operator in Postgres.
   versioned eval question proves the TOC path fails.
 - **Data ownership:** course material and study history live in our Postgres.
   Inference is a no-retention API.
-- **Deletion:** destruction leaves a distilled record — course memories,
-  citation snapshots, account grace periods.
+- **Deletion:** an exact course archive provides a 90-day copy grace period;
+  expiry leaves only per-user evidence-bearing course memories. Account deletion
+  retains its separate grace period.
 
 ---
 
 ## 1. High-level architecture
 
 Implementation status matters throughout this document: schemas, auth,
-owner/enrollment permission rules, source-to-course-object identity, and ingestion
-run state are implemented. File parsing, retrieval, tutor orchestration, and the
-archive-then-delete services remain planned. Diagrams for those later flows are
+owner/enrollment permission rules, source-to-course-object identity, ingestion
+run state, upload storage, and archive-then-purge services are implemented. File
+parsing, retrieval, and tutor orchestration remain planned. Diagrams for those later flows are
 the intended design, not claims that the code already performs them.
 
 The system is a **pipeline with a memory**. Think of it like a **library that
@@ -241,6 +242,9 @@ erDiagram
         text code
         text name
         text visibility
+        text lifecycle_status
+        timestamptz archived_at
+        timestamptz purge_after
     }
     COURSE_ENROLLMENTS {
         uuid enrollment_id PK
@@ -249,6 +253,7 @@ erDiagram
         text role
         text status
         text enrollment_source
+        timestamptz responded_at
     }
     USER_ARTIFACTS {
         uuid artifact_id PK
@@ -285,11 +290,23 @@ erDiagram
   and the current **tier** (`free` default / `paid`), synced from the
   append-only `user_subscriptions` history by a trigger. Tier gates the
   weekly generation budget and model routing (see §6a).
-- **`COURSES`** has one owner. Anonymous visitors may view published objects on
-  public courses. `COURSE_ENROLLMENTS` grants an authenticated learner source
-  use and generation without canonical-content mutation. Public courses allow
-  self-enrollment; private courses require an owner invitation. Only the owner
-  may add, replace, or remove canonical objects and base sources.
+- **`COURSES`** has one owner and is in exactly one of **three shapes —
+  private, invite_only, public** (decision `006_three_course_shapes.md`; the
+  closed set). Public courses are anonymously viewable (published objects +
+  join code) and self-enrollable; invite_only courses are invisible except
+  through their owner-held join code; private courses are reachable only by
+  owner invitation. The join code (`courses.code`) is a server-generated
+  **canonical code**: 16 chars from a look-alike-free alphabet, DB CHECK
+  constrained, displayed grouped as `XXXX-XXXX-XXXX-XXXX` (common/codes.py).
+  Course lifecycle (`active`/`archived` + `archived_at`/`purge_after`)
+  implements the 90-day archive. Public→restricted transitions are versioned
+  lifecycle events; restricted→public is a plain owner update.
+- **`COURSE_ENROLLMENTS`** grants an authenticated learner source use and
+  generation without canonical-content mutation. Status lifecycle:
+  `invited` → `active`, with `declined` and `revoked` retained rows (history
+  preserved; a revoked learner may re-enroll via the validated DB path —
+  migration 011). Enrollment policy is enforced twice: API pre-checks in
+  `permissions.py` and the DB trigger — both must change together.
 - **`USER_ARTIFACTS`** stores learner-generated materials outside the canonical
   course object collection. They remain visible only to their user, including
   after enrollment revocation; neither the course owner nor other learners
@@ -327,6 +344,8 @@ erDiagram
         text uri
         text status
         text file_hash
+        bigint size_bytes
+        text stored_encoding
         text error_message
         timestamptz created_at
     }
@@ -351,6 +370,13 @@ erDiagram
 - **Objects are stored whole**; nothing is destroyed at ingest. `file_hash`
   dedups uploads (a re-upload of the same bytes is detected regardless of
   filename); `error_message` records why a `failed` ingest failed.
+  `size_bytes` records post-compression stored bytes (the storage-gate
+  accounting truth). Uploads stream to disk under a hard byte ceiling —
+  oversized bodies are cut mid-stream and never fully enter memory — under
+  server-generated names (`source_id`), so path traversal is structurally
+  impossible. `stored_encoding` (`identity` / `gzip`, DB CHECK constrained)
+  records whether bytes were gzipped; compression applies only when the mime
+  type allows and saves ≥10% (PDFs/images/video are skipped).
 - Every `SOURCE` is also a canonical `COURSE_OBJECT`. The generic row carries
   ownership, storage, access, and creator information; the source row carries
   upload and parsing details. Raw sources use enrolled scope, so public course
@@ -610,8 +636,9 @@ Unifying principle: **destruction leaves a distilled record.**
 
 ```mermaid
 flowchart TB
-    DC["delete course"] --> CM["archive course_memories<br/>(code, name, summary, key concepts)"]
-    CM --> DEL["delete course subtree"]
+    DC["delete course"] --> CM["write each participant's<br/>bounded course memory"]
+    CM --> A90["retain exact archive<br/>for 90 days"]
+    A90 --> DEL["purge database subtree<br/>+ retry physical cleanup"]
     DS["remove cited source"] --> CS["archive citation_snapshots<br/>(citations + why each was valid)"]
     CS --> DEL2["delete source"]
     DU["delete account"] --> GR["soft delete:<br/>delete_requested_at"]
@@ -620,19 +647,23 @@ flowchart TB
     D7 -->|no| CANCEL["cancel clears marker"]
 ```
 
-- **`COURSE_MEMORIES`** — a distilled record (code, name, summary, key
-  concepts) written *before* course deletion, so the course can still be
-  referenced if the user mentions it again. `course_id` is stored without a hard
-  FK so the memory outlives the course row.
+- **`COURSE_MEMORIES`** — a per-user distilled record (course reference, name,
+  bounded summary, key concepts, and compact evidence snapshot) written before
+  archival. `course_id` is stored without a hard FK so the memory outlives the
+  course row.
 - **`CITATION_SNAPSHOTS`** — before a source's citations are removed, a
   compressed record of the citations and why each was valid is written, so
   grounding evidence survives the source.
 - **Account deletion** is soft (`users.delete_requested_at`) with a 7-day grace
   period; canceling clears the marker.
-- **Planned delete policy:** the archive-then-delete services are not yet
-  implemented. When built, ownership trees will be removed through one
-  transaction, while evidence links prevent removal until a typed citation
-  snapshot has captured the excerpt, locator, source hash, and validity reason.
+- **Implemented course delete policy:** normal access ends immediately, current
+  participants may copy the exact archive for 90 days, and expiry removes the
+  foreign-key tree atomically while enqueueing durable physical cleanup.
+  Cleanup jobs retry under a lease up to a configured attempt cap, then go
+  dead for operator inspection; a periodic sweep also removes orphaned course
+  directories. Course-specific citation snapshots and learner artifacts are
+  removed at expiry; the memory bank is the sole course-derived retention
+  exception.
 
 **Key decisions:**
 
@@ -916,9 +947,22 @@ servers.
   Email is normalized, registration enforces bcrypt-safe password bounds, JWTs
   validate issuer/audience/required claims, pending-deletion accounts cannot log
   in, and production rejects the development signing secret.
-- **Course access:** public discovery, enrollment, canonical-content ownership,
-  and private learner artifacts are separate authorization concerns. See
-  `docs/decisions/003_public_enrollment_and_personal_artifacts.md`.
+- **Course access:** the three course shapes (`private` / `invite_only` /
+  `public`) are the closed set — decision
+  `docs/decisions/006_three_course_shapes.md`. Policy lives in both
+  `common/permissions.py` (application) and the enrollment triggers
+  (migrations 011/015); the two must change together. Public discovery,
+  enrollment, canonical-content ownership, and private learner artifacts are
+  separate authorization concerns (decision 003).
+- **Canonical code format:** course join codes and premium/support codes share
+  `common/codes.py` — 16 chars, look-alike-free alphabet, DB CHECK
+  constrained, grouped display `XXXX-XXXX-XXXX-XXXX`. Codes are validated at
+  the API boundary; premium hashes are stored (join codes are policy-gated
+  instead, since they grant nothing by themselves).
+- **Support/premium codes:** every account gets a personal code at
+  registration; the operator flags codes as premium-granting. Redemption is
+  transactional (row lock + active-subscription check) and flows through the
+  standard subscription machinery so tier stays single-sourced in `users.tier`.
 - **Evals:** every subsystem has a regression path under `src/backend/evals/`.
   No feature ships without a way to measure regressions.
 - **Logging/traces:** retrieval traces + eval logs under `runs/` (gitignored).
@@ -945,5 +989,5 @@ A student can create an account, upload one course's materials, ask
 source-cited questions, take a short closed-notes diagnostic, review their
 concept-linked mistakes, and receive a transparent recommendation for what to
 study next. The system records provenance for every claim, archives a distilled
-record on deletion (course memory, citation snapshot, account grace period), and
+record on deletion (90-day archive, permanent course memory, account grace period), and
 has a small regression/evaluation suite that prevents silent quality loss.

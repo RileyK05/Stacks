@@ -10,16 +10,21 @@ A public course may expose owner-published canonical objects to anyone,
 including an anonymous visitor. Public visibility does not expose uploaded raw
 sources and does not authorize model compute. A signed-in user must first
 self-enroll in a public course before using its sources for retrieval or
-generation. Private-course enrollment requires an owner invitation.
+generation. An owner invitation remains pending and grants no access until the
+learner accepts. Invite-only courses may also be joined with a server-generated
+random code exposed only to the owner. Account support codes are never course
+join codes; decision 005 defines both lifecycles.
 
 Enrollment grants use of the course, not control of it. Only the course owner
 may add, replace, remove, or publish canonical course objects and base sources.
 Revoking an enrollment removes future source use and generation access.
 
 Material a learner generates is a private `user_artifact`, not a course object.
-It remains accessible only to that learner, including after enrollment
-revocation or course deletion. The course owner and other learners receive no
-access merely through their relationship to the course. Copying or promoting a
+It remains accessible only to that learner after enrollment revocation. When
+the source course is archived, the artifact is retained only for the 90-day
+course grace period and is then purged; the permanent memory bank is the sole
+course-derived retention exception. The course owner and other learners receive
+no access merely through their relationship to the course. Copying or promoting a
 personal artifact into canonical course content is a separate future workflow,
 not an implicit permission.
 
@@ -38,7 +43,7 @@ retrieval, TOC construction, evidence selection, or mastery evaluation.
   authorization rules.
 - Course ownership does not grant visibility into learner artifacts, attempts,
   mastery, conversations, recommendations, or tutor preferences.
-- Personal artifacts keep their course label and provenance when the source
-  course is later removed, while their course foreign key may become null.
+- Personal artifacts keep their course label and provenance through enrollment
+  revocation and the archive grace period, then are removed with the archive.
 - Supporting collaborative authoring later will require an explicit role and
   promotion/copying workflow; it is not part of learner enrollment.

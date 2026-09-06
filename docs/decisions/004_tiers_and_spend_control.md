@@ -103,3 +103,14 @@ user are bound to that account. A code whose claiming user is deleted is
 fully released (claim reset, claimable again). Purpose: premium recovery
 when authentication is broken ("enter your premium code" path) and easy
 manual testing without a payment provider.
+
+## Support codes (2026-08-30, superseding amendment)
+
+The claim-code paragraph above is superseded by decision 005. Every account
+receives a bound customer-support code record at registration. Only the hash is
+persisted and no API returns the plaintext or code metadata; support rotates the
+code internally and delivers the one-time plaintext out of band when an
+exceptional entitlement case requires it. Redemption requires the normally
+authenticated user and starts the paid subscription through the standard
+subscription machinery. The code is not an authentication factor or a
+substitute for the normal billing flow.

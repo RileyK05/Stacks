@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
-from src.backend.common import auth, courses_repo, spend_repo, users_repo
+from src.backend.common import auth, codes, courses_repo, spend_repo, users_repo
 from src.backend.common.budget import (
     BudgetExceededError,
     CourseLimitExceededError,
@@ -51,6 +51,7 @@ def test_tier_policy_requires_all_model_roles() -> None:
             max_owned_courses=2,
             max_course_storage_bytes=1048576,
             max_total_storage_bytes=1048576,
+            max_raw_upload_bytes=1048576,
             free_tier_overhead_percent=5,
             models={},
         )
@@ -139,7 +140,7 @@ def _create_course(owner_id: object, name: str) -> object:
         course_id = conn.execute(
             "INSERT INTO courses (owner_user_id, code, name) "
             "VALUES (%s, %s, %s) RETURNING course_id",
-            (owner_id, f"TEST-{name}", name),
+            (owner_id, codes.generate_code(), name),
         ).fetchone()[0]
         conn.commit()
     return course_id
@@ -182,7 +183,7 @@ def test_check_course_storage_projects_and_blocks() -> None:
     account = _user()
     policies = load_tier_policies()
     free = policies.policy_for(UserTier.FREE)
-    course = courses_repo.create_course(account.user_id, "STOR", "Storage Test")
+    course = courses_repo.create_course(account.user_id, "Storage Test")
     course_id = course.course_id
     check_course_limit(account.user_id, UserTier.FREE, free)
     _insert_source_with_size(course_id, account.user_id, 600)
@@ -200,7 +201,7 @@ def test_check_course_storage_rejects_negative() -> None:
     account = _user()
     policies = load_tier_policies()
     free = policies.policy_for(UserTier.FREE)
-    course = courses_repo.create_course(account.user_id, "STORN", "Storage Neg")
+    course = courses_repo.create_course(account.user_id, "Storage Neg")
     course_id = course.course_id
     with pytest.raises(ValueError, match="negative"):
         check_course_storage(course_id, UserTier.FREE, free, incoming_bytes=-1)
@@ -210,8 +211,8 @@ def test_total_storage_spans_all_owned_courses() -> None:
     account = _user()
     policies = load_tier_policies()
     free = policies.policy_for(UserTier.FREE)
-    course_a = courses_repo.create_course(account.user_id, "AGGA", "Course A")
-    course_b = courses_repo.create_course(account.user_id, "AGGB", "Course B")
+    course_a = courses_repo.create_course(account.user_id, "Course A")
+    course_b = courses_repo.create_course(account.user_id, "Course B")
     _insert_source_with_size(course_a.course_id, account.user_id, 300)
     _insert_source_with_size(course_b.course_id, account.user_id, 300)
     projected = check_total_storage(
@@ -299,7 +300,7 @@ def test_revoked_enrollment_can_be_revalidated() -> None:
     account = _user()
     owner = _user()
     course = courses_repo.create_course(
-        owner.user_id, "REAC", "Reactivation", CourseVisibility.PUBLIC
+        owner.user_id, "Reactivation", CourseVisibility.PUBLIC
     )
     with connection() as conn:
         conn.execute(

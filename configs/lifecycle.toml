@@ -1,0 +1,19 @@
+[version]
+lifecycle_config_version = "2"
+
+[archive]
+grace_days = 90
+maintenance_interval_seconds = 3600
+summary_version = "deterministic-v1"
+summary_base_tokens = 800
+
+[memory_tokens]
+free = 1000
+paid = 5000
+
+[cleanup]
+max_attempts = 5
+retry_delay_seconds = 300
+# Files younger than this are never swept as orphans: an in-flight upload
+# holds its file open only for seconds, so a full hour is safely conservative.
+orphan_min_age_seconds = 3600

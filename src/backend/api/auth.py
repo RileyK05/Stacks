@@ -3,17 +3,19 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg.errors import UniqueViolation
-from pydantic import BaseModel, Field, field_validator
-from src.backend.common import auth, users_repo
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from src.backend.api.deps import bearer, current_user  # noqa: F401
+from src.backend.common import auth, codes, premium_codes_repo, users_repo
+from src.backend.common.db import connection
 from src.backend.common.schemas.identity import User, UserAccount
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-bearer = HTTPBearer()
 
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200)
     email: str
     password: str
@@ -33,6 +35,8 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: str
     password: str = Field(max_length=1024)
 
@@ -42,35 +46,70 @@ class LoginRequest(BaseModel):
         return auth.normalize_email(value)
 
 
-def current_user(
-    creds: Annotated[HTTPAuthorizationCredentials, Depends(bearer)],
-) -> UserAccount:
-    try:
-        user_id = auth.token_user_id(creds.credentials)
-    except Exception as err:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token") from err
-    user = users_repo.get_by_id(user_id)
-    if user is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
-    if user.delete_requested_at is not None:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "account pending deletion")
-    return user
+class SupportCodeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str = Field(min_length=1, max_length=128)
+
+    @field_validator("code")
+    @classmethod
+    def _code_format(cls, value: str) -> str:
+        try:
+            return codes.require_valid(value)
+        except ValueError as err:
+            raise ValueError(
+                "support code must be 16 characters from the code alphabet "
+                "(display form: XXXX-XXXX-XXXX-XXXX)"
+            ) from err
 
 
-@router.post("/register", response_model=User)
+@router.post(
+    "/register",
+    response_model=User,
+    status_code=status.HTTP_201_CREATED,
+)
 def register(payload: RegisterRequest) -> User:
     existing = users_repo.get_by_email(payload.email)
     if existing is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "email already registered")
     hashed = auth.hash_password(payload.password)
     try:
-        return users_repo.create(
-            name=payload.name, email=payload.email, password_hash=hashed
-        )
+        with connection() as conn:
+            user = users_repo.insert(
+                conn, name=payload.name, email=payload.email, password_hash=hashed
+            )
+            premium_codes_repo.insert_code(
+                conn,
+                issued_for_user_id=user.user_id,
+                note="customer support code",
+            )
+            conn.commit()
     except UniqueViolation as err:
+        constraint = getattr(err.diag, "constraint_name", None) or ""
+        if "email" in constraint:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, "email already registered"
+            ) from err
         raise HTTPException(
-            status.HTTP_409_CONFLICT, "email already registered"
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "registration is temporarily unavailable; retry",
         ) from err
+    return User.model_validate(user)
+
+
+@router.post("/support-code/redeem", response_model=User)
+def redeem_support_code(
+    payload: SupportCodeRequest,
+    user: Annotated[UserAccount, Depends(current_user)],
+) -> User:
+    try:
+        premium_codes_repo.redeem(payload.code, user.user_id)
+    except ValueError as err:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(err)) from err
+    refreshed = users_repo.get_by_id(user.user_id)
+    if refreshed is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "user not found")
+    return User.model_validate(refreshed)
 
 
 @router.post("/login")

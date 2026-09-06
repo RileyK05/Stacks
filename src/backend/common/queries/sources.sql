@@ -1,0 +1,43 @@
+-- name: lock_owned_active_course
+SELECT course_id, owner_user_id
+FROM courses
+WHERE course_id = %(course_id)s
+  AND owner_user_id = %(owner_user_id)s
+  AND lifecycle_status = 'active'
+FOR UPDATE;
+
+-- name: find_by_hash
+SELECT source_id
+FROM sources
+WHERE course_id = %(course_id)s AND file_hash = %(file_hash)s
+LIMIT 1;
+
+-- name: course_storage
+SELECT COALESCE(SUM(size_bytes), 0) AS stored
+FROM sources
+WHERE course_id = %(course_id)s;
+
+-- name: owner_storage
+SELECT COALESCE(SUM(source.size_bytes), 0) AS stored
+FROM sources AS source
+JOIN courses AS course ON course.course_id = source.course_id
+WHERE course.owner_user_id = %(owner_user_id)s;
+
+-- name: insert_source_object
+INSERT INTO course_objects
+    (object_id, course_id, created_by_user_id, kind, content_type, content,
+     origin, status, access_scope)
+VALUES
+    (%(object_id)s, %(course_id)s, %(owner_user_id)s, 'source', %(mime_type)s,
+     %(content)s::jsonb, 'upload', 'uploaded', 'enrolled');
+
+-- name: insert_source
+INSERT INTO sources
+    (source_id, object_id, uploaded_by_user_id, course_id, filename, mime_type,
+     source_type, uri, status, file_hash, size_bytes, stored_encoding)
+VALUES
+    (%(source_id)s, %(object_id)s, %(owner_user_id)s, %(course_id)s,
+     %(filename)s, %(mime_type)s, %(source_type)s, %(uri)s, 'uploaded',
+     %(file_hash)s, %(size_bytes)s, %(stored_encoding)s)
+RETURNING source_id, course_id, filename, mime_type, source_type, status,
+          file_hash, size_bytes, stored_encoding, created_at;

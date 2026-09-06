@@ -84,7 +84,13 @@ class MessageRole(StrEnum):
 
 class CourseVisibility(StrEnum):
     PRIVATE = "private"
+    INVITE_ONLY = "invite_only"
     PUBLIC = "public"
+
+
+class CourseLifecycleStatus(StrEnum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
 
 
 class CourseEnrollmentRole(StrEnum):
@@ -92,13 +98,16 @@ class CourseEnrollmentRole(StrEnum):
 
 
 class EnrollmentStatus(StrEnum):
+    INVITED = "invited"
     ACTIVE = "active"
+    DECLINED = "declined"
     REVOKED = "revoked"
 
 
 class EnrollmentSource(StrEnum):
     SELF_SERVICE = "self_service"
     INVITATION = "invitation"
+    JOIN_CODE = "join_code"
 
 
 class ObjectAccessScope(StrEnum):

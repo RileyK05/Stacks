@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+from psycopg.connection import Connection
 from psycopg.rows import dict_row
 from src.backend.common.db import connection
 from src.backend.common.queries import get
@@ -42,15 +43,40 @@ def active_subscription(user_id: UUID) -> UserSubscription | None:
     return _to_subscription(row)
 
 
-def start_subscription(user_id: UUID, tier: UserTier) -> UserSubscription:
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+def active_subscription_on(
+    conn: Connection, user_id: UUID
+) -> UserSubscription | None:
+    """active_subscription on a caller-supplied connection: participates in
+    the caller's transaction and row locks instead of opening a second one.
+    Money-path checks (premium redemption) must use this variant — reading
+    subscription state on a second connection while holding locks elsewhere
+    is a lock-ordering invariant that is easy to break silently."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        row = cur.execute(
+            get(_FILE, "active_subscription"), {"user_id": user_id}
+        ).fetchone()
+    if row is None:
+        return None
+    return _to_subscription(row)
+
+
+def insert_subscription(
+    conn: Connection, user_id: UUID, tier: UserTier
+) -> UserSubscription:
+    with conn.cursor(row_factory=dict_row) as cur:
         row = cur.execute(
             get(_FILE, "start_subscription"),
             {"user_id": user_id, "tier": tier.value},
         ).fetchone()
-        conn.commit()
     assert row is not None
     return _to_subscription(row)
+
+
+def start_subscription(user_id: UUID, tier: UserTier) -> UserSubscription:
+    with connection() as conn:
+        subscription = insert_subscription(conn, user_id, tier)
+        conn.commit()
+    return subscription
 
 
 def end_active_subscription(user_id: UUID) -> UserSubscription | None:

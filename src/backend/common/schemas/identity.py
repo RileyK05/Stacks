@@ -8,6 +8,7 @@ from pydantic import Field, SecretStr, model_validator
 from src.backend.common.schemas.base import (
     BaseRecord,
     CourseEnrollmentRole,
+    CourseLifecycleStatus,
     CourseVisibility,
     EnrollmentSource,
     EnrollmentStatus,
@@ -36,9 +37,12 @@ class UserAccount(User):
 class Course(BaseRecord):
     course_id: UUID = Field(default_factory=_new_id)
     owner_user_id: UUID
-    code: str
+    join_code: str
     name: str
     visibility: CourseVisibility = CourseVisibility.PRIVATE
+    lifecycle_status: CourseLifecycleStatus = CourseLifecycleStatus.ACTIVE
+    archived_at: datetime | None = None
+    purge_after: datetime | None = None
 
 
 class CourseEnrollment(BaseRecord):
@@ -51,6 +55,7 @@ class CourseEnrollment(BaseRecord):
     invited_by_user_id: UUID | None = None
     created_at: datetime = Field(default_factory=_now)
     revoked_at: datetime | None = None
+    responded_at: datetime | None = None
 
     @model_validator(mode="after")
     def _state_consistency(self) -> CourseEnrollment:
@@ -58,8 +63,13 @@ class CourseEnrollment(BaseRecord):
             raise ValueError("active enrollment cannot have revoked_at")
         if self.status == EnrollmentStatus.REVOKED and self.revoked_at is None:
             raise ValueError("revoked enrollment requires revoked_at")
+        if self.status == EnrollmentStatus.INVITED and self.responded_at is not None:
+            raise ValueError("pending invitation cannot have responded_at")
+        if self.status == EnrollmentStatus.DECLINED and self.responded_at is None:
+            raise ValueError("declined invitation requires responded_at")
         if (
-            self.enrollment_source == EnrollmentSource.SELF_SERVICE
+            self.enrollment_source
+            in {EnrollmentSource.SELF_SERVICE, EnrollmentSource.JOIN_CODE}
             and self.invited_by_user_id is not None
         ):
             raise ValueError("self-service enrollment cannot have an inviter")
@@ -136,13 +146,49 @@ class UserArtifact(BaseRecord):
 
 
 class CourseMemory(BaseRecord):
-    """Distilled record of a course that survives course deletion."""
+    """Permanent, user-owned memory retained after course material is purged."""
 
     memory_id: UUID = Field(default_factory=_new_id)
     user_id: UUID
     course_id: UUID
-    code: str
+    course_ref: str
     name: str
     summary: str
     key_concepts: list[str] = Field(default_factory=list)
+    token_budget: int = Field(gt=0)
+    summary_version: str
     created_at: datetime = Field(default_factory=_now)
+    updated_at: datetime = Field(default_factory=_now)
+
+
+class CourseArchiveAccess(BaseRecord):
+    course_id: UUID
+    user_id: UUID
+    expires_at: datetime
+    created_at: datetime = Field(default_factory=_now)
+
+
+class ArchivedCourse(BaseRecord):
+    course_id: UUID
+    name: str
+    visibility: CourseVisibility
+    archived_at: datetime
+    expires_at: datetime
+    source_count: int = Field(ge=0)
+    stored_bytes: int = Field(ge=0)
+
+
+class StorageCleanupJob(BaseRecord):
+    job_id: UUID = Field(default_factory=_new_id)
+    course_id: UUID
+    status: str = "pending"
+    attempt_count: int = Field(default=0, ge=0)
+    error_message: str | None = None
+    next_attempt_at: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=_now)
+    completed_at: datetime | None = None
+
+
+KNOWN_CLEANUP_STATUSES = frozenset(
+    {"pending", "running", "failed", "succeeded", "dead"}
+)

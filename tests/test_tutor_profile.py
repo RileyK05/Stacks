@@ -16,7 +16,7 @@ def test_generic_tutor_profile_is_not_user_owned() -> None:
 
 def test_owner_receives_owner_profile() -> None:
     owner_id = uuid4()
-    course = Course(owner_user_id=owner_id, code="TEST", name="Test")
+    course = Course(owner_user_id=owner_id, join_code="TEST", name="Test")
     generic = load_generic_tutor_profile()
     owner_profile = TutorProfile(
         user_id=owner_id,
@@ -34,7 +34,7 @@ def test_owner_receives_owner_profile() -> None:
 
 def test_nonowner_receives_generic_profile_not_owner_profile() -> None:
     owner_id = uuid4()
-    course = Course(owner_user_id=owner_id, code="TEST", name="Test")
+    course = Course(owner_user_id=owner_id, join_code="TEST", name="Test")
     generic = load_generic_tutor_profile()
     owner_profile = TutorProfile(
         user_id=owner_id,
@@ -52,7 +52,7 @@ def test_nonowner_receives_generic_profile_not_owner_profile() -> None:
 
 def test_mismatched_owner_profile_is_rejected() -> None:
     owner_id = uuid4()
-    course = Course(owner_user_id=owner_id, code="TEST", name="Test")
+    course = Course(owner_user_id=owner_id, join_code="TEST", name="Test")
     generic = load_generic_tutor_profile()
     wrong_profile = TutorProfile(user_id=uuid4(), profile_version="wrong-v1")
     with pytest.raises(ValueError, match="different user"):

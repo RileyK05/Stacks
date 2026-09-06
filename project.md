@@ -48,7 +48,13 @@ instrument that can be evaluated on real courses.
 - **Learning over completion:** the tool helps practice and diagnose understanding, not produce assignments for submission.
 - **ML earns its role:** begin with retrieval, structure, and simple measurable baselines; add fine-tuning only for documented failures.
 - **Extensible by design:** new content kinds, locator types, and formats are free strings — they insert without schema redesign.
-- **Destruction leaves a distilled record:** deleting a course archives a compressed course memory; removing a cited source archives a citation snapshot; account deletion has a 7-day grace period.
+- **One canonical code format:** course join codes and premium/support codes
+  share a single format (16 chars, look-alike-free alphabet, grouped display)
+  validated at the API boundary and constrained in the database.
+- **Destruction leaves a distilled record:** course deletion retains the exact
+  course for a 90-day copy grace period, then purges everything except each
+  participant's bounded, evidence-bearing memory-bank record; account deletion
+  has a 7-day grace period.
 
 ## Non-goals
 
@@ -73,13 +79,20 @@ objects** — any object a course owns and the owner publishes: uploaded sources
 and shared study materials. `kind` is a free string; `content_type` routes
 storage/serving; `content_uri` points at the format-appropriate store.
 
-Each course has one owner and may be private or public. Anonymous visitors may
-view published objects on public courses, but cannot use model compute. An
-authenticated learner self-enrolls in a public course (or accepts an owner
-invitation to a private course) before using its source collection for retrieval
-or generation. Only the owner may change canonical course objects or base
-sources. Learner generations live as private user artifacts outside the course's
-canonical objects; the course owner and other learners cannot view them.
+Each course has one owner and is in exactly one of **three shapes: private,
+invite-only, or public** (decision `006_three_course_shapes.md`; a closed set
+— new shapes require a deliberate schema+policy change). Every course has a
+server-generated canonical join code (16 chars from a look-alike-free
+alphabet, display form `XXXX-XXXX-XXXX-XXXX`) — separate from its display
+name. Anonymous visitors may view published objects and the join code on
+public courses, but cannot use model compute; invite-only and private courses
+are invisible to them. An authenticated learner self-enrolls in a public
+course, submits a join code on a public or invite-only course, or accepts an
+owner invitation before using its source collection for retrieval or
+generation. Invitations grant no access until acceptance. Only the owner may
+change canonical course objects or base sources. Learner generations live as
+private user artifacts outside the course's canonical objects; the course
+owner and other learners cannot view them.
 Attempts, mastery, conversations, recommendations, and tutor preferences are
 also private to the learner. An uploaded source is a specialized course object
 linked 1:1 to its generic object record.
@@ -91,15 +104,20 @@ the TOC, evidence selection, citations, or mastery evaluation.
 
 ### 2. Source content
 
-Materials are stored **whole** — nothing is destroyed at ingest. Each source gets
-**locators**: a free-typed per-format table of contents (slide 7, page 3,
+Materials are stored **whole** — nothing is destroyed at ingest. Uploads
+stream to disk under a hard byte ceiling (oversized bodies are cut
+mid-stream), are stored under server-generated names (path traversal
+structurally impossible), and are gzip-compressed only when the mime type
+allows and it saves ≥10% (`stored_encoding`: `identity` / `gzip`). Each source
+gets **locators**: a free-typed per-format table of contents (slide 7, page 3,
 timestamp 12:30, cell range A1:D20 — each format keeps its natural unit).
 Retrieval units are **token-bounded chunks** sized to fit the model's context
-window, each pointing back to the locator it spans. Sources carry `file_hash` for
-dedup. Ingestion is an ordered, versioned pipeline: text extraction → locators →
-chunks → cascading TOC update → memory extraction. A stage runs only after its
-dependency succeeds, retries according to versioned configuration, and stops the
-pipeline with an inspectable error when its attempts are exhausted.
+window, each pointing back to the locator it spans. Sources carry `file_hash`
+for dedup. Ingestion is an ordered, versioned pipeline: text extraction →
+locators → chunks → cascading TOC update → memory extraction. A stage runs
+only after its dependency succeeds, retries according to versioned
+configuration, and stops the pipeline with an inspectable error when its
+attempts are exhausted.
 
 ### 3. Course memory
 
@@ -152,7 +170,7 @@ Build a single-course MVP for a small set of users.
 5. I can answer the diagnostic, state my confidence beforehand, and receive feedback.
 6. The system stores my errors by concept and displays the evidence behind any recommendation.
 7. I can ask, "What should I work on next?" and get a transparent answer grounded in my attempts and the course's current material.
-8. I can delete a course (a compressed memory is archived) or my account (7-day grace).
+8. I can delete a course (a compressed memory is archived; 90-day copy grace) or my account (7-day grace).
 
 ### MVP success criteria
 
@@ -168,16 +186,20 @@ The MVP is useful if, for one real course:
 
 - **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem.
 - **Database:** Postgres via raw SQL (no ORM). Versioned, append-only migrations
-  (`common/migrations/00X_*.sql`) applied by a runner (`common/migrate.py`).
-  Extracted text + metadata are the source of truth; giant raw originals are
-  trimmed after a confirmed parse.
+  (`common/migrations/00X_*.sql`, currently 001–017) applied by a runner
+  (`common/migrate.py`). Extracted text + metadata are the source of truth;
+  giant raw originals are trimmed after a confirmed parse. Uploads live under
+  `STORAGE_ROOT` on disk, named by server-generated IDs, accounted in the DB.
 - **Inference:** hosted model APIs (no data retention), multiple models per
-  task: a cheap generative model (DeepSeek v4 flash) for
-  answers/extraction/classification, a small stable model for TOC writing, OCR
-  only if scanned materials actually appear.
+  task routed by tier from `configs/tiers.toml`: free tier gets the cheap
+  generative model (DeepSeek v4 flash), paid gets the newer one, a small
+  stable model writes the TOC, OCR only if scanned materials actually appear.
 - **Frontend:** separate codebase (`src/frontend/`), talks to backend only via API.
-- **Auth:** email + password (hashed), sessions; per-user isolation throughout.
-- **Config:** tunables versioned in `configs/`; credentials in `.env` (gitignored).
+- **Auth:** email + password (bcrypt, 12+ chars), JWT with issuer/audience
+  validation; per-user isolation throughout.
+- **Config:** tunables versioned in `configs/` (`ingestion.toml`,
+  `tutor.toml`, `tiers.toml`, `lifecycle.toml`); credentials in `.env`
+  (gitignored, `STORAGE_ROOT` for upload files).
 
 ## Evaluation plan
 
@@ -227,17 +249,24 @@ for course concepts, a reranker, a probe generator, an error classifier.
   never access to another student's attempts, conversations, mastery,
   recommendations, preferences, or private artifacts. Only the owner can mutate
   canonical course objects and base sources.
-- **Deletion:** course deletion archives a distilled course memory first; source
-  removal archives a citation snapshot first; account deletion has a 7-day grace
-  period before full removal.
+- **Deletion:** a course becomes an exact 90-day archive with one-copy access
+  for current participants. Expiry purges the full course tree and physical
+  files through a durable retry job; only each participant's bounded memory-bank
+  record survives. Account deletion has a 7-day grace period before full removal.
 
 ## Milestones
 
 - [x] **Milestone 0: Foundations** — project scaffolding, tooling, six-layer
   Pydantic schema, Postgres migrations + runner, deletion design.
-- [ ] **Milestone 1: Auth + source-grounded retrieval** — accounts, ingestion
-  (parse → locators → chunks → TOC), TOC-guided retrieval, cited answers,
-  retrieval traces.
+- [x] **Milestone 0.5: Accounts, courses, access & metering** — auth (JWT +
+  bcrypt), course CRUD with tier gating, the three course shapes, enrollment
+  (self/invitation/join-code), owner/member permissions, canonical code
+  format, storage layer (streaming uploads, dedup, conditional gzip), tiers +
+  weekly budgets + generation ledger, support/premium claim codes, and the
+  two-phase course archive (90-day grace → purge, memory bank survives).
+- [ ] **Milestone 1: Source-grounded retrieval** — ingestion wiring into the
+  pipeline (parse → locators → chunks → TOC), TOC-guided retrieval, cited
+  answers, retrieval traces.
 - [ ] **Milestone 2: Course memory** — concept/dependency extraction with
   evidence, inspectable concept pages.
 - [ ] **Milestone 3: Cold probe loop** — diagnostics, confidence capture,

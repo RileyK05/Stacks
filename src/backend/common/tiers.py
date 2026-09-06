@@ -16,6 +16,7 @@ class TierPolicy(BaseModel):
     max_owned_courses: int = Field(ge=1)
     max_course_storage_bytes: int = Field(ge=1)
     max_total_storage_bytes: int = Field(ge=1)
+    max_raw_upload_bytes: int = Field(ge=1)
     free_tier_overhead_percent: int = Field(ge=0, le=100)
     models: dict[str, str]
 

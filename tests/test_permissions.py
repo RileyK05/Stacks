@@ -24,12 +24,18 @@ from src.backend.common.schemas import (
 )
 
 
-def _course(owner_id=None, *, public: bool = False) -> Course:
+def _course(owner_id=None, *, public: bool = False, visibility=None) -> Course:
     return Course(
         owner_user_id=owner_id or uuid4(),
-        code="MATH 361",
+        join_code="RANDOM123456",
         name="Statistical Inference",
-        visibility=CourseVisibility.PUBLIC if public else CourseVisibility.PRIVATE,
+        visibility=(
+            visibility
+            if visibility is not None
+            else (
+                CourseVisibility.PUBLIC if public else CourseVisibility.PRIVATE
+            )
+        ),
     )
 
 
@@ -151,3 +157,32 @@ def test_self_enrollment_is_only_for_public_unenrolled_nonowners() -> None:
     assert not can_self_enroll(private_course, learner_id)
     assert not can_self_enroll(public_course, owner_id)
     assert not can_self_enroll(public_course, learner_id, enrollment)
+
+
+def test_self_enrollment_allows_revoked_learner_to_reenroll() -> None:
+    owner_id = uuid4()
+    public_course = _course(owner_id, public=True)
+    learner_id = uuid4()
+    revoked = _enrollment(public_course, learner_id, active=False)
+    assert can_self_enroll(public_course, learner_id, revoked)
+    active = _enrollment(public_course, learner_id)
+    assert not can_self_enroll(public_course, learner_id, active)
+    assert not can_self_enroll(public_course, None)
+
+
+def test_join_code_works_on_public_and_invite_only_not_private() -> None:
+    from src.backend.common.permissions import can_join_with_code
+
+    owner_id = uuid4()
+    learner_id = uuid4()
+    private_course = _course(owner_id)
+    invite_only = _course(
+        owner_id, visibility=CourseVisibility.INVITE_ONLY
+    )
+    public_course = _course(owner_id, public=True)
+    assert can_join_with_code(public_course, learner_id)
+    assert can_join_with_code(invite_only, learner_id)
+    assert not can_join_with_code(private_course, learner_id)
+    assert not can_join_with_code(invite_only, owner_id)
+    active = _enrollment(invite_only, learner_id)
+    assert not can_join_with_code(invite_only, learner_id, active)

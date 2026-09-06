@@ -10,6 +10,7 @@ from src.backend.common.schemas.base import (
     KNOWN_GENERATION_TASKS,
     AnalogyUsage,
     CourseEnrollmentRole,
+    CourseLifecycleStatus,
     CourseVisibility,
     EnrollmentSource,
     EnrollmentStatus,
@@ -43,10 +44,13 @@ from src.backend.common.schemas.evidence import (
     UserArtifactOrigin,
 )
 from src.backend.common.schemas.identity import (
+    ArchivedCourse,
     Course,
+    CourseArchiveAccess,
     CourseEnrollment,
     CourseMemory,
     CourseObject,
+    StorageCleanupJob,
     StudyPeriod,
     User,
     UserAccount,
@@ -76,6 +80,7 @@ from src.backend.common.schemas.tutor import TutorProfile
 
 __all__ = [
     "ArchivedCitation",
+    "ArchivedCourse",
     "AnalogyUsage",
     "ArtifactOrigin",
     "AssessmentItem",
@@ -90,8 +95,10 @@ __all__ = [
     "Conversation",
     "ConversationTurn",
     "Course",
+    "CourseArchiveAccess",
     "CourseEnrollment",
     "CourseEnrollmentRole",
+    "CourseLifecycleStatus",
     "CourseVisibility",
     "CourseMemory",
     "CourseObject",
@@ -127,6 +134,7 @@ __all__ = [
     "SourcePresentation",
     "SourceType",
     "StudyPeriod",
+    "StorageCleanupJob",
     "TableOfContents",
     "TocEntry",
     "TutorProfile",

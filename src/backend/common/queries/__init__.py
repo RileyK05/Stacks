@@ -15,7 +15,12 @@ def load(file_name: str) -> dict[str, str]:
     with no markers returns one block keyed "" (the whole file, stripped).
     """
     text = (QUERIES_DIR / f"{file_name}.sql").read_text(encoding="utf-8")
-    blocks = {m.group(1): m.group(2).strip() for m in _BLOCK_RE.finditer(text)}
+    blocks: dict[str, str] = {}
+    for match in _BLOCK_RE.finditer(text):
+        name = match.group(1)
+        if name in blocks:
+            raise ValueError(f"duplicate query block '{name}' in {file_name}.sql")
+        blocks[name] = match.group(2).strip()
     if not blocks:
         return {"": text.strip()}
     return blocks

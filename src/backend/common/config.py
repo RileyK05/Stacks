@@ -34,6 +34,7 @@ class Settings(BaseModel):
     pg_database: str = Field(default="course_assistant")
     pg_user: str = Field(default="postgres")
     pg_password: str = Field(default="")
+    storage_root: str = Field(default=str(PROJECT_ROOT / "data" / "raw"))
     jwt_secret: str = Field(default=DEVELOPMENT_JWT_SECRET)
     jwt_expire_minutes: int = Field(default=60 * 24 * 7, gt=0, le=60 * 24 * 30)
     jwt_issuer: str = Field(default="course-assistant")
@@ -69,6 +70,7 @@ def get_settings() -> Settings:
         pg_database=os.getenv("PGDATABASE", "course_assistant"),
         pg_user=os.getenv("PGUSER", "postgres"),
         pg_password=os.getenv("PGPASSWORD", ""),
+        storage_root=os.getenv("STORAGE_ROOT", str(PROJECT_ROOT / "data" / "raw")),
         jwt_secret=os.getenv("JWT_SECRET", DEVELOPMENT_JWT_SECRET),
         jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "10080")),
         jwt_issuer=os.getenv("JWT_ISSUER", "course-assistant"),
