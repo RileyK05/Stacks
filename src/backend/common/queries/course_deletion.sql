@@ -109,7 +109,6 @@ DELETE FROM chunks WHERE source_id IN (SELECT source_id FROM sources WHERE cours
 DELETE FROM locators WHERE source_id IN (SELECT source_id FROM sources WHERE course_id = %(course_id)s);
 DELETE FROM sources WHERE course_id = %(course_id)s;
 DELETE FROM course_objects WHERE course_id = %(course_id)s;
-DELETE FROM course_memories WHERE course_id = %(course_id)s;
 DELETE FROM course_enrollments WHERE course_id = %(course_id)s;
 DELETE FROM study_periods WHERE course_id = %(course_id)s;
 DELETE FROM courses WHERE course_id = %(course_id)s;

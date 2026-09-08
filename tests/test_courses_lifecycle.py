@@ -151,7 +151,7 @@ def test_delete_archives_for_90_days_then_purges_full_course() -> None:
         assert conn.execute(
             "SELECT COUNT(*) FROM course_memories WHERE course_id = %s",
             (course.course_id,),
-        ).fetchone()[0] == 0
+        ).fetchone()[0] == 2
         assert conn.execute(
             "SELECT COUNT(*) FROM citation_snapshots WHERE course_id = %s",
             (course.course_id,),
@@ -629,11 +629,12 @@ def test_archive_can_be_copied_repeatedly_during_grace() -> None:
         assert copies == 2
 
 
-def test_purge_removes_distilled_memory_bank_entries() -> None:
-    """Nothing survives purge: the memory bank is written at archive time but
-    destroyed when the archive expires."""
-    owner = _user("Memory Purge")
-    course = _course(owner.user_id, "Purged Memory")
+def test_purge_preserves_memory_bank_entries() -> None:
+    """Memory is user-owned: purge destroys the course's materials and
+    archive, but the distilled memory written at archive time survives —
+    the memory bank is the retention that outlives the course."""
+    owner = _user("Memory Keeper")
+    course = _course(owner.user_id, "Remembered")
     archived_at = datetime(2030, 1, 1, tzinfo=UTC)
     courses_lifecycle.delete_course(course.course_id, now=archived_at)
     with connection() as conn:
@@ -650,7 +651,7 @@ def test_purge_removes_distilled_memory_bank_entries() -> None:
             "SELECT COUNT(*) FROM course_memories WHERE course_id = %s",
             (course.course_id,),
         ).fetchone()[0]
-        assert post == 0
+        assert post == 1
 
 
 def test_purge_block_covers_every_fk_referencing_table() -> None:
@@ -693,7 +694,8 @@ def test_purge_block_covers_every_fk_referencing_table() -> None:
     }
 
     # Tables the purge deliberately does NOT touch, with the reason:
-    # course_memories is deleted via the block; course_archive_access rows
+    # course_memories is user-owned retention that outlives the course
+    # (documented decision 2026-09-05); course_archive_access rows
     # cascade from courses; storage_cleanup_jobs is keyed by enqueue, not FK.
     excluded = {
         "course_archive_access",

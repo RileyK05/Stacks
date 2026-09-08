@@ -942,3 +942,23 @@ implemented and pinned by tests this session.
   migration chain to a scratch schema, injects a 015-era 24-hex code after
   015, and verifies the 017 DO block rewrites it into the canonical alphabet
   and the `courses_join_code_known` CHECK rejects the legacy form by name.
+
+## Memory as a user-owned subsystem (2026-09-05)
+
+- **Decision: memory is the user's, not the course's.** The memory bank is a
+  first-class subsystem, not a deletion byproduct. Course deletion (and its
+  90-day archive) destroys the course's materials and archive; the user's
+  distilled memory of the course persists past purge. This supersedes the
+  earlier "nothing survives purge" decision for course_memories only —
+  citation_snapshots and everything else still dies at purge. Golden rule 6
+  is intact: the distilled record IS the retention, it just lives forever in
+  the user's bank instead of expiring with the archive.
+- **Implementation state:** course_memories was already FK-less by design
+  (migration 002: "course_id is stored without a hard FK so the memory
+  outlives the course") — the purge deletion added earlier is now removed;
+  course_deletion.sql no longer touches course_memories. The
+  FK-coverage guard test excludes it explicitly with this decision as the
+  documented reason. The read path stays user-scoped (list_memories).
+- **Next:** build the memory subsystem out — accumulation during course life
+  (M2 extraction pipeline), not just archive-time snapshots. The
+  archive-time write remains as the final snapshot before materials vanish.
