@@ -49,10 +49,10 @@ def test_create_course_returns_owner_view(client: TestClient) -> None:
     assert body["source_count"] == 0
     assert body["stored_bytes"] == 0
     assert "support_code" not in body
-    memory_bank = client.get("/course-memories", headers=_headers(token))
-    assert memory_bank.status_code == 200
-    assert memory_bank.json()[0]["course_id"] == body["course_id"]
-    assert "Course: Calculus" in memory_bank.json()[0]["summary"]
+    course_memories = client.get("/course-memories", headers=_headers(token))
+    assert course_memories.status_code == 200
+    assert course_memories.json()[0]["course_id"] == body["course_id"]
+    assert "Course: Calculus" in course_memories.json()[0]["summary"]
 
 
 def _post_course(client: TestClient, token: str, name: str) -> object:

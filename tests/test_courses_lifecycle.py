@@ -495,7 +495,7 @@ def test_dead_cleanup_job_logs_operator_signal(caplog) -> None:
     assert dead_logs[0].levelno == logging.ERROR
 
 
-def test_memory_bank_refresh_updates_updated_at_not_created_at() -> None:
+def test_course_memory_refresh_updates_updated_at_not_created_at() -> None:
     owner = _user("Timestamp Owner")
     course = _course(owner.user_id, "Timestamps")
     with connection() as conn:
@@ -798,10 +798,10 @@ def test_copy_names_are_bounded_and_disambiguated() -> None:
     assert len(third.name) <= 200
 
 
-def test_purge_preserves_memory_bank_entries() -> None:
-    """Memory is user-owned: purge destroys the course's materials and
-    archive, but the distilled memory written at archive time survives —
-    the memory bank is the retention that outlives the course."""
+def test_purge_preserves_course_memory_nodes() -> None:
+    """The owner's course-memory node is user-owned (decision 007): purge
+    destroys the course's materials and archive, but the node written at
+    archive time survives — it is the retention that outlives the course."""
     owner = _user("Memory Keeper")
     course = _course(owner.user_id, "Remembered")
     archived_at = datetime(2030, 1, 1, tzinfo=UTC)

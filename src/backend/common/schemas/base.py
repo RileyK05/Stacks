@@ -152,7 +152,7 @@ class IngestionStage(StrEnum):
     BUILD_LOCATORS = "build_locators"
     BUILD_CHUNKS = "build_chunks"
     UPDATE_TOC = "update_toc"
-    EXTRACT_MEMORY = "extract_memory"
+    EXTRACT_KNOWLEDGE = "extract_knowledge"
 
 
 class UserTier(StrEnum):
@@ -175,7 +175,7 @@ KNOWN_GENERATION_TASKS = frozenset(
         "probe_generation",
         "probe_evaluation",
         "toc_update",
-        "memory_extraction",
+        "course_knowledge_extraction",
         "artifact_generation",
     }
 )

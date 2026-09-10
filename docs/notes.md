@@ -1145,3 +1145,42 @@ Implemented this session:
   `/memory-bank` → `/course-memories` calls). No behavior change: the
   owner-only semantics were fixed in the previous pass; this pass makes
   the vocabulary and seams unable to teach the wrong thing.
+
+## Whole-repo remnant sweep after the memory-model ratification (2026-09-10)
+
+Second pass over every file for stale remnants the rename missed. Fixed:
+
+- `courses_lifecycle.delete_course` docstring (still said "every current
+  participant's memory bank") → owner's course-memory node.
+- Decision 003 (learner artifact retention exception) and 005 ("every
+  current participant receives a user-owned course-memory record" + the
+  stale copy-once wording) amended to the decision-007 model: owner-only
+  node, copy-any-time, learners get archive access not memory.
+- Generation-task vocabulary renamed end to end — before Milestone 1
+  wires real model calls, so no persisted ledger rows carry the old
+  string: `EXTRACT_MEMORY` → `EXTRACT_KNOWLEDGE` (stage enum),
+  `extract_memory` → `extract_knowledge` (ingestion.toml stage),
+  `memory_extraction` → `course_knowledge_extraction`
+  (KNOWN_GENERATION_TASKS + tiers.toml v6 routing keys; loader enforces
+  task coverage so the rename is validated at load time). system.md §3
+  pipeline text, §6a task list/charging, and decisions 002/004 updated.
+- system.md analogies/diagrams: "memory store" → knowledge store,
+  "Course memory — study guide" → course knowledge, tutor-analogy wording,
+  data-flow line now names the memory tree explicitly (root + course node
+  + knowledge + student model).
+- §7 tutor-presentation section reframed: presentation is a user-memory
+  (root) concern; behavior instructions live only in the root, never in
+  course memory or knowledge (decision 007 invariant 2). project.md
+  matching paragraph updated.
+- Legacy-naming notes added where applied tables keep old names:
+  system.md §2.3 bullet for `memory_objects`/`memory_id`/
+  `MEMORY_OBJECT_EVIDENCE` (course-knowledge objects), and schema
+  docstrings in evidence.py (Citation, MemoryObjectEvidence).
+- enrollments.py router docstring: email-visibility line superseded by
+  the members-list ruling; memory-content note added.
+- Test names/docstrings renamed (`test_memory_bank_*` →
+  `test_course_memory_*`); notes.md history untouched (append-only).
+- Applied-migration comments still contain old wording (015/016/018) —
+  uneditable by the append-only rule; cosmetic only, mapped by decision
+  007. Same class as the recorded 013/018 cosmetic notes.
+Gate: 193 tests, ruff, mypy, git diff --check all green.

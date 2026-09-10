@@ -16,7 +16,7 @@ Production configuration rejects the development signing secret.
 
 Ingestion is a persisted ordered run with versioned stage handlers and
 configuration. The order is text extraction, locator creation, chunk creation,
-cascading TOC update, and memory extraction. A stage cannot run before its
+cascading TOC update, and course-knowledge extraction. A stage cannot run before its
 dependency succeeds. A failed stage is retried up to the configured total
 attempt count; exhaustion fails the run and prevents later stages from running.
 Stage handlers must be idempotent.

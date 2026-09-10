@@ -22,8 +22,9 @@ Revoking an enrollment removes future source use and generation access.
 Material a learner generates is a private `user_artifact`, not a course object.
 It remains accessible only to that learner after enrollment revocation. When
 the source course is archived, the artifact is retained only for the 90-day
-course grace period and is then purged; the permanent memory bank is the sole
-course-derived retention exception. The course owner and other learners receive
+course grace period and is then purged; the course owner's course-memory node
+is the sole course-derived retention exception (decision 007). The course
+owner and other learners receive
 no access merely through their relationship to the course. Copying or promoting a
 personal artifact into canonical course content is a separate future workflow,
 not an implicit permission.

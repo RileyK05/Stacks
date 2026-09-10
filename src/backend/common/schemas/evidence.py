@@ -52,8 +52,8 @@ class Claim(BaseRecord):
 
 
 class Citation(BaseRecord):
-    """Links a claim to the evidence that grounds it (a chunk, memory object,
-    or TOC entry)."""
+    """Links a claim to the evidence that grounds it (a chunk, course-
+    knowledge memory object, or TOC entry — legacy naming; decision 007)."""
 
     citation_id: UUID = Field(default_factory=_new_id)
     claim_id: UUID
@@ -63,8 +63,9 @@ class Citation(BaseRecord):
 
 
 class MemoryObjectEvidence(BaseRecord):
-    """Direct link between a memory object and the chunk that supports it.
-    Lets a citation on a memory object resolve to a chunk within 2 hops."""
+    """Direct link between a course-knowledge memory object and the chunk
+    that supports it. Lets a citation on that object resolve to a chunk
+    within 2 hops. (Legacy "memory object" naming; decision 007.)"""
 
     evidence_id: UUID = Field(default_factory=_new_id)
     memory_id: UUID

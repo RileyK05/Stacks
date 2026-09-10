@@ -61,7 +61,7 @@ stale or spoofed caller-supplied tier can never unlock paid limits.
 
 **Tier-routed models.** The same config maps each generation task
 (`tutor_answer`, `toc_update`, `probe_generation`, `probe_evaluation`,
-`memory_extraction`, `artifact_generation` — the `KNOWN_GENERATION_TASKS`
+`course_knowledge_extraction`, `artifact_generation` — the `KNOWN_GENERATION_TASKS`
 vocabulary, the same strings the ledger records) to a model per tier. Free
 tiers run the cheap generative model; paid tiers run the newer model; the
 small stable TOC-writer is shared. The loader validates every tier defines
@@ -80,7 +80,7 @@ inspectable per user and per week; entries are never edited or updated.
   authenticated generation is bounded too. The stranger token-spend chain is
   closed: register → self-enroll → generate is capped at the free weekly
   budget.
-- Ingestion model calls (`toc_update`, `memory_extraction`) are charged to the
+- Ingestion model calls (`toc_update`, `course_knowledge_extraction`) are charged to the
   uploading owner's budget, tying the upload-size gap to a real limit.
 - Retry double-spend is visible in the ledger: a re-run stage writes a second
   row. The idempotency contract for model-calling handlers remains open.

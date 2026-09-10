@@ -10,7 +10,7 @@ PIPELINE_STAGES = (
     IngestionStage.BUILD_LOCATORS,
     IngestionStage.BUILD_CHUNKS,
     IngestionStage.UPDATE_TOC,
-    IngestionStage.EXTRACT_MEMORY,
+    IngestionStage.EXTRACT_KNOWLEDGE,
 )
 
 StageHandler = Callable[[], None]

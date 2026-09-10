@@ -2,7 +2,9 @@
 
 Enrollment semantics follow decision 003: self-service on public courses only,
 owner-issued invitations on any course, revoked learners re-enrollable through
-the DB-validated path, membership emails visible only to the owner.
+the DB-validated path. Members list exposes ids and status only — never
+learner emails (2026-09-05 ruling) and never course-memory content
+(decision 007).
 """
 
 from __future__ import annotations

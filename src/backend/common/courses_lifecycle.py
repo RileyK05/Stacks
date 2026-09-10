@@ -190,8 +190,8 @@ def _copy_course_contents(
 
 
 def delete_course(course_id: UUID, *, now: datetime | None = None) -> datetime:
-    """Archive a course for the configured grace period and write a permanent
-    memory into every current participant's memory bank."""
+    """Archive a course for the configured grace period and write the
+    main user's (owner's) course-memory node (decision 007)."""
     archived_at = now or datetime.now(UTC)
     purge_after = archived_at + timedelta(
         days=load_lifecycle_policy().archive_grace_days

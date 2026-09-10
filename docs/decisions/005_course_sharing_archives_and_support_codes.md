@@ -28,18 +28,22 @@ use immediately but retains the exact course tree for 90 days. Restricting a
 public course creates an atomic version boundary: the public course becomes the
 90-day archive and the owner receives a new active restricted copy. Existing
 learners receive archive access to the old version, not enrollment in the new
-one. During the grace period each participant may make one private copy,
-subject to their normal active-course and stored-byte limits.
+one. During the grace period each participant may copy the archive as many
+times as they like, subject to their normal active-course and stored-byte
+limits.
 
-**Permanent memory bank.** Before archiving, every current participant receives
-a user-owned course-memory record. It remains after the full archive is purged
-and contains the course name, concepts, bounded summary, and a compact evidence
-snapshot with source names, source hashes, and representative first-chunk
-excerpts of up to ten sources where chunk text is available. The configured
-budget scales with the square root of source count and is capped
-at 1,000 approximate tokens for free accounts and 5,000 for paid accounts. The
-memory bank is the only course-derived record intentionally retained after the
-90-day archive expires.
+**Permanent course memory.** Before archiving, the course's main user (its
+owner) receives a course-memory node (decision 007): a bounded, evidence-
+bearing distilled record of the course. It remains after the full archive is
+purged and contains the course name, key concepts, bounded summary, and a
+compact evidence snapshot with source names, source hashes, and
+representative first-chunk excerpts of up to ten sources where chunk text is
+available. The configured budget scales with the square root of source count
+and is capped at 1,000 approximate tokens for free accounts and 5,000 for
+paid accounts. Enrolled learners receive archive/copy access for the grace
+period, not a memory node. The owner's course-memory node is the only
+course-derived record intentionally retained after the 90-day archive
+expires.
 
 **Purge reliability.** Expired database trees are removed in foreign-key-safe
 order. The same transaction writes a durable physical-storage cleanup job.

@@ -74,7 +74,7 @@ flowchart TB
         API["API — front desk"]
         ING["Ingestion — librarian"]
         RET["Retrieval — card catalog"]
-        MEM["Course memory — study guide"]
+        MEM["Course knowledge — study guide"]
         SM["Student model — notes on you"]
         TUT["Tutor — reference desk"]
         EV["Evals — quality control"]
@@ -125,7 +125,7 @@ flowchart LR
 **Analogy:** you hand the librarian a stack of papers. They read each one, note the
 page numbers, and file the text onto the shelves. For scanned pages they call in an
 OCR specialist to read the handwriting. They also draft a study guide (course
-memory) as they go.
+knowledge — the study guide is course content, not memory) as they go.
 
 ### 1.3 Layer 2 — Retrieval (the card catalog)
 
@@ -142,7 +142,7 @@ its index cards and hands you the exact pages that mention it, with page numbers
 (If keyword search later misses things that *mean* the same thing but use different
 words, we add an embedding specialist — but only if a test proves the catalog fails.)
 
-### 1.4 Layer 3 — Course memory (the study guide)
+### 1.4 Layer 3 — Course knowledge (the study guide)
 
 ```mermaid
 flowchart LR
@@ -181,7 +181,7 @@ flowchart LR
 ```
 
 **Analogy:** you ask the reference desk a question. They pull the relevant pages
-(catalog), check the study guide (memory), glance at their notes on you (student
+(catalog), check the study guide (course knowledge), glance at their notes on you (student
 model), and write you a clear answer — always pointing to the exact page it came
 from, and telling you what to practice next.
 
@@ -209,7 +209,7 @@ flowchart TB
 **Data flow at a glance:** files enter through ingestion → parsed to text →
 stored in Postgres (source of truth) → retrieval answers questions by searching
 that text → tutor generates responses grounded in retrieved passages + course
-memory + student model.
+knowledge + the user's memory (root + course node) + student model.
 
 ---
 
@@ -462,6 +462,10 @@ erDiagram
   Written by a small, stable TOC model so descriptions stay consistent over time.
   Versioned, so the current version is knowable and previous versions recoverable.
 - **`evidence_level`** on memory objects: `direct` / `derived` / `hypothesis`.
+- Legacy naming note (decision 007): `memory_objects` / `memory_id` /
+  `MEMORY_OBJECT_EVIDENCE` predate the memory vocabulary. They are course-
+  KNOWLEDGE objects (formula, theorem, example, misconception — what the
+  course says, tied to concepts and sources), not user memory.
 
 ### 2.4 Student model (attempts, mastery & recommendations)
 
@@ -709,7 +713,7 @@ flowchart LR
     LOC --> CHUNK["token-bounded chunking"]
     CHUNK --> DB[("Postgres:<br/>sources, locators, chunks")]
     CHUNK --> EXTRACT["extract concepts / formulas<br/>(generative model)"]
-    EXTRACT --> MEM[("memory store")]
+    EXTRACT --> MEM[("knowledge store")]
     LOC --> TOC["TOC model writes<br/>course table of contents"]
     TOC --> DB
     DB --> REVIEW{"uncertain /<br/>conflicting?"}
@@ -728,7 +732,7 @@ course table of contents → flag uncertain extractions for review.
 sources over student notes; store a retrieval trace for every query.
 
 The persisted pipeline order is text extraction → locators → chunks → cascading
-TOC update → memory extraction. Each stage depends on the previous successful
+TOC update → course-knowledge extraction. Each stage depends on the previous successful
 stage. Stage attempts and handler/configuration versions are recorded; the MVP
 configuration allows two total attempts, after which the run becomes failed and
 later stages remain unstarted. Handlers must be idempotent so retrying a stage
@@ -857,11 +861,11 @@ row to `generation_ledger` (user, course, task, model, tokens).
   `users.tier` at the limit gates.
 - **Model routing:** the same config maps each generation task
   (`KNOWN_GENERATION_TASKS` — `tutor_answer`, `toc_update`,
-  `probe_generation`, `probe_evaluation`, `memory_extraction`,
+  `probe_generation`, `probe_evaluation`, `course_knowledge_extraction`,
   `artifact_generation`) to a model per tier — free gets the cheap generative
   model, paid gets the newer one, the small stable TOC-writer is shared. The
   loader rejects a config that omits a task for any tier.
-- **Charging:** ingestion model calls (`toc_update`, `memory_extraction`) are
+- **Charging:** ingestion model calls (`toc_update`, `course_knowledge_extraction`) are
   charged to the uploading owner's budget. Payment processing is out of scope;
   subscriptions are operator-managed until a billing flow exists.
 - Decision record: `docs/decisions/004_tiers_and_spend_control.md`.
@@ -890,14 +894,16 @@ confidence before feedback, correctness, error category, time, date, help used.
 **Mastery is a ladder, not one fake-precise score.** Recommendations must be
 traceable to specific attempts and concept evidence.
 
-**Tutor presentation is requester-scoped.** The owner may use their own
-structured profile for interactive responses; non-owners use the versioned
-generic profile in `configs/tutor.toml`. Profiles control presentation only
-(verbosity, analogy use, response structure, and source-quotation balance).
-They cannot change TOC construction, retrieval, selected evidence, citation
-requirements, correctness evaluation, or mastery state. This prevents the
-owner's personal communication style from becoming another learner's tutor
-behavior while keeping the shared course knowledge neutral.
+**Tutor presentation is requester-scoped.** Presentation is a user-memory
+(root) concern (decision 007): the owner may use their own structured
+profile for interactive responses; non-owners use the versioned generic
+profile in `configs/tutor.toml` until the full user-memory root exists
+(M2). Profiles control presentation only (verbosity, analogy use, response
+structure, and source-quotation balance). They cannot change TOC
+construction, retrieval, selected evidence, citation requirements,
+correctness evaluation, or mastery state — behavior instructions live only
+in the root, never in course memory or course knowledge. This keeps the
+shared course knowledge neutral.
 
 ---
 

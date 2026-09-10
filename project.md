@@ -98,10 +98,12 @@ Attempts, mastery, conversations, recommendations, and tutor preferences are
 also private to the learner. An uploaded source is a specialized course object
 linked 1:1 to its generic object record.
 
-Tutor preferences change presentation, not truth or retrieval. The owner may
-use a private structured profile for interactive responses in their course;
-non-owners use a versioned generic profile for now. Neither profile may alter
-the TOC, evidence selection, citations, or mastery evaluation.
+Tutor preferences change presentation, not truth or retrieval. Presentation
+is a user-memory (root) concern per decision 007: the owner may use a
+private structured profile for interactive responses in their course;
+non-owners use a versioned generic profile for now (the full user-memory
+root is Milestone 2 work). Neither profile may alter the TOC, evidence
+selection, citations, or mastery evaluation.
 
 ### 2. Source content
 

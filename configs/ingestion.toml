@@ -18,5 +18,5 @@ name = "update_toc"
 handler_version = "1"
 
 [[stages]]
-name = "extract_memory"
+name = "extract_knowledge"
 handler_version = "1"
