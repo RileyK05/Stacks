@@ -4,7 +4,7 @@ from typing import Any
 from uuid import UUID
 
 from psycopg.rows import dict_row
-from src.backend.common import codes, memory_bank
+from src.backend.common import codes, course_memory
 from src.backend.common.db import connection
 from src.backend.common.queries import get
 from src.backend.common.schemas.base import CourseVisibility
@@ -100,7 +100,7 @@ def create_course(
             },
         ).fetchone()
         assert row is not None
-        memory_bank.upsert_for_users(cur, row["course_id"], [owner_user_id])
+        course_memory.refresh_for_owner(cur, row["course_id"])
         conn.commit()
     return _to_course(row)
 
@@ -136,7 +136,7 @@ def update_course(
             },
         ).fetchone()
         if row is not None:
-            memory_bank.upsert_for_current_participants(cur, course_id)
+            course_memory.refresh_for_owner(cur, course_id)
         conn.commit()
     return _to_course(row) if row else None
 

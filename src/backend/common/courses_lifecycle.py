@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from psycopg import Cursor, sql
 from psycopg.rows import dict_row
-from src.backend.common import budget, courses_repo, memory_bank, storage
+from src.backend.common import budget, course_memory, courses_repo, storage
 from src.backend.common.db import connection
 from src.backend.common.lifecycle_config import load_lifecycle_policy
 from src.backend.common.queries import get
@@ -40,6 +40,28 @@ class UncopyableCourseError(RuntimeError):
     content_uri into the old course's storage; copying would strand them."""
 
 
+def _copy_display_name(
+    cur: Cursor[Any], user_id: UUID, base_name: str
+) -> str:
+    """Display name for a copied course: bounded to the 200-char create
+    limit, and disambiguated when the user already owns copies of it."""
+    max_len = 200
+    existing = {
+        row["name"]
+        for row in cur.execute(
+            "SELECT name FROM courses WHERE owner_user_id = %s",
+            (user_id,),
+        ).fetchall()
+    }
+    name = f"{base_name[: max_len - len(' (copy)')]} (copy)"
+    serial = 2
+    while name in existing:
+        suffix = f" (copy {serial})"
+        name = f"{base_name[: max_len - len(suffix)]}{suffix}"
+        serial += 1
+    return name
+
+
 def _archive_locked_course(
     cur: Cursor[Any],
     course: dict[str, Any],
@@ -51,7 +73,7 @@ def _archive_locked_course(
         get(_ARCHIVE_FILE, "archive_participants"), {"course_id": course_id}
     ).fetchall()
     participant_ids = [participant["user_id"] for participant in participants]
-    memory_bank.upsert_for_users(cur, course_id, participant_ids)
+    course_memory.refresh_for_owner(cur, course_id)
     for user_id in participant_ids:
         cur.execute(
             get(_ARCHIVE_FILE, "grant_archive_access"),
@@ -77,6 +99,12 @@ def _copy_course_contents(
     target_course_id: UUID,
     target_owner_id: UUID,
 ) -> None:
+    """Copy raw sources, study periods, and owner-authored objects. Derived
+    concepts/dependencies are NOT copied — ingestion re-derives them against
+    the copy's own evidence (plan phase 1.3, recommended strategy), so the
+    copy never carries stale, ungrounded derived memory. Every copied source
+    is enqueued in pending_ingestion so nothing is falsely considered
+    indexed."""
     uncopyable_row = cur.execute(
         get(_ARCHIVE_FILE, "uncopyable_object_count"),
         {"course_id": source_course_id},
@@ -133,6 +161,14 @@ def _copy_course_contents(
                 "stored_encoding": source_row["stored_encoding"],
             },
         )
+        cur.execute(
+            get(_ARCHIVE_FILE, "enqueue_pending_ingestion"),
+            {
+                "source_id": target_source_id,
+                "course_id": target_course_id,
+                "reason": f"copied_from_archive:{source_course_id}",
+            },
+        )
     other_objects = cur.execute(
         get(_ARCHIVE_FILE, "non_source_object_rows"),
         {"course_id": source_course_id},
@@ -149,37 +185,6 @@ def _copy_course_contents(
                 "origin": f"copied_from_archive:{source_course_id}",
                 "status": object_row["status"],
                 "access_scope": object_row["access_scope"],
-            },
-        )
-    concept_map: dict[UUID, UUID] = {}
-    concept_rows = cur.execute(
-        get(_ARCHIVE_FILE, "concept_rows"), {"course_id": source_course_id}
-    ).fetchall()
-    for concept_row in concept_rows:
-        target_concept_id = uuid4()
-        concept_map[concept_row["concept_id"]] = target_concept_id
-        cur.execute(
-            get(_ARCHIVE_FILE, "insert_copied_concept"),
-            {
-                "concept_id": target_concept_id,
-                "course_id": target_course_id,
-                "name": concept_row["name"],
-                "definition": concept_row["definition"],
-                "synonyms": json.dumps(concept_row["synonyms"]),
-                "evidence_level": concept_row["evidence_level"],
-            },
-        )
-    dependency_rows = cur.execute(
-        get(_ARCHIVE_FILE, "dependency_rows"), {"course_id": source_course_id}
-    ).fetchall()
-    for dependency_row in dependency_rows:
-        cur.execute(
-            get(_ARCHIVE_FILE, "insert_copied_dependency"),
-            {
-                "prereq_id": concept_map.get(dependency_row["prereq_id"]),
-                "dependent_id": concept_map[dependency_row["dependent_id"]],
-                "prereq_kind": dependency_row["prereq_kind"],
-                "external_ref": dependency_row["external_ref"],
             },
         )
 
@@ -227,7 +232,9 @@ def purge_expired_archives(
     for row in _due_archives(reference, limit):
         course_id = row["course_id"]
         try:
-            purged.append(_purge_one(course_id))
+            purged_id = _purge_one(course_id, reference)
+            if purged_id is not None:
+                purged.append(purged_id)
         except Exception:
             logger.exception("purge failed for course %s; skipped", course_id)
     return purged
@@ -236,6 +243,11 @@ def purge_expired_archives(
 def _due_archives(
     reference: datetime, limit: int
 ) -> list[dict[str, Any]]:
+    """Candidate due archives only — no claim. The authoritative claim is
+    the per-course row lock in _purge_one, held inside the purge transaction;
+    claiming here would be decorative again the moment this connection
+    closes. SKIP LOCKED on the claim, not the listing, is what keeps two
+    maintenance workers from double-processing the same archive."""
     with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         return (
             cur.execute(
@@ -245,8 +257,20 @@ def _due_archives(
         )
 
 
-def _purge_one(course_id: UUID) -> UUID:
+def _purge_one(course_id: UUID, reference: datetime) -> UUID | None:
+    """Purge one due archive under its own row lock, held for the whole
+    transaction: enqueue cleanup, delete the subtree, commit. A concurrent
+    worker holding the same course returns None (the other worker owns it).
+    Idempotency note: if the lock is acquired after another worker already
+    committed, the course row is gone and the claim returns no row — also
+    None — so a double pick can never re-run a purge."""
     with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        claimed = cur.execute(
+            get(_ARCHIVE_FILE, "claim_due_archive"),
+            {"course_id": course_id, "now": reference},
+        ).fetchone()
+        if claimed is None:
+            return None
         cur.execute(get(_ARCHIVE_FILE, "enqueue_cleanup"), {"course_id": course_id})
         _delete_subtree(cur, course_id)
         conn.commit()
@@ -335,9 +359,7 @@ def restrict_public_course(
             _copy_course_contents(
                 cur, course_id, copied_course_id, owner_user_id
             )
-            memory_bank.upsert_for_users(
-                cur, copied_course_id, [owner_user_id]
-            )
+            course_memory.refresh_for_owner(cur, copied_course_id)
             _archive_locked_course(cur, course, archived_at, purge_after)
             conn.commit()
             return Course(
@@ -434,14 +456,18 @@ def copy_archived_course(
                 {
                     "owner_user_id": user_id,
                     "code": courses_repo.generate_join_code(),
-                    "name": name or f"{archive['name']} (copy)",
+                    "name": (
+                        name
+                        if name is not None
+                        else _copy_display_name(cur, user_id, archive["name"])
+                    ),
                     "visibility": CourseVisibility.PRIVATE.value,
                 },
             ).fetchone()
             assert course_row is not None
             copied_course_id = course_row["course_id"]
             _copy_course_contents(cur, course_id, copied_course_id, user_id)
-            memory_bank.upsert_for_users(cur, copied_course_id, [user_id])
+            course_memory.refresh_for_owner(cur, copied_course_id)
             conn.commit()
         return Course(
             course_id=course_row["course_id"],
@@ -497,13 +523,28 @@ def reclaim_expired_cleanup_leases(*, now: datetime | None = None) -> int:
             {"now": reference, "limit": 100, "max_attempts": max_attempts},
         ).fetchall()
         conn.commit()
+    for row in rows:
+        if row["status"] == "dead":
+            logger.error(
+                "cleanup job %s for course %s is now dead after %d "
+                "attempts (lease expired); last error: %s. Operator action "
+                "required: the course directory remains on disk and the "
+                "job will not be retried.",
+                row["job_id"],
+                row["course_id"],
+                row["attempt_count"],
+                row["error_message"],
+            )
     return len(rows)
 
 
 def process_cleanup_jobs(*, limit: int = 100) -> int:
+    """Claim-and-process loop for physical cleanup jobs. Lease reclamation is
+    the single owner's job: run_once() calls reclaim before this loop, so
+    this function must not reclaim again (double reclaim in one pass could
+    push a just-expired lease straight to 'dead' on stale attempt counts)."""
     completed = 0
     max_attempts, retry_delay = _cleanup_policy()
-    reclaim_expired_cleanup_leases()
     for _ in range(limit):
         now = datetime.now(UTC)
         job = _claim_cleanup(now)
@@ -512,17 +553,20 @@ def process_cleanup_jobs(*, limit: int = 100) -> int:
         try:
             storage.remove_course_directory(job.course_id)
         except OSError as err:
-            with connection() as conn:
-                conn.execute(
-                    get(_ARCHIVE_FILE, "cleanup_failed"),
-                    {
-                        "job_id": job.job_id,
-                        "error_message": str(err),
-                        "next_attempt_at": now + retry_delay,
-                        "max_attempts": max_attempts,
-                    },
+            failed_row = _record_cleanup_failure(
+                job, str(err), now + retry_delay, max_attempts
+            )
+            if failed_row is not None and failed_row.status == "dead":
+                logger.error(
+                    "cleanup job %s for course %s is now dead after %d "
+                    "attempts; final error: %s. Operator action required: "
+                    "the course directory remains on disk and the job will "
+                    "not be retried.",
+                    failed_row.job_id,
+                    failed_row.course_id,
+                    failed_row.attempt_count,
+                    failed_row.error_message,
                 )
-                conn.commit()
             continue
         with connection() as conn:
             conn.execute(
@@ -531,6 +575,26 @@ def process_cleanup_jobs(*, limit: int = 100) -> int:
             conn.commit()
         completed += 1
     return completed
+
+
+def _record_cleanup_failure(
+    job: StorageCleanupJob,
+    error_message: str,
+    next_attempt_at: datetime,
+    max_attempts: int,
+) -> StorageCleanupJob | None:
+    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        row = cur.execute(
+            get(_ARCHIVE_FILE, "cleanup_failed"),
+            {
+                "job_id": job.job_id,
+                "error_message": error_message,
+                "next_attempt_at": next_attempt_at,
+                "max_attempts": max_attempts,
+            },
+        ).fetchone()
+        conn.commit()
+    return _to_cleanup_job(row) if row is not None else None
 
 
 def sweep_storage_orphans(
@@ -585,10 +649,13 @@ def sweep_storage_orphans(
                     course_id,
                 )
             return False
-        # Whole directory orphaned: remove only if nothing inside is young
-        # enough to belong to an in-flight transaction.
+        # Whole directory orphaned: remove only if the directory itself and
+        # every file inside it are older than the grace. The directory mtime
+        # check matters for the empty-directory case — `all()` over zero
+        # files is vacuously true, so a freshly mkdir'd in-flight copy
+        # target would otherwise be removed immediately.
         dir_path = storage.storage_root() / str(course_id)
-        if all(
+        if _expired(dir_path) and all(
             _expired(entry)
             for entry in dir_path.iterdir()
             if entry.is_file()

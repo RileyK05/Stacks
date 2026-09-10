@@ -3,9 +3,10 @@
 ## One-line idea
 
 Build an academic assistant that continuously ingests course materials, preserves
-source-grounded course memory, learns from a student's study attempts over time,
-and helps the student decide what to study next — deployed for a small user base
-with operator-owned data.
+source-grounded course knowledge plus a per-user course-memory focus record
+(decision 007), learns from a student's study attempts over time, and helps the
+student decide what to study next — deployed for a small user base with
+operator-owned data.
 
 This is **not** just "chat with PDFs." The useful output is an inspectable, evolving model of:
 
@@ -52,8 +53,8 @@ instrument that can be evaluated on real courses.
   share a single format (16 chars, look-alike-free alphabet, grouped display)
   validated at the API boundary and constrained in the database.
 - **Destruction leaves a distilled record:** course deletion retains the exact
-  course for a 90-day copy grace period, then purges everything except each
-  participant's bounded, evidence-bearing memory-bank record; account deletion
+  course for a 90-day copy grace period, then purges everything except the
+  course owner's bounded, evidence-bearing course-memory node; account deletion
   has a 7-day grace period.
 
 ## Non-goals
@@ -114,12 +115,13 @@ timestamp 12:30, cell range A1:D20 — each format keeps its natural unit).
 Retrieval units are **token-bounded chunks** sized to fit the model's context
 window, each pointing back to the locator it spans. Sources carry `file_hash`
 for dedup. Ingestion is an ordered, versioned pipeline: text extraction →
-locators → chunks → cascading TOC update → memory extraction. A stage runs
-only after its dependency succeeds, retries according to versioned
-configuration, and stops the pipeline with an inspectable error when its
+locators → chunks → cascading TOC update → course-knowledge extraction. A
+stage runs only after its dependency succeeds, retries according to
+versioned configuration, and stops the pipeline with an inspectable error
+when its
 attempts are exhausted.
 
-### 3. Course memory
+### 3. Course knowledge (shared per course — not memory; decision 007)
 
 Concepts (with synonyms, evidence levels), dependencies (nullable prereq,
 in-course or external — Calc 2 can depend on Calc 1), memory objects
@@ -249,10 +251,11 @@ for course concepts, a reranker, a probe generator, an error classifier.
   never access to another student's attempts, conversations, mastery,
   recommendations, preferences, or private artifacts. Only the owner can mutate
   canonical course objects and base sources.
-- **Deletion:** a course becomes an exact 90-day archive with one-copy access
-  for current participants. Expiry purges the full course tree and physical
-  files through a durable retry job; only each participant's bounded memory-bank
-  record survives. Account deletion has a 7-day grace period before full removal.
+- **Deletion:** a course becomes an exact 90-day archive, copyable by current
+  participants throughout the grace period. Expiry purges the full course
+  tree and physical files through a durable retry job; only the course
+  owner's bounded course-memory node survives. Account deletion has a 7-day
+  grace period before full removal.
 
 ## Milestones
 
@@ -263,12 +266,16 @@ for course concepts, a reranker, a probe generator, an error classifier.
   (self/invitation/join-code), owner/member permissions, canonical code
   format, storage layer (streaming uploads, dedup, conditional gzip), tiers +
   weekly budgets + generation ledger, support/premium claim codes, and the
-  two-phase course archive (90-day grace → purge, memory bank survives).
+  two-phase course archive (90-day grace → purge, owner's course-memory
+  node survives).
 - [ ] **Milestone 1: Source-grounded retrieval** — ingestion wiring into the
   pipeline (parse → locators → chunks → TOC), TOC-guided retrieval, cited
   answers, retrieval traces.
-- [ ] **Milestone 2: Course memory** — concept/dependency extraction with
-  evidence, inspectable concept pages.
+- [ ] **Milestone 2: User + course memory** — the memory tree of decision
+  007: elevate tutor profiles into the user-memory root (behavioral,
+  cross-course), evolve the owner's course-memory node from a content
+  summary into FOCUS memory as student data accumulates; plus concept/
+  dependency extraction with evidence, inspectable concept pages.
 - [ ] **Milestone 3: Cold probe loop** — diagnostics, confidence capture,
   scoring, error categories, per-concept history.
 - [ ] **Milestone 4: Adaptive recommendations** — transparent "what to study
@@ -282,7 +289,7 @@ for course concepts, a reranker, a probe generator, an error classifier.
 
 - Which model provider (OpenRouter / Groq / similar)? Verify no-retention policy before committing.
 - How will mathematical notation and diagrams be represented and cited?
-- How much manual review of course-memory objects is acceptable?
+- How much manual review of course-knowledge objects is acceptable?
 - How should a student override an incorrect concept link or mastery inference?
 - What does "mastery" mean for a proof course versus a programming/data course?
 

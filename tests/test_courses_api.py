@@ -2,6 +2,7 @@ from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
 from src.backend.common.db import connection
+from tests.conftest import verify_email
 
 PASSWORD = "correct-horse-battery"
 
@@ -16,6 +17,7 @@ def _user(client: TestClient) -> tuple[str, dict]:
     body = response.json()
     login = client.post("/auth/login", json={"email": email, "password": PASSWORD})
     token = login.json()["access_token"]
+    verify_email(client, token)
     return token, body
 
 
@@ -47,7 +49,7 @@ def test_create_course_returns_owner_view(client: TestClient) -> None:
     assert body["source_count"] == 0
     assert body["stored_bytes"] == 0
     assert "support_code" not in body
-    memory_bank = client.get("/memory-bank", headers=_headers(token))
+    memory_bank = client.get("/course-memories", headers=_headers(token))
     assert memory_bank.status_code == 200
     assert memory_bank.json()[0]["course_id"] == body["course_id"]
     assert "Course: Calculus" in memory_bank.json()[0]["summary"]
@@ -243,7 +245,7 @@ def test_invite_and_member_visibility(client: TestClient) -> None:
     assert invited.status_code == 201, invited.text
     assert invited.json()["status"] == "invited"
     assert client.get(
-        "/memory-bank", headers=_headers(learner_token)
+        "/course-memories", headers=_headers(learner_token)
     ).json() == []
     before_acceptance = client.get(
         f"/courses/{course_id}", headers=_headers(learner_token)
@@ -256,9 +258,11 @@ def test_invite_and_member_visibility(client: TestClient) -> None:
     assert accepted.status_code == 200
     assert accepted.json()["status"] == "active"
     learner_memory = client.get(
-        "/memory-bank", headers=_headers(learner_token)
+        "/course-memories", headers=_headers(learner_token)
     ).json()
-    assert learner_memory[0]["course_id"] == course_id
+    # Course memory is owner-only (ruling 2026-09-10): enrollment grants
+    # access to the course, never a distilled course-memory record.
+    assert learner_memory == []
     members = client.get(
         f"/courses/{course_id}/members", headers=_headers(owner_token)
     )

@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
-from src.backend.api.deps import current_user
+from src.backend.api.deps import current_user, require_verified_email
 from src.backend.common import budget, sources_repo, storage
 from src.backend.common import tiers as tier_config
 from src.backend.common.schemas.base import SourceStatus, SourceType
@@ -38,6 +38,7 @@ def upload_source(
     file: Annotated[UploadFile, File()],
     source_type: Annotated[SourceType, Form()],
 ) -> SourceUploadView:
+    require_verified_email(user)
     budget.verify_tier(user.user_id, user.tier)
     policy = tier_config.load_tier_policies().policy_for(user.tier)
     try:

@@ -4,7 +4,6 @@ from typing import Any
 from uuid import UUID
 
 from psycopg.rows import dict_row
-from src.backend.common import memory_bank
 from src.backend.common.db import connection
 from src.backend.common.queries import get
 from src.backend.common.schemas.base import EnrollmentSource, EnrollmentStatus
@@ -82,8 +81,6 @@ def _activate(
                 "enrollment_source": source.value,
             },
         ).fetchone()
-        if row is not None:
-            memory_bank.upsert_for_users(cur, course_id, [user_id])
         conn.commit()
     if row is None:
         raise ValueError("already enrolled")
@@ -96,8 +93,6 @@ def accept_invitation(course_id: UUID, user_id: UUID) -> CourseEnrollment | None
             get(_FILE, "accept_invitation"),
             {"course_id": course_id, "user_id": user_id},
         ).fetchone()
-        if row is not None:
-            memory_bank.upsert_for_users(cur, course_id, [user_id])
         conn.commit()
     return _to_enrollment(row) if row else None
 

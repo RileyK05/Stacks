@@ -7,6 +7,7 @@ from src.backend.common import storage
 from src.backend.common.db import connection
 from src.backend.common.schemas.base import UserTier
 from src.backend.common.tiers import load_tier_policies
+from tests.conftest import verify_email
 
 PASSWORD = "correct-horse-battery"
 
@@ -26,10 +27,10 @@ def _user(client: TestClient) -> tuple[str, UUID]:
         "/auth/register",
         json={"name": "Uploader", "email": email, "password": PASSWORD},
     )
-    login = client.post(
-        "/auth/login", json={"email": email, "password": PASSWORD}
-    )
-    return login.json()["access_token"], UUID(registered.json()["user_id"])
+    login = client.post("/auth/login", json={"email": email, "password": PASSWORD})
+    token = login.json()["access_token"]
+    verify_email(client, token)
+    return token, UUID(registered.json()["user_id"])
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -74,7 +75,7 @@ def test_upload_streams_compresses_and_accounts_stored_bytes(
     view = client.get(f"/courses/{course_id}", headers=_headers(token)).json()
     assert view["source_count"] == 1
     assert view["stored_bytes"] == body["stored_size_bytes"]
-    memory = client.get("/memory-bank", headers=_headers(token)).json()[0]
+    memory = client.get("/course-memories", headers=_headers(token)).json()[0]
     assert "week-1.txt" in memory["summary"]
     assert body["file_hash"] in memory["summary"]
 

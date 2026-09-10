@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, ConfigDict, Field
-from src.backend.api.deps import current_user
+from src.backend.api.deps import current_user, require_verified_email
 from src.backend.common import (
     budget,
     codes,
@@ -74,6 +74,7 @@ def create_course(
     payload: CourseCreate,
     user: Annotated[UserAccount, Depends(current_user)],
 ) -> CourseView:
+    require_verified_email(user)
     policy = _policy_for(user)
     try:
         course = courses_repo.create_course(
@@ -157,6 +158,8 @@ def update_course(
             )
         except budget.StorageLimitExceededError as err:
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(err)) from err
+        except courses_lifecycle.UncopyableCourseError as err:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(err)) from err
         except courses_lifecycle.UnknownCourseError as err:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND, "course not found"

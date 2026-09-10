@@ -8,7 +8,7 @@ from typing import Any, BinaryIO
 from uuid import UUID, uuid4
 
 from psycopg.rows import dict_row
-from src.backend.common import budget, memory_bank, storage
+from src.backend.common import budget, course_memory, storage
 from src.backend.common.db import connection
 from src.backend.common.queries import get
 from src.backend.common.schemas.base import SourceStatus, SourceType, UserTier
@@ -154,7 +154,7 @@ def upload_source(
                 },
             ).fetchone()
             assert row is not None
-            memory_bank.upsert_for_current_participants(cur, course_id)
+            course_memory.refresh_for_owner(cur, course_id)
             conn.commit()
         return _stored_source(row, raw_size)
     except BaseException:

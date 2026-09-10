@@ -35,10 +35,12 @@ def list_course_archives(
     return course_archives_repo.list_archives(user.user_id)
 
 
-@router.get("/memory-bank", response_model=list[CourseMemory])
-def list_memory_bank(
+@router.get("/course-memories", response_model=list[CourseMemory])
+def list_course_memories(
     user: Annotated[UserAccount, Depends(current_user)],
 ) -> list[CourseMemory]:
+    """The caller's own course-memory nodes (decision 007): one per course
+    they were the main user of. Read-only; the write seam is internal."""
     return course_archives_repo.list_memories(user.user_id)
 
 

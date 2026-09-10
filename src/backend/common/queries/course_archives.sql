@@ -141,6 +141,11 @@ VALUES
      %(filename)s, %(mime_type)s, %(source_type)s, %(version)s, %(uri)s,
      'uploaded', %(file_hash)s, %(size_bytes)s, %(stored_encoding)s);
 
+-- name: enqueue_pending_ingestion
+INSERT INTO pending_ingestion (source_id, course_id, reason)
+VALUES (%(source_id)s, %(course_id)s, %(reason)s)
+ON CONFLICT (source_id) DO NOTHING;
+
 -- name: non_source_object_rows
 SELECT kind, content_type, content, origin, status, access_scope
 FROM course_objects
@@ -163,43 +168,19 @@ VALUES
     (%(course_id)s, %(owner_user_id)s, %(kind)s, %(content_type)s,
      %(content)s::jsonb, %(origin)s, %(status)s, %(access_scope)s);
 
--- name: concept_rows
-SELECT concept_id, name, definition, synonyms, evidence_level
-FROM concepts
-WHERE course_id = %(course_id)s
-ORDER BY name;
-
--- name: insert_copied_concept
-INSERT INTO concepts
-    (concept_id, course_id, name, definition, synonyms, evidence_level)
-VALUES
-    (%(concept_id)s, %(course_id)s, %(name)s, %(definition)s,
-     %(synonyms)s::jsonb, %(evidence_level)s);
-
--- name: dependency_rows
-SELECT prereq_id, dependent_id, prereq_kind, external_ref
-FROM dependencies
-WHERE dependent_id IN (
-    SELECT concept_id FROM concepts WHERE course_id = %(course_id)s
-)
-AND (
-    prereq_id IS NULL
-    OR prereq_id IN (
-        SELECT concept_id FROM concepts WHERE course_id = %(course_id)s
-    )
-)
-ORDER BY dep_id;
-
--- name: insert_copied_dependency
-INSERT INTO dependencies (prereq_id, dependent_id, prereq_kind, external_ref)
-VALUES (%(prereq_id)s, %(dependent_id)s, %(prereq_kind)s, %(external_ref)s);
-
 -- name: due_archives
 SELECT course_id
 FROM courses
 WHERE lifecycle_status = 'archived' AND purge_after <= %(now)s
 ORDER BY purge_after
-LIMIT %(limit)s
+LIMIT %(limit)s;
+
+-- name: claim_due_archive
+SELECT course_id
+FROM courses
+WHERE course_id = %(course_id)s
+  AND lifecycle_status = 'archived'
+  AND purge_after <= %(now)s
 FOR UPDATE SKIP LOCKED;
 
 -- name: enqueue_cleanup
@@ -258,14 +239,16 @@ SET status = 'succeeded', completed_at = now(), error_message = NULL
 WHERE job_id = %(job_id)s;
 
 -- name: cleanup_failed
-UPDATE storage_cleanup_jobs
+UPDATE storage_cleanup_jobs AS job
 SET status = CASE
-        WHEN attempt_count >= %(max_attempts)s THEN 'dead'
+        WHEN job.attempt_count >= %(max_attempts)s THEN 'dead'
         ELSE 'failed'
     END,
     error_message = %(error_message)s,
     next_attempt_at = %(next_attempt_at)s
-WHERE job_id = %(job_id)s;
+WHERE job.job_id = %(job_id)s
+RETURNING job.job_id, job.course_id, job.status, job.attempt_count,
+          job.error_message, job.next_attempt_at, job.created_at, job.completed_at;
 
 -- name: list_memories
 SELECT memory_id, user_id, course_id, course_ref, name, summary,

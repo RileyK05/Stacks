@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.backend.api.deps import bearer, current_user  # noqa: F401
-from src.backend.common import auth, codes, premium_codes_repo, users_repo
+from src.backend.common import auth, codes, email_repo, premium_codes_repo, users_repo
 from src.backend.common.db import connection
 from src.backend.common.schemas.identity import User, UserAccount
 
@@ -125,6 +125,140 @@ def login(payload: LoginRequest) -> dict[str, str]:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "account pending deletion")
     token = auth.create_access_token(user.user_id)
     return {"access_token": token, "token_type": "bearer"}
+
+
+@router.post("/verify-email/request", status_code=status.HTTP_202_ACCEPTED)
+def request_email_verification(
+    user: Annotated[UserAccount, Depends(current_user)],
+) -> dict[str, str]:
+    """Queue a verification email. Always 202, even when already verified:
+    account state must not be probeable through response differences."""
+    if user.email is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "account has no email address"
+        )
+    with connection() as conn:
+        email_repo.issue_token(
+            conn,
+            user_id=user.user_id,
+            kind=email_repo.VERIFICATION_KIND,
+            to_email=user.email,
+            subject="Verify your email",
+            body_template=(
+                "Use this token to verify your email address: {token}\n"
+                "The token expires in "
+                f"{email_repo.TOKEN_TTL_MINUTES} minutes."
+            ),
+        )
+        conn.commit()
+    return {"status": "verification email queued"}
+
+
+@router.post("/verify-email/{token}", response_model=User)
+def verify_email(
+    token: str,
+    user: Annotated[UserAccount, Depends(current_user)],
+) -> User:
+    """Consume a verification token. The token must belong to the
+    authenticated caller — one account can never verify another's email."""
+    try:
+        with connection() as conn:
+            token_user_id = email_repo.consume_token(
+                conn, kind=email_repo.VERIFICATION_KIND, plaintext=token
+            )
+            if token_user_id != user.user_id:
+                raise email_repo.TokenRejectedError("token does not match account")
+            email_repo.mark_email_verified(conn, user.user_id)
+            conn.commit()
+    except email_repo.TokenRejectedError as err:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "invalid or expired verification token"
+        ) from err
+    refreshed = users_repo.get_by_id(user.user_id)
+    assert refreshed is not None
+    return User.model_validate(refreshed)
+
+
+class PasswordResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, value: str) -> str:
+        return auth.normalize_email(value)
+
+
+class PasswordResetConfirm(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(min_length=16, max_length=128)
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def _validate_password(cls, value: str) -> str:
+        return auth.validate_password(value)
+
+
+@router.post("/password-reset/request", status_code=status.HTTP_202_ACCEPTED)
+def request_password_reset(payload: PasswordResetRequest) -> dict[str, str]:
+    """Queue a reset email. Always 202 whether or not the account exists:
+    the response must not disclose registered addresses."""
+    user = users_repo.get_by_email(payload.email)
+    if (
+        user is not None
+        and user.password_hash is not None
+        and user.delete_requested_at is None
+        and user.email is not None
+    ):
+        with connection() as conn:
+            email_repo.issue_token(
+                conn,
+                user_id=user.user_id,
+                kind=email_repo.RESET_KIND,
+                to_email=user.email,
+                subject="Reset your password",
+                body_template=(
+                    "Use this token to reset your password: {token}\n"
+                    "The token expires in "
+                    f"{email_repo.TOKEN_TTL_MINUTES} minutes. If you did "
+                    "not request this, ignore this email."
+                ),
+            )
+            conn.commit()
+    return {"status": "password reset email queued if account exists"}
+
+
+@router.post("/password-reset/confirm", response_model=User)
+def confirm_password_reset(payload: PasswordResetConfirm) -> User:
+    """Consume a reset token and set the new password. The account must not
+    be pending deletion; a successful reset also marks the email verified
+    (proving control of the mailbox proves the address)."""
+    try:
+        with connection() as conn:
+            user_id = email_repo.consume_token(
+                conn, kind=email_repo.RESET_KIND, plaintext=payload.token
+            )
+            account = users_repo.get_by_id(user_id)
+            if (
+                account is None
+                or account.delete_requested_at is not None
+            ):
+                raise email_repo.TokenRejectedError("account unavailable")
+            users_repo.update_password(
+                conn, user_id, auth.hash_password(payload.new_password)
+            )
+            email_repo.mark_email_verified(conn, user_id)
+            conn.commit()
+            refreshed = users_repo.get_by_id(user_id)
+    except email_repo.TokenRejectedError as err:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "invalid or expired reset token"
+        ) from err
+    assert refreshed is not None
+    return User.model_validate(refreshed)
 
 
 @router.get("/me", response_model=User)

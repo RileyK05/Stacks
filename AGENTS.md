@@ -31,6 +31,31 @@ both before making structural decisions.
    summary first (course memory, citation snapshot); account deletion has a
    7-day grace period. Never silently destroy evidence.
 
+## Memory vocabulary (read before touching anything named "memory")
+
+Full definition: `docs/decisions/007_memory_model.md`. That file wins over
+any other doc or code name. Summary:
+
+- **User memory (root)** — per-user, lifelong, behavioral ("teach THIS
+  person with visuals/analogies") + cross-course history. The ONLY layer
+  that may change how the model behaves.
+- **Course memory (child)** — per-user per-course focus record ("what THIS
+  person struggles with in THIS course"). Main user of the course (its
+  owner) only. Facts about understanding; never behavior instructions;
+  never shared with other users. Survives course deletion.
+- **Course knowledge / TOC** — what the course SAYS (concepts, evidence)
+  and the index for FINDING it. Shared per-course state. Not memory.
+  Lives in tables like `concepts`/`memory_objects`/`toc_entries` and the
+  misleadingly named `schemas/memory.py` and `src/backend/memory/`.
+- **Student data** — raw private per-user records (attempts, mastery,
+  chat). Separate subsystem.
+
+If a task says "course memory," it means the child node above. The
+`course_memories` table IS that node. `MemoryObject` is NOT memory — it is
+a course-knowledge note. Do not write course-memory rows for any user
+other than the course owner; the only write seam is
+`course_memory.refresh_for_owner`.
+
 ## Engineering tradeoff
 
 Code is cheap to write (LLMs generate it); rework and brittleness are expensive.

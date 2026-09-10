@@ -24,6 +24,7 @@ class User(BaseRecord):
     name: str
     email: str | None = None
     tier: UserTier = UserTier.FREE
+    email_verified: bool = False
     created_at: datetime = Field(default_factory=_now)
 
 
@@ -146,7 +147,10 @@ class UserArtifact(BaseRecord):
 
 
 class CourseMemory(BaseRecord):
-    """Permanent, user-owned memory retained after course material is purged."""
+    """A course-memory node (decision 007): per-user, per-course focus
+    record for the course's main user (its owner). Facts about
+    understanding only — never behavior instructions, never shared.
+    Outlives the course row (the deletion keepsake, golden rule 6)."""
 
     memory_id: UUID = Field(default_factory=_new_id)
     user_id: UUID

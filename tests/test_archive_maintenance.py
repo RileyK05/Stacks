@@ -20,10 +20,18 @@ def _storage_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 def test_lifespan_maintenance_loop_runs_and_stops() -> None:
     """The app lifespan must actually run the archive maintenance pass:
     expired leases are reclaimed, expired archives purged, cleanup jobs
-    processed, and orphaned directories swept."""
-    orphan = uuid4()
-    orphan_dir = storage.storage_root() / str(orphan)
-    orphan_dir.mkdir(parents=True)
+    processed, and orphaned directories swept. A fresh empty orphan dir is
+    kept (in-flight-copy protection: dir mtime grace); an aged one goes."""
+    import os
+
+    fresh_orphan = uuid4()
+    fresh_dir = storage.storage_root() / str(fresh_orphan)
+    fresh_dir.mkdir(parents=True)
+
+    aged_orphan = uuid4()
+    aged_dir = storage.storage_root() / str(aged_orphan)
+    aged_dir.mkdir(parents=True)
+    os.utime(aged_dir, (0, 0))
 
     with TestClient(create_app()) as client:
         assert client.get("/courses/public").status_code == 200
@@ -35,7 +43,8 @@ def test_lifespan_maintenance_loop_runs_and_stops() -> None:
         reclaimed, purged, cleaned = asyncio.run(probe())
 
     assert (reclaimed, purged, cleaned) == (0, 0, 0)
-    assert not orphan_dir.exists()
+    assert fresh_dir.exists()
+    assert not aged_dir.exists()
 
 
 def test_maintenance_reclaims_stuck_lease_via_run_once() -> None:

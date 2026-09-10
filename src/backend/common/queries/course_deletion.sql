@@ -105,6 +105,7 @@ DELETE FROM tables_of_contents WHERE course_id = %(course_id)s;
 DELETE FROM model_decisions WHERE source_id IN (SELECT source_id FROM sources WHERE course_id = %(course_id)s);
 DELETE FROM artifact_origins WHERE artifact_id IN (SELECT object_id FROM course_objects WHERE course_id = %(course_id)s);
 DELETE FROM ingestion_runs WHERE source_id IN (SELECT source_id FROM sources WHERE course_id = %(course_id)s);
+DELETE FROM ingestion_history WHERE course_id = %(course_id)s;
 DELETE FROM chunks WHERE source_id IN (SELECT source_id FROM sources WHERE course_id = %(course_id)s);
 DELETE FROM locators WHERE source_id IN (SELECT source_id FROM sources WHERE course_id = %(course_id)s);
 DELETE FROM sources WHERE course_id = %(course_id)s;

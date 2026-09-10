@@ -7,9 +7,13 @@
 ## 0. TL;DR
 
 An academic assistant that ingests course materials, extracts structured text and
-course memory, learns a per-student error model from attempts, and serves
-source-grounded answers + "what to study next" recommendations through a small
-web UI. Deployed for a small user base; data owned by the operator in Postgres.
+course knowledge (concepts, evidence, TOC), learns a per-student error model
+from attempts, and serves source-grounded answers + "what to study next"
+recommendations through a small web UI. Deployed for a small user base; data
+owned by the operator in Postgres. Memory vocabulary (user memory root,
+course-memory child, course knowledge, TOC-as-index) is defined in
+`docs/decisions/007_memory_model.md` and controls wherever the word "memory"
+appears below.
 
 - **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem
 - **Frontend:** `src/frontend/`, talks to backend only via API
@@ -391,7 +395,12 @@ erDiagram
   spans. No embedding column — retrieval is TOC-guided; embeddings return only if
   a versioned eval proves the TOC path failing.
 
-### 2.3 Course memory (concepts, evidence & TOC)
+### 2.3 Course knowledge (concepts, evidence & TOC)
+
+> Terminology (decision 007): this layer is course KNOWLEDGE, not memory.
+> It is shared per-course state — what the course SAYS plus the TOC index
+> for FINDING it. The per-user "course memory" node is §2.1's
+> `COURSE_MEMORIES` and `common/course_memory.py`.
 
 ```mermaid
 erDiagram
@@ -636,7 +645,7 @@ Unifying principle: **destruction leaves a distilled record.**
 
 ```mermaid
 flowchart TB
-    DC["delete course"] --> CM["write each participant's<br/>bounded course memory"]
+    DC["delete course"] --> CM["refresh the course owner's<br/>bounded course-memory node"]
     CM --> A90["retain exact archive<br/>for 90 days"]
     A90 --> DEL["purge database subtree<br/>+ retry physical cleanup"]
     DS["remove cited source"] --> CS["archive citation_snapshots<br/>(citations + why each was valid)"]
@@ -647,10 +656,13 @@ flowchart TB
     D7 -->|no| CANCEL["cancel clears marker"]
 ```
 
-- **`COURSE_MEMORIES`** — a per-user distilled record (course reference, name,
-  bounded summary, key concepts, and compact evidence snapshot) written before
-  archival. `course_id` is stored without a hard FK so the memory outlives the
-  course row.
+- **`COURSE_MEMORIES`** — the course-memory node (decision 007): a per-user,
+  per-course focus record stored ONLY for the course's main user (its
+  owner) — a bounded summary (course reference, name, key concepts, and a
+  compact evidence snapshot), refreshed on canonical mutations and before
+  archival via the single write seam `course_memory.refresh_for_owner`.
+  `course_id` is stored without a hard FK so the memory outlives the
+  course row. Enrolled learners never get a node (see decision 007).
 - **`CITATION_SNAPSHOTS`** — before a source's citations are removed, a
   compressed record of the citations and why each was valid is written, so
   grounding evidence survives the source.
@@ -662,8 +674,8 @@ flowchart TB
   Cleanup jobs retry under a lease up to a configured attempt cap, then go
   dead for operator inspection; a periodic sweep also removes orphaned course
   directories. Course-specific citation snapshots and learner artifacts are
-  removed at expiry; the memory bank is the sole course-derived retention
-  exception.
+  removed at expiry; the owner's course-memory node is the sole
+  course-derived retention exception.
 
 **Key decisions:**
 

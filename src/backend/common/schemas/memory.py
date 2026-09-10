@@ -1,3 +1,10 @@
+"""Course-knowledge models: what the course SAYS (concepts, evidence links)
+and the TOC index for FINDING it. NOT memory in the decision-007 sense —
+user/course memory lives in schemas/identity.CourseMemory and the
+course_memories table. This module's historical name is a legacy misnomer;
+see docs/decisions/007_memory_model.md for the vocabulary.
+"""
+
 from __future__ import annotations
 
 from datetime import datetime

@@ -28,6 +28,7 @@ def insert(
         name=row["name"],
         email=row["email"],
         tier=row["tier"],
+        email_verified=row["email_verified_at"] is not None,
         created_at=row["created_at"],
     )
 
@@ -45,6 +46,7 @@ def _to_account(row: dict[str, Any]) -> UserAccount:
         name=row["name"],
         email=row["email"],
         tier=row["tier"],
+        email_verified=row["email_verified_at"] is not None,
         password_hash=row["password_hash"],
         delete_requested_at=row["delete_requested_at"],
         created_at=row["created_at"],
@@ -66,3 +68,14 @@ def get_by_id(user_id: UUID) -> UserAccount | None:
     if row is None:
         return None
     return _to_account(row)
+
+
+def update_password(
+    conn: Connection, user_id: UUID, password_hash: str
+) -> UserAccount | None:
+    with conn.cursor(row_factory=dict_row) as cur:
+        row = cur.execute(
+            get(_FILE, "update_password"),
+            {"user_id": user_id, "password_hash": password_hash},
+        ).fetchone()
+    return _to_account(row) if row is not None else None

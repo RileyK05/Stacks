@@ -11,9 +11,66 @@ resolved get moved to `docs/decisions/`.
 
 ## Open
 
-- [empty]
+**Queued for operator review / deeper design conversation:**
+
+- **[design, OPEN — needs architecture conversation] Storage accounting vs
+  decompression.** Today a file's quota cost is its *compressed* size, and
+  a highly compressible 100 MB text file may only count as ~100 KB of
+  quota. Nothing reads files back yet, so this is harmless today. But it
+  points at a deeper question the operator wants to discuss: how storage
+  should be accounted and read at the architectural level. For Milestone 1
+  the hard rule is: any code that opens a stored file must unzip it
+  streaming, with a cap on the unzipped size — never all at once (the
+  current `read_stored` does a whole-buffer decompress and is the seam to
+  replace). Broader accounting redesign (logical-vs-stored quotas, raw
+  caps per file) is deferred to that conversation.
+- **[design, OPEN] IP/registration throttling.** Email verification now
+  gates resource creation (fixed 2026-09-10, below), but nothing limits how
+  many accounts one IP can register. Operator ruling: email verification
+  yes; whether IP-based limiting is feasible/desirable is unresolved —
+  revisit before public launch.
+- **[design, OPEN — needs architecture conversation] The learner side of
+  the two-way memory model.** Ruling: course memory (the distilled
+  per-course record in `course_memories`) is OWNER-ONLY — the owner's
+  instrument for their course. Learners get the *generic* memory and
+  harness, not the course's distilled record. What "generic memory" for a
+  non-owner concretely means (what accumulates per learner across courses,
+  where it lives, what the harness reads) is an open design question for
+  the Milestone 2 memory subsystem — the owner-only fix below removed the
+  wrong learner writes; it did not yet build the learner side.
 
 ## Closed
+
+**Closed by the 2026-09-10 operator rulings (from the adversarial
+edge-case pass):**
+
+- **[bugfix, ruled a bug] Course memory was being written for learners.**
+  The memory bank fanned out to every participant on archive, enrollment,
+  and canonical mutations — contradicting the two-way memory model (owner
+  gets course memory; non-owners get the generic memory/harness). Fixed:
+  `course_memories` writes are owner-only everywhere (archive writes the
+  owner's record; enrollment writes none; upload/rename refresh the
+  owner's only; archive-copy writes the copier-as-new-owner's). Learners
+  keep their private per-user data (attempts, conversations, mastery) —
+  that is a different subsystem, untouched. The learner-side generic
+  memory remains Open (above).
+- **[fixed] Email verification + password reset** (was the "no email check,
+  no password reset" item). Migration 021: `users.email_verified_at`,
+  `email_outbox` (operator/worker seam — no in-process delivery), and
+  `email_tokens` (SHA-256 hashes at rest, single-use, 60-minute expiry,
+  one open token per kind per user). API: verification request/confirm
+  (token bound to the authenticated caller), password-reset request
+  (anti-enumeration: always 202, unknown emails queue nothing) and
+  confirm (rejects pending-deletion accounts; success marks the email
+  verified — mailbox control proves the address). Verification gates
+  course creation and uploads (403 with remediation); login stays open
+  to unverified accounts so existing accounts are never locked out.
+  Tests: `tests/test_email_verification.py` (flows, replay, cross-account
+  binding, expiry, anti-enumeration, gating).
+- **[fixed] Archive-copy naming.** Default copy names now respect the
+  200-char create bound (suffix survives trimming) and disambiguate:
+  "name (copy)", "name (copy 2)", "name (copy 3)"... Pinned by
+  `test_copy_names_are_bounded_and_disambiguated`.
 
 - **[schema] "Week" is too rigid.** Fixed by replacing `Week` with `StudyPeriod`
   (`period_id`, `course_id`, `label`, `start_date`, `end_date`). The window is
@@ -962,3 +1019,129 @@ implemented and pinned by tests this session.
 - **Next:** build the memory subsystem out — accumulation during course life
   (M2 extraction pipeline), not just archive-time snapshots. The
   archive-time write remains as the final snapshot before materials vanish.
+
+## Edge-case review fixes (2026-09-10)
+
+Adversarial "how do users break this" pass over lifecycle/storage/auth.
+Five intentional design choices were moved to Open (above) rather than
+"fixed"; eight real logic gaps were fixed and pinned:
+
+- **[bugfix] Public→restricted PATCH 500.** `update_course` in
+  `api/courses.py` didn't map `UncopyableCourseError` (the archive-copy
+  endpoint did); a public course with file-backed non-source objects
+  returned 500. Now 409, same as the copy path.
+- **[bugfix] Memory-bank evidence could be truncated away.** The old
+  assembler appended evidence last and prefix-truncated, so verbose
+  concepts could remove every grounding line — violating the ratified
+  "permanent memory must remain inspectably grounded" rule. `memory_bank`
+  rewritten: evidence index reserved first (compact filename+locator+hash
+  lines; excerpts only when budget allows), semantic content fills the
+  remainder, `key_concepts` bounded so the whole retained record fits the
+  budget, material assembled once per tier per refresh. Pinned by
+  `test_memory_summary_keeps_evidence_within_tight_budget` (40 long
+  concepts, 3 sources, free tier: summary within budget, ≥1 evidence
+  entry with uncut sha256, concepts survive).
+- **[bugfix] Copy was an inconsistent half-copy.** It copied derived
+  concepts/dependencies without their evidence graph (ungrounded derived
+  memory) and queued no ingestion. Now: raw sources, study periods, and
+  owner-authored objects copy; derived memory does not (ingestion
+  re-derives it); every copied source enqueues in new `pending_ingestion`
+  (migration 019, with backfill of existing copied sources +
+  `ingestion_history` audit table). The purge block and FK-coverage guard
+  updated. Pinned by `test_copy_requeues_ingestion_and_skips_derived_memory`.
+- **[bugfix] Dead cleanup jobs were silent + double reclaim.** Terminal
+  `dead` transitions now emit an ERROR log with job_id, course_id, attempt
+  count, and final error (both the failure path and lease-reclaim path);
+  `cleanup_failed` returns the updated row. Lease reclamation has a single
+  owner: `run_once()` — `process_cleanup_jobs()` no longer reclaims
+  (double reclaim in one pass could dead-end a job on stale counts).
+  Pinned by `test_dead_cleanup_job_logs_operator_signal` and the updated
+  reclaim test.
+- **[bugfix] Accept-invitation could race archival.** The policy trigger
+  read the courses row with a plain SELECT; archival could commit between
+  the trigger's read and the enrollment's commit, leaving an 'active'
+  learner on an archived course with no archive access. Migration 020
+  takes `FOR SHARE` on the courses row in the trigger — it conflicts with
+  `delete_course`'s `FOR UPDATE`, making check and transition atomic.
+  Pinned by `test_accept_invitation_cannot_race_course_archival`
+  (two-connection: NOWAIT proves the lock conflict; complementary case
+  proves post-archival accept fails the policy check).
+- **[bugfix] Purge claim was decorative.** `due_archives` took
+  `FOR UPDATE SKIP LOCKED` and then closed the connection before purging,
+  releasing every lock — two maintenance workers could both "claim" the
+  same archive. The claim moved inside `_purge_one`'s transaction
+  (`claim_due_archive`); the listing is lock-free. Idempotent deletes +
+  the cleanup-job unique index remain the backstop.
+- **[bugfix] FK-coverage guard was vacuous.** Its `regclass::text LIKE
+  'public.%'` filter matched 0 of 68 FKs (search-path tables render bare
+  names) — the test had never guarded anything, which is how migration
+  019's `ingestion_history` initially slipped past the purge block.
+  Rewritten: transitive FK closure from `courses` restricted to
+  NO ACTION/RESTRICT edges (the ones that wedge purges), excluding
+  cascade/set-null edges and documented exclusions.
+- **[bugfix] Empty-dir sweep bypassed the grace.** `all()` over zero files
+  is vacuously true, so a freshly mkdir'd in-flight copy target could be
+  rmtree'd immediately. The directory's own mtime must now be past grace.
+- **[test-infra] conftest hygiene.** `DELETE FROM storage_cleanup_jobs` was
+  unconditional — a test run against a shared environment destroyed pending
+  (real) purge jobs. Now scoped to test-owned courses plus orphaned
+  course rows, and the suite refuses to run against a database whose name
+  doesn't contain "test" unless `PYTEST_ALLOW_ANY_DB=1` is set
+  (deliberate opt-in; set in the local dev `.env`).
+- Verified-clean in the same pass (no action): path traversal, zip-bomb
+  storage streaming, upload quota serialization, join-code brute force,
+  redeem double-spend, login enumeration, JWT/bcrypt bounds, support-code
+  plaintext handling.
+- Gate: full pytest suite green, ruff clean, mypy clean.
+
+## Memory model ratified + vocabulary pinned (2026-09-10)
+
+The repeated "agents keep building the memory layer wrong" problem was
+diagnosed: the docs used "memory" for four different things
+(course-memory node, course knowledge/TOC, student data, chat history),
+the deletion diagram literally commanded "write each participant's
+course memory," and the table storing the per-user node is named
+`course_memories` while the course-knowledge models live in
+`schemas/memory.py` — so every session re-derived its own interpretation.
+
+Operator ratification (decision `docs/decisions/007_memory_model.md`):
+
+- **User memory (root)** — per-user, lifelong, behavioral ("teach THIS
+  person with visuals/analogies") + cross-course history; the only layer
+  that may change model behavior; cross-course emphasis (Calc 1 integrals
+  struggle → Calc 2 emphasis) happens at the root at prompt time.
+- **Course memory (child)** — per-user per-course FOCUS node ("what THIS
+  person struggles with in THIS course"); facts about understanding,
+  never behavior instructions, never shared. **Stored ONLY for the main
+  user of the course (its owner)** — per-learner nodes were rejected as
+  too complex; learners get the harness plus their own raw private
+  student data.
+- **Course knowledge / TOC** — what the course SAYS and the index for
+  FINDING it; shared per-course state; explicitly not memory.
+
+Implemented this session:
+
+- Decision doc 007 written; `AGENTS.md` gained a mandatory vocabulary
+  block ("read before touching anything named memory") that maps each
+  term to code homes and names the single write seam.
+- `common/memory_bank.py` → `common/course_memory.py` (git mv, history
+  kept). `upsert_for_users` folded into a private `_write_node`;
+  `refresh_for_owner(cur, course_id)` is now the ONLY public write seam —
+  it derives the owner from the course row, so no caller can ever pass
+  another user's id. All five call sites (archive, restrict-successor,
+  archive copy, course create, upload/rename) route through it.
+- API route `GET /memory-bank` → `GET /course-memories` (read-only).
+- Doc scrub: system.md §0 TL;DR, §2.3 heading ("Course knowledge"),
+  §2.7 deletion diagram + COURSE_MEMORIES bullet now owner-only; the
+  "each participant's" line that taught the prior bug is gone.
+  project.md one-liner, principles, deletion, Milestone 2 (now "User +
+  course memory" per the tree model), pipeline stage name
+  (course-knowledge extraction).
+- `schemas/memory.py` and `src/backend/memory/__init__.py` now carry
+  docstrings flagging their names as legacy misnomers pointing at
+  decision 007. `MemoryObject`'s docstring: a course-knowledge note, not
+  memory.
+- Tests renamed accordingly (`memory_bank` → `course_memory` imports,
+  `/memory-bank` → `/course-memories` calls). No behavior change: the
+  owner-only semantics were fixed in the previous pass; this pass makes
+  the vocabulary and seams unable to teach the wrong thing.

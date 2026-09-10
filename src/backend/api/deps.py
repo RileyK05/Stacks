@@ -25,3 +25,15 @@ def current_user(
     if user.delete_requested_at is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "account pending deletion")
     return user
+
+
+def require_verified_email(user: UserAccount) -> None:
+    """Gate for endpoints that create resources or spend operator storage.
+    Login stays open to unverified accounts (existing accounts are never
+    locked out); new resource creation does not."""
+    if not user.email_verified:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "email address not verified; request a verification email "
+            "via POST /auth/verify-email/request",
+        )
