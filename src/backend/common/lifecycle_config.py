@@ -20,6 +20,7 @@ class LifecyclePolicy(BaseModel):
     cleanup_max_attempts: int = Field(default=5, ge=1)
     cleanup_retry_delay_seconds: int = Field(default=300, ge=1)
     orphan_min_age_seconds: int = Field(default=3600, ge=60)
+    max_decompressed_bytes: int = Field(ge=1)
 
     @model_validator(mode="after")
     def _covers_all_tiers(self) -> LifecyclePolicy:
@@ -53,4 +54,5 @@ def load_lifecycle_policy(path: Path = DEFAULT_LIFECYCLE_PATH) -> LifecyclePolic
         orphan_min_age_seconds=raw.get("cleanup", {}).get(
             "orphan_min_age_seconds", 3600
         ),
+        max_decompressed_bytes=raw["decompression"]["max_decompressed_bytes"],
     )

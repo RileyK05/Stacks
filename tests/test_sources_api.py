@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from src.backend.common import storage
 from src.backend.common.db import connection
+from src.backend.common.lifecycle_config import load_lifecycle_policy
 from src.backend.common.schemas.base import UserTier
 from src.backend.common.tiers import load_tier_policies
 from tests.conftest import verify_email
@@ -64,7 +65,15 @@ def test_upload_streams_compresses_and_accounts_stored_bytes(
     assert body["stored_encoding"] == "gzip"
     assert body["stored_size_bytes"] < len(raw)
     source_id = UUID(body["source_id"])
-    assert storage.read_stored(course_id, source_id, "gzip") == raw
+    assert (
+        storage.read_stored(
+            course_id,
+            source_id,
+            "gzip",
+            max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+        )
+        == raw
+    )
     with connection() as conn:
         recorded = conn.execute(
             "SELECT size_bytes, stored_encoding FROM sources WHERE source_id = %s",
@@ -182,4 +191,12 @@ def test_archived_course_copy_recreates_stored_sources(
             "SELECT source_id, stored_encoding FROM sources WHERE course_id = %s",
             (copied_id,),
         ).fetchone()
-    assert storage.read_stored(copied_id, source_id, encoding) == raw
+    assert (
+        storage.read_stored(
+            copied_id,
+            source_id,
+            encoding,
+            max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+        )
+        == raw
+    )

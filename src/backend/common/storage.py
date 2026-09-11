@@ -72,6 +72,24 @@ class EmptyUploadError(RuntimeError):
         super().__init__("uploaded file is empty")
 
 
+class DecompressionLimitExceededError(RuntimeError):
+    """A stored file expanded past the configured decompression ceiling while
+    being read back. Not a quota rejection — the stored bytes passed quota at
+    upload time; this is a read-time safety cap so no parser can expand a
+    stored file unboundedly."""
+
+    def __init__(
+        self, source_id: UUID, allowed_bytes: int, expanded_bytes: int
+    ) -> None:
+        self.source_id = source_id
+        self.allowed_bytes = allowed_bytes
+        self.expanded_bytes = expanded_bytes
+        super().__init__(
+            f"stored source {source_id} expands past the decompression "
+            f"ceiling: {expanded_bytes}+ bytes produced, {allowed_bytes} allowed"
+        )
+
+
 def storage_root() -> Path:
     root = Path(get_settings().storage_root)
     root.mkdir(parents=True, exist_ok=True)
@@ -297,11 +315,44 @@ def remove_stored(course_id: UUID, source_id: UUID) -> None:
         path.parent.rmdir()
 
 
-def read_stored(course_id: UUID, source_id: UUID, stored_encoding: str | None) -> bytes:
-    raw = source_disk_path(course_id, source_id).read_bytes()
-    if stored_encoding == "gzip":
-        return gzip.decompress(raw)
-    return raw
+def read_stored(
+    course_id: UUID,
+    source_id: UUID,
+    stored_encoding: str | None,
+    *,
+    max_decompressed_bytes: int,
+) -> bytes:
+    """Read a stored file back, decompressing in bounded chunks. The
+    decompression ceiling is mandatory (the whole-buffer read this replaces
+    is the seam a zip-bomb would exploit); identity-encoded files are capped
+    at their on-disk size. Callers resolve the cap from the versioned
+    lifecycle policy; the policy value must stay >= every tier's raw upload
+    ceiling, which test_config.py pins."""
+    path = source_disk_path(course_id, source_id)
+    if stored_encoding != "gzip":
+        expanded = path.stat().st_size
+        if expanded > max_decompressed_bytes:
+            raise DecompressionLimitExceededError(
+                source_id, max_decompressed_bytes, expanded
+            )
+        return path.read_bytes()
+    produced = 0
+    parts: list[bytes] = []
+    try:
+        with path.open("rb") as raw_stream, gzip.GzipFile(fileobj=raw_stream) as gunzip:
+            while True:
+                chunk = gunzip.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                produced += len(chunk)
+                if produced > max_decompressed_bytes:
+                    raise DecompressionLimitExceededError(
+                        source_id, max_decompressed_bytes, produced
+                    )
+                parts.append(chunk)
+    except (EOFError, gzip.BadGzipFile) as error:
+        raise ValueError(f"stored gzip stream is corrupt: {source_id}") from error
+    return b"".join(parts)
 
 
 def sanitize_display_name(name: str) -> str:

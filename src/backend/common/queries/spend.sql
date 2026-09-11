@@ -18,16 +18,17 @@ RETURNING subscription_id, user_id, tier, started_at, ended_at;
 SELECT COALESCE(SUM(input_tokens + output_tokens + overhead_tokens), 0) AS spent
 FROM generation_ledger
 WHERE user_id = %(user_id)s
+  AND spend_kind = %(spend_kind)s
   AND created_at >= %(week_start)s;
 
 -- name: record
 INSERT INTO generation_ledger
-    (user_id, course_id, course_label, task, model, input_tokens, output_tokens, overhead_tokens)
-VALUES (%(user_id)s, %(course_id)s, %(course_label)s, %(task)s, %(model)s, %(input_tokens)s, %(output_tokens)s, %(overhead_tokens)s)
-RETURNING ledger_id, user_id, course_id, course_label, task, model, input_tokens, output_tokens, overhead_tokens, created_at;
+    (user_id, course_id, course_label, task, model, spend_kind, input_tokens, output_tokens, overhead_tokens)
+VALUES (%(user_id)s, %(course_id)s, %(course_label)s, %(task)s, %(model)s, %(spend_kind)s, %(input_tokens)s, %(output_tokens)s, %(overhead_tokens)s)
+RETURNING ledger_id, user_id, course_id, course_label, task, model, spend_kind, input_tokens, output_tokens, overhead_tokens, created_at;
 
 -- name: ledger_page
-SELECT ledger_id, user_id, course_id, course_label, task, model, input_tokens, output_tokens, overhead_tokens, created_at
+SELECT ledger_id, user_id, course_id, course_label, task, model, spend_kind, input_tokens, output_tokens, overhead_tokens, created_at
 FROM generation_ledger
 WHERE user_id = %(user_id)s
 ORDER BY created_at DESC

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from src.backend.common import courses_repo, spend_repo, users_repo
-from src.backend.common.schemas.base import UserTier
+from src.backend.common.schemas.base import SpendKind, UserTier
 from src.backend.common.tiers import TierPolicy
 
 
@@ -87,23 +87,33 @@ def check_budget(
     *,
     now: datetime | None = None,
     spent: int | None = None,
+    spend_kind: SpendKind,
 ) -> BudgetState:
     """Inspectable budget check. Callers gate model compute on this, then
     record spend via `spend_repo.record_generation` after the call completes.
     In-flight generations are never cut off mid-answer; the gate applies to
-    the *next* request only."""
+    the *next* request only. `spend_kind` selects the pool: generation
+    (interactive) or ingestion (bulk upload work) — the two budgets are
+    independent weekly pools."""
     reference = now or datetime.now(UTC)
     current_week_start = spend_repo.week_start(reference)
-    current_spent = (
-        spend_repo.weekly_spend(user_id, reference) if spent is None else spent
+    budget = (
+        policy.ingestion_token_budget
+        if spend_kind == SpendKind.INGESTION
+        else policy.weekly_token_budget
     )
-    if current_spent > policy.weekly_token_budget:
-        raise BudgetExceededError(tier, current_spent, policy.weekly_token_budget)
+    current_spent = (
+        spend_repo.weekly_spend(user_id, reference, spend_kind=spend_kind)
+        if spent is None
+        else spent
+    )
+    if current_spent > budget:
+        raise BudgetExceededError(tier, current_spent, budget)
     return BudgetState(
         tier=tier,
         spent=current_spent,
-        budget=policy.weekly_token_budget,
-        remaining=policy.weekly_token_budget - current_spent,
+        budget=budget,
+        remaining=budget - current_spent,
         week_start=current_week_start,
     )
 

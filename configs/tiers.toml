@@ -1,20 +1,22 @@
 [version]
-tiers_config_version = "6"
+tiers_config_version = "7"
 
 [free]
 weekly_token_budget = 100000
+ingestion_token_budget = 100000
 max_owned_courses = 2
 max_course_storage_bytes = 104857600
 max_total_storage_bytes = 1073741824
 max_raw_upload_bytes = 104857600
 free_tier_overhead_percent = 5
-models = { tutor_answer = "deepseek-v4-flash", toc_update = "small-stable-toc", probe_generation = "deepseek-v4-flash", course_knowledge_extraction = "deepseek-v4-flash", probe_evaluation = "deepseek-v4-flash", artifact_generation = "deepseek-v4-flash" }
+models = { tutor_answer = "deepseek-v4-flash", toc_update = "small-stable-toc", probe_generation = "deepseek-v4-flash", course_knowledge_extraction = "small-stable-toc", probe_evaluation = "deepseek-v4-flash", artifact_generation = "deepseek-v4-flash" }
 
 [paid]
 weekly_token_budget = 2000000
+ingestion_token_budget = 2000000
 max_owned_courses = 20
 max_course_storage_bytes = 1073741824
 max_total_storage_bytes = 10737418240
 max_raw_upload_bytes = 1073741824
 free_tier_overhead_percent = 0
-models = { tutor_answer = "deepseek-v4", toc_update = "small-stable-toc", probe_generation = "deepseek-v4", course_knowledge_extraction = "deepseek-v4", probe_evaluation = "deepseek-v4", artifact_generation = "deepseek-v4" }
+models = { tutor_answer = "deepseek-v4", toc_update = "small-stable-toc", probe_generation = "deepseek-v4", course_knowledge_extraction = "small-stable-toc", probe_evaluation = "deepseek-v4", artifact_generation = "deepseek-v4" }

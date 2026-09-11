@@ -110,6 +110,15 @@ class EnrollmentSource(StrEnum):
     JOIN_CODE = "join_code"
 
 
+class SpendKind(StrEnum):
+    """Which weekly pool a billed call draws from. Pools are separate so a
+    large ingestion upload can never drain the budget a user needs for
+    interactive answers."""
+
+    GENERATION = "generation"
+    INGESTION = "ingestion"
+
+
 class ObjectAccessScope(StrEnum):
     PUBLISHED = "published"
     ENROLLED = "enrolled"

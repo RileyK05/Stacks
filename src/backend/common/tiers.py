@@ -13,6 +13,7 @@ DEFAULT_TIERS_PATH = PROJECT_ROOT / "configs" / "tiers.toml"
 class TierPolicy(BaseModel):
     tier: UserTier
     weekly_token_budget: int = Field(ge=0)
+    ingestion_token_budget: int = Field(ge=0)
     max_owned_courses: int = Field(ge=1)
     max_course_storage_bytes: int = Field(ge=1)
     max_total_storage_bytes: int = Field(ge=1)

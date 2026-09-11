@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import Field, model_validator
 from src.backend.common.schemas.base import (
     BaseRecord,
+    SpendKind,
     UserTier,
     _new_id,
     _now,
@@ -35,6 +36,7 @@ class GenerationLedgerEntry(BaseRecord):
     course_label: str | None = None
     task: str
     model: str
+    spend_kind: SpendKind
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     overhead_tokens: int = Field(default=0, ge=0)

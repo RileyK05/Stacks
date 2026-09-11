@@ -4,6 +4,7 @@ from uuid import uuid4
 
 import pytest
 from src.backend.common import storage
+from src.backend.common.lifecycle_config import load_lifecycle_policy
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +104,15 @@ def test_write_and_read_roundtrip_with_gzip() -> None:
     path = storage.write_stored(course_id, source_id, stored)
     try:
         assert path.exists()
-        assert storage.read_stored(course_id, source_id, encoding) == data
+        assert (
+            storage.read_stored(
+                course_id,
+                source_id,
+                encoding,
+                max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+            )
+            == data
+        )
     finally:
         path.unlink(missing_ok=True)
         path.parent.rmdir()
@@ -136,3 +145,68 @@ def test_remove_course_directory(monkeypatch) -> None:
         assert not os.path.exists(os.path.join(sandbox, str(course_id)))
     finally:
         shutil.rmtree(sandbox, ignore_errors=True)
+
+
+def test_gzip_read_blocked_at_decompression_ceiling() -> None:
+    course_id = uuid4()
+    source_id = uuid4()
+    data = b"x" * 10_000_000
+    stored, encoding = storage.compress_for_storage(data, "text/plain")
+    assert encoding == "gzip"
+    assert len(stored) < len(data) // 10
+    path = storage.write_stored(course_id, source_id, stored)
+    try:
+        with pytest.raises(storage.DecompressionLimitExceededError):
+            storage.read_stored(
+                course_id, source_id, encoding, max_decompressed_bytes=1_000_000
+            )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+
+def test_identity_read_blocked_at_decompression_ceiling() -> None:
+    course_id = uuid4()
+    source_id = uuid4()
+    data = b"y" * 2_000_000
+    path = storage.write_stored(course_id, source_id, data)
+    try:
+        with pytest.raises(storage.DecompressionLimitExceededError):
+            storage.read_stored(
+                course_id, source_id, "identity", max_decompressed_bytes=1_000_000
+            )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+
+def test_gzip_read_allows_exactly_at_ceiling() -> None:
+    course_id = uuid4()
+    source_id = uuid4()
+    data = b"z" * 500_000
+    stored, encoding = storage.compress_for_storage(data, "text/plain")
+    path = storage.write_stored(course_id, source_id, stored)
+    try:
+        assert (
+            storage.read_stored(
+                course_id, source_id, encoding, max_decompressed_bytes=500_000
+            )
+            == data
+        )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+
+def test_corrupt_gzip_raises_value_error() -> None:
+    course_id = uuid4()
+    source_id = uuid4()
+    path = storage.write_stored(course_id, source_id, b"not gzip")
+    try:
+        with pytest.raises(ValueError):
+            storage.read_stored(
+                course_id, source_id, "gzip", max_decompressed_bytes=1_000_000
+            )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()

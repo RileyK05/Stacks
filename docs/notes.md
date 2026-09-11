@@ -1184,3 +1184,75 @@ Second pass over every file for stale remnants the rename missed. Fixed:
   uneditable by the append-only rule; cosmetic only, mapped by decision
   007. Same class as the recorded 013/018 cosmetic notes.
 Gate: 193 tests, ruff, mypy, git diff --check all green.
+
+## Storage accounting + ingestion spend ratified and implemented (2026-09-11)
+
+Operator decisions from the storage conversation, now in code:
+
+1. **Quota = stored bytes, ratified.** A file's quota cost is its
+   compressed stored size (post-gzip). "Fairness" across compressibility
+   was explicitly deprioritized in favor of a consistent, inspectable
+   allocation number per user. No change to size_bytes semantics; no
+   migration for existing rows.
+2. **Decompression is a read-time safety cap, not a quota.** New
+   `configs/lifecycle.toml` `[decompression] max_decompressed_bytes`
+   (200 MB; config version 3). `storage.read_stored` now streams gzip in
+   chunks and raises `DecompressionLimitExceededError` when expansion
+   exceeds the cap — it no longer decompresses whole-buffer into memory.
+   Identity files are size-checked against the cap before read. The
+   mandatory keyword-only cap parameter makes the unbounded read
+   impossible to reintroduce by accident. Note: our own gzip cannot
+   expand past the raw-body ceiling (we compressed what the ceiling
+   already capped); the cap exists for stored files whose *content* is a
+   compressed container and for defense in depth.
+3. **Ingestion gets its own weekly token pool.** `generation_ledger`
+   gained `spend_kind` ('generation' | 'ingestion', migration 022,
+   historical rows default to generation). `spend_repo.weekly_spend` and
+   `budget.check_budget` take the pool; `TierPolicy.ingestion_token_budget`
+   added (tiers.toml v7, equal to the generation budget for now — the
+   pool is a guardrail, not a ration). An upload's model calls can never
+   drain the budget a user needs for interactive answers.
+4. **Ingestion tasks route to the cheap model.** tiers.toml now routes
+   `course_knowledge_extraction` to `small-stable-toc` alongside
+   `toc_update` (both tiers). Reasoning-off for ingestion is a provider
+   call-parameter concern, deferred to Milestone 1 wiring when a real
+   provider client exists; the routing seam is in place. Extraction
+   quality is still gated by the eval-set rule: cheap is the default,
+   upgrade only on a documented baseline failure.
+5. **Free-tier provider check still open.** Any cheap/free ingestion
+   provider must pass the same no-retention verification as the main
+   provider before use (golden rule 4). Blocked on picking the provider.
+
+Gate: 198 tests, ruff, mypy, git diff --check all green.
+
+## Review fixes on the storage/spend first pass (2026-09-11, same day)
+
+Operator-ratified review found real issues; all fixed before commit:
+
+- **Cap raised to cover the paid raw ceiling (1 GB).** The first-pass
+  200 MB cap would have made large legitimate paid uploads unreadable
+  (quota passes at stored bytes, read raises). New invariant, pinned by
+  test: `max_decompressed_bytes >= max(max_raw_upload_bytes)` across
+  tiers. Config comment documents the derivation.
+- **No false fallback on spend_kind.** `check_budget`, `weekly_spend`,
+  `record_generation` now take `spend_kind` as a required keyword — no
+  production callers exist, so the cheapest moment to make the wrong-pool
+  mistake unrepresentable is now. `record_generation` rejects raw strings
+  with a clean ValueError instead of a psycopg CheckViolation;
+  `GenerationLedgerEntry.spend_kind` validates as the SpendKind enum.
+- **Loader strictness.** `lifecycle_config` reads
+  `[decompression] max_decompressed_bytes` via required keys (fails
+  loudly), dropping the silent hardcoded default; test pins it.
+- **Error mapping.** gzip branch maps only EOFError/BadGzipFile to
+  "corrupt stream"; FileNotFoundError/permissions propagate as-is,
+  matching the identity branch.
+- **Tests resolve the cap via load_lifecycle_policy** instead of
+  hardcoding, exercising the config→caller resolution path the seam
+  mandates.
+- Not adopted (deliberate): whole-file buffering in read_stored stays for
+  now (cap-bounded, fine at current scale); the Milestone 1 parser seam
+  should take a stream. DB CHECK on spend_kind accepted (mild tension
+  with free-string convention — spend kinds are billing semantics, not
+  extensible content types).
+
+Gate: 201 tests, ruff, mypy, git diff --check all green.

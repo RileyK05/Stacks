@@ -1,5 +1,5 @@
 [version]
-lifecycle_config_version = "2"
+lifecycle_config_version = "3"
 
 [archive]
 grace_days = 90
@@ -10,6 +10,16 @@ summary_base_tokens = 800
 [memory_tokens]
 free = 1000
 paid = 5000
+
+[decompression]
+# Hard ceiling on unzipped bytes per stored source. Quota charges stored
+# (compressed) bytes, so a stored file may expand past its quota cost at
+# read time; this cap is the guard, never a quota replacement. MUST stay
+# >= every tier's max_raw_upload_bytes (paid ceiling is 1 GB): stored
+# files are our gzip of a body that already passed that ceiling, so the
+# legitimate expansion domain is 0..max_raw_upload_bytes. The invariant
+# is pinned by test_decompression_cap_covers_raw_upload_ceilings.
+max_decompressed_bytes = 1073741824
 
 [cleanup]
 max_attempts = 5

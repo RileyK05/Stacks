@@ -17,6 +17,7 @@ from src.backend.common.budget import (
 )
 from src.backend.common.db import connection
 from src.backend.common.schemas import CourseVisibility, UserTier
+from src.backend.common.schemas.base import SpendKind
 from src.backend.common.schemas.identity import User
 from src.backend.common.tiers import TierPolicy, load_tier_policies
 
@@ -48,6 +49,7 @@ def test_tier_policy_requires_all_model_roles() -> None:
         TierPolicy(
             tier=UserTier.FREE,
             weekly_token_budget=100,
+            ingestion_token_budget=100,
             max_owned_courses=2,
             max_course_storage_bytes=1048576,
             max_total_storage_bytes=1048576,
@@ -83,19 +85,87 @@ def test_week_start_is_monday_midnight_utc() -> None:
 def test_weekly_spend_sums_ledger_entries() -> None:
     account = _user()
     spend_repo.record_generation(
-        account.user_id, "tutor_answer", "test-model", 500, 500
+        account.user_id,
+        "tutor_answer",
+        "test-model",
+        500,
+        500,
+        spend_kind=SpendKind.GENERATION,
     )
-    assert spend_repo.weekly_spend(account.user_id) == 1000
+    assert (
+        spend_repo.weekly_spend(account.user_id, spend_kind=SpendKind.GENERATION)
+        == 1000
+    )
     spend_repo.record_generation(
-        account.user_id, "toc_update", "test-model", 250, 250
+        account.user_id,
+        "toc_update",
+        "test-model",
+        250,
+        250,
+        spend_kind=SpendKind.INGESTION,
     )
-    assert spend_repo.weekly_spend(account.user_id) == 1500
+    assert (
+        spend_repo.weekly_spend(account.user_id, spend_kind=SpendKind.GENERATION)
+        == 1000
+    )
+    assert (
+        spend_repo.weekly_spend(account.user_id, spend_kind=SpendKind.INGESTION)
+        == 500
+    )
+
+
+def test_ingestion_pool_is_independent_of_generation_pool() -> None:
+    account = _user()
+    policy = load_tier_policies().policy_for(UserTier.FREE)
+    for _ in range(3):
+        spend_repo.record_generation(
+            account.user_id,
+            "toc_update",
+            "test-model",
+            100,
+            100,
+            spend_kind=SpendKind.INGESTION,
+        )
+    ingestion_spent = spend_repo.weekly_spend(
+        account.user_id, spend_kind=SpendKind.INGESTION
+    )
+    generation_spent = spend_repo.weekly_spend(
+        account.user_id, spend_kind=SpendKind.GENERATION
+    )
+    assert ingestion_spent == 600
+    assert generation_spent == 0
+    state = check_budget(
+        account.user_id, UserTier.FREE, policy, spend_kind=SpendKind.INGESTION
+    )
+    assert state.spent == 600
+    assert state.budget == policy.ingestion_token_budget
+    over_budget = policy.ingestion_token_budget + 1
+    with pytest.raises(BudgetExceededError):
+        check_budget(
+            account.user_id,
+            UserTier.FREE,
+            policy,
+            spent=over_budget,
+            spend_kind=SpendKind.INGESTION,
+        )
+    check_budget(
+        account.user_id,
+        UserTier.FREE,
+        policy,
+        spent=0,
+        spend_kind=SpendKind.GENERATION,
+    )
 
 
 def test_ledger_records_and_lists() -> None:
     account = _user()
     entry = spend_repo.record_generation(
-        account.user_id, "tutor_answer", "deepseek-v4-flash", 100, 200
+        account.user_id,
+        "tutor_answer",
+        "deepseek-v4-flash",
+        100,
+        200,
+        spend_kind=SpendKind.GENERATION,
     )
     assert entry.input_tokens == 100
     assert entry.output_tokens == 200
@@ -107,11 +177,34 @@ def test_ledger_rejects_unknown_task_and_negative_tokens() -> None:
     account = _user()
     with pytest.raises(ValueError, match="unknown generation task"):
         spend_repo.record_generation(
-            account.user_id, "definitely_not_a_task", "test-model", 1, 1
+            account.user_id,
+            "definitely_not_a_task",
+            "test-model",
+            1,
+            1,
+            spend_kind=SpendKind.GENERATION,
         )
     with pytest.raises(ValueError, match="negative"):
         spend_repo.record_generation(
-            account.user_id, "tutor_answer", "test-model", -5, 0
+            account.user_id,
+            "tutor_answer",
+            "test-model",
+            -5,
+            0,
+            spend_kind=SpendKind.GENERATION,
+        )
+
+
+def test_record_rejects_raw_string_spend_kind() -> None:
+    account = _user()
+    with pytest.raises(ValueError, match="spend_kind must be a SpendKind"):
+        spend_repo.record_generation(
+            account.user_id,
+            "tutor_answer",
+            "test-model",
+            1,
+            1,
+            spend_kind="generation",  # type: ignore[arg-value]
         )
 
 
@@ -119,7 +212,10 @@ def test_check_budget_under_limit_passes() -> None:
     account = _user()
     policies = load_tier_policies()
     state = check_budget(
-        account.user_id, UserTier.FREE, policies.policy_for(UserTier.FREE)
+        account.user_id,
+        UserTier.FREE,
+        policies.policy_for(UserTier.FREE),
+        spend_kind=SpendKind.GENERATION,
     )
     assert state.remaining == state.budget
     assert state.spent == 0
@@ -131,7 +227,11 @@ def test_check_budget_over_limit_raises() -> None:
     free = policies.policy_for(UserTier.FREE)
     with pytest.raises(BudgetExceededError):
         check_budget(
-            account.user_id, UserTier.FREE, free, spent=free.weekly_token_budget + 1
+            account.user_id,
+            UserTier.FREE,
+            free,
+            spent=free.weekly_token_budget + 1,
+            spend_kind=SpendKind.GENERATION,
         )
 
 
@@ -242,9 +342,18 @@ def test_free_tier_overhead_applied_on_record_not_on_gate() -> None:
 def test_overhead_counts_toward_weekly_spend() -> None:
     account = _user()
     spend_repo.record_generation(
-        account.user_id, "tutor_answer", "test-model", 500, 500, overhead_tokens=100
+        account.user_id,
+        "tutor_answer",
+        "test-model",
+        500,
+        500,
+        overhead_tokens=100,
+        spend_kind=SpendKind.GENERATION,
     )
-    assert spend_repo.weekly_spend(account.user_id) == 1100
+    assert (
+        spend_repo.weekly_spend(account.user_id, spend_kind=SpendKind.GENERATION)
+        == 1100
+    )
 
 
 def test_ledger_keeps_course_label() -> None:
@@ -256,6 +365,7 @@ def test_ledger_keeps_course_label() -> None:
         10,
         10,
         course_label="MATH101 — Calculus",
+        spend_kind=SpendKind.GENERATION,
     )
     assert entry.course_label == "MATH101 — Calculus"
 

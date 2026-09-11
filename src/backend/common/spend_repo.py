@@ -8,7 +8,11 @@ from psycopg.connection import Connection
 from psycopg.rows import dict_row
 from src.backend.common.db import connection
 from src.backend.common.queries import get
-from src.backend.common.schemas.base import KNOWN_GENERATION_TASKS, UserTier
+from src.backend.common.schemas.base import (
+    KNOWN_GENERATION_TASKS,
+    SpendKind,
+    UserTier,
+)
 from src.backend.common.schemas.spend import GenerationLedgerEntry, UserSubscription
 
 _FILE = "spend"
@@ -90,11 +94,20 @@ def end_active_subscription(user_id: UUID) -> UserSubscription | None:
     return _to_subscription(row)
 
 
-def weekly_spend(user_id: UUID, now: datetime | None = None) -> int:
+def weekly_spend(
+    user_id: UUID,
+    now: datetime | None = None,
+    *,
+    spend_kind: SpendKind,
+) -> int:
     with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         row = cur.execute(
             get(_FILE, "weekly_spend"),
-            {"user_id": user_id, "week_start": week_start(now)},
+            {
+                "user_id": user_id,
+                "week_start": week_start(now),
+                "spend_kind": spend_kind.value,
+            },
         ).fetchone()
     assert row is not None
     return int(row["spent"])
@@ -109,9 +122,16 @@ def record_generation(
     course_id: UUID | None = None,
     course_label: str | None = None,
     overhead_tokens: int = 0,
+    *,
+    spend_kind: SpendKind,
 ) -> GenerationLedgerEntry:
     if task not in KNOWN_GENERATION_TASKS:
         raise ValueError(f"unknown generation task: {task}")
+    if not isinstance(spend_kind, SpendKind):
+        raise ValueError(
+            "spend_kind must be a SpendKind member, not a raw string: "
+            f"{spend_kind!r}"
+        )
     if input_tokens < 0 or output_tokens < 0 or overhead_tokens < 0:
         raise ValueError("token counts cannot be negative")
     with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
@@ -123,6 +143,7 @@ def record_generation(
                 "course_label": course_label,
                 "task": task,
                 "model": model,
+                "spend_kind": spend_kind.value,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "overhead_tokens": overhead_tokens,
@@ -141,6 +162,7 @@ def _to_entry(row: dict[str, Any]) -> GenerationLedgerEntry:
         course_label=row["course_label"],
         task=row["task"],
         model=row["model"],
+        spend_kind=row["spend_kind"],
         input_tokens=row["input_tokens"],
         output_tokens=row["output_tokens"],
         overhead_tokens=row["overhead_tokens"],
