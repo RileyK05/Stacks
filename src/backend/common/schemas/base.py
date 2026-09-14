@@ -188,3 +188,13 @@ KNOWN_GENERATION_TASKS = frozenset(
         "artifact_generation",
     }
 )
+
+# Bulk ingestion work bills the ingestion pool; everything else is
+# interactive generation. Symmetric with SpendKind and the single source
+# of truth for task classification (providers derive pools from this).
+INGESTION_TASKS = frozenset(
+    {
+        "toc_update",
+        "course_knowledge_extraction",
+    }
+)

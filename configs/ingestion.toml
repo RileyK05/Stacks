@@ -1,5 +1,7 @@
-pipeline_version = "1"
+pipeline_version = "2"
 max_attempts = 2
+chunk_max_tokens = 512
+prompt_window_chars = 8000
 
 [[stages]]
 name = "extract_text"

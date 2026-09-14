@@ -272,7 +272,10 @@ for course concepts, a reranker, a probe generator, an error classifier.
   node survives).
 - [ ] **Milestone 1: Source-grounded retrieval** — ingestion wiring into the
   pipeline (parse → locators → chunks → TOC), TOC-guided retrieval, cited
-  answers, retrieval traces.
+  answers, retrieval traces. *Status: deterministic stages done (text →
+  locators → chunks, run ledger, queue claims, budget-gated provider seam
+  failing closed until a provider is chosen); worker loop + API handoff +
+  retrieval + tutor remain.*
 - [ ] **Milestone 2: User + course memory** — the memory tree of decision
   007: elevate tutor profiles into the user-memory root (behavioral,
   cross-course), evolve the owner's course-memory node from a content

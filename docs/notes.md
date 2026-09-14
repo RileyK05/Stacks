@@ -1256,3 +1256,169 @@ Operator-ratified review found real issues; all fixed before commit:
   extensible content types).
 
 Gate: 201 tests, ruff, mypy, git diff --check all green.
+
+## Milestone 1 phase 1: ingestion pipeline wired end to end (2026-09-11)
+
+The M1 ingestion skeleton is now real code against the real DB:
+
+- **New modules** (`src/backend/ingest/`): `extract.py` (text + locators:
+  PDF pages via pypdf, markdown sections, plain-text line ranges),
+  `chunking.py` (token-bounded chunks, ~4 chars/token, paragraph→
+  sentence→whitespace→hard-cut boundaries, chunks map to overlapping
+  locators), `runs.py` (DB run ledger: run + stage rows, claims via
+  FOR UPDATE SKIP LOCKED), `orchestrator.py` (binds executor + handlers
+  + ledger into `run_ingestion`).
+- **Provider seam** (`common/provider.py`): the single model-call
+  function (task+prompt in, result out). Routing, billing-pool checks
+  (ingestion tasks must bill the ingestion pool), and ledger recording
+  are wired; the HTTP call is a deliberate `ProviderUnavailableError`
+  until the operator picks a provider and verifies no-retention. Only
+  this file changes when a real client lands.
+- **Migration 023**: `sources.extracted_text` (retrieval reads text, not
+  binaries; raw files stay untouched on disk).
+- **Commit discipline** (the interesting design outcome): the run row
+  commits at creation, each succeeded stage transition commits with its
+  output, and a failed run commits its audit trail in a fresh
+  transaction after rollback. Consequence: completed stage output
+  survives a later stage's failure — a retry does not redo committed
+  stages; partial derived rows from the failing stage roll back.
+  Inspectability is preserved: run/stage/error messages are always
+  queryable, including the provider error inside the failed stage row.
+- **Queue**: `queue_upload` hands uploaded sources to
+  `pending_ingestion`; `claim_pending_sources` is the SKIP LOCKED worker
+  seam (no worker loop yet — that is the next M1 step, with the API
+  handoff).
+- **Model stages** (`update_toc`, `extract_knowledge`): prompts built,
+  routed through the provider seam, billed to the ingestion pool. They
+  currently fail runs (no provider), which the tests assert as the
+  honest current state; swapping in a real provider turns the same
+  pipeline fully green without touching orchestrator code.
+- pypdf added as a dependency (PDF page extraction); `pyproject.toml`
+  updated.
+
+Gate: 222 tests (21 new), ruff, mypy, git diff --check all green.
+Not committed yet — review first.
+
+## M1 ingestion review: 21 findings, all fixed before commit (2026-09-11)
+
+External review of the ingestion batch found 21 issues (3 correctness,
+several convention violations, several smaller). All fixed:
+
+- **Citation alignment (golden rule 1)**: PDF locators were built without
+  the join separator, so every page after the first drifted N-1 chars —
+  page 50 cited 49 chars early. Locators and text now share one join
+  (`_join_pages`/`_pdf_locators` built from the same page_texts), with a
+  regression test asserting each page span slices out exactly its own
+  page. Markdown heading scan now masks code fences with equal-length
+  spaces (offsets preserved, in-fence `#` no longer a heading).
+- **Money wiring was dead**: nothing called check_budget or recorded
+  spend; generate took caller-supplied token counts (inverted). The
+  provider seam now gates (check_budget), calls, and records inside one
+  function; token counts come from `_call_provider`'s return, never the
+  caller. Tier is resolved+verified inside the seam (no caller-supplied
+  policy). Pool routing is symmetric and lives in schemas/base.py
+  (INGESTION_TASKS) — the single source of truth. A stubbed-provider test
+  proves a full pipeline run goes green AND writes ingestion-pool ledger
+  rows with nonzero tokens; a drained-pool test proves the gate blocks
+  before any provider call.
+- **Failed sources were a dead end**: mark_source_failed filtered on
+  status='uploaded' and nothing cleared queue rows — failures were
+  permanently unretryable with zombie queue rows. Failure now clears the
+  queue row; `requeue_failed_source` is the deliberate failed→uploaded
+  retry path; claims require status='uploaded' AND claimed_at IS NULL.
+- **The SKIP LOCKED claim couldn't work**: run_ingestion's first commit
+  released the row lock mid-claim, letting a second worker double-claim.
+  Claims are now a persistent state transition (claimed_at + claimed_runs,
+  migration 024), not a lock. The IN-subquery silently dropped both LIMIT
+  and SKIP LOCKED; rewritten as CTE.
+- **False-success guard**: model stages fail on empty provider output
+  (EmptyModelError) — a provider landing cannot silently produce
+  SUCCEEDED runs with an empty knowledge base. The stub still doesn't
+  write TOC/knowledge rows; that lands with the real provider output
+  format (honest state, tests assert it).
+- **Dispatch trapdoor closed**: unsupported mimes (zip/png/mp4) raise
+  UnsupportedSourceTypeError at dispatch instead of raw
+  UnicodeDecodeError after prior stages committed. Whitelist: PDF, plain
+  text, markdown, csv, json, xml, yaml. Scanned/image-only PDFs raise
+  EmptyExtractionError instead of "succeeding" with nothing retrievable.
+- **BOM + cp1252**: utf-8-sig decode (Windows BOM no longer breaks the
+  first heading), cp1252 fallback for legacy lecture notes.
+- **extracted_text column dropped** (migration 024): it duplicated
+  chunks in a Postgres row value approaching the 1 GB ceiling. Text
+  lives in chunks only; raw stays on disk.
+- **Honest docs**: orchestrator docstring now says retries re-execute
+  from the top (safe, not free); the earlier notes.md claim "billed to
+  the ingestion pool" was false at the time and is now true; "only this
+  file changes when a provider lands" corrected — `_call_provider` +
+  `_parse_usage` plus the row-writing of real output change.
+- **Tunables in config** (ingestion.toml v2): chunk_max_tokens=512,
+  prompt_window_chars=8000 (placeholder window acknowledged — TOC stage
+  is structurally blind past it until the provider formats real output).
+- **Convention sweep**: all raw SQL moved to queries/ingestion.sql
+  (source_row, deletes, requeue_row, enqueue_pending); queue_upload's
+  query no longer lives in course_archives.sql; failure audit typed
+  against IngestionPipelineError (was duck-typed Any); source facts
+  fetched once via fetch_source_row and passed through the constructor
+  (no lazy DB reads, no private reach-ins, no -O-silenced asserts).
+- Prompt-injection acknowledged in the orchestrator docstring: uploaded
+  text is inlined into shared-course prompts unescaped; input marking is
+  a provider-landing requirement, part of the go-live gate.
+
+Design decision for the worker (not built yet): claims are persistent
+(claimed_at), so the future worker marks claimed_at and requeues stale
+claims (claimed_runs counter is the watchdog input). This was the design
+space the review's #4 demanded — it now exists.
+
+Gate: 233 tests, ruff, mypy, git diff --check all green.
+
+## Open: retrieval + generation design — flagged for dedicated conversations (2026-09-11)
+
+Generation and retrieval are the highest-ambiguity areas of the project
+(structure, scope, and product behavior all genuinely open). Operator
+wants to break each down properly in its own conversation rather than
+decide inline. Each item below gets its own revisit; nothing here is
+final.
+
+**Fork A — retrieval mechanism.** History: the original plan was
+embeddings + vector DB; operator rejected it on two grounds — (1) with
+lots of similar course text, embedding search returns many near-duplicate
+hits (precision worry at the top of the ranking); (2) the cascading-TOC
+idea fit the domain better. Current ratified context (do not re-litigate
+in the revisit): NO embeddings in the baseline (decision 001-era rule:
+retrieval replaces embedding similarity; models earn their role on a
+documented baseline failure). Candidate order when revisited:
+tsvector keyword baseline first, then TOC-guided routing as a measured
+upgrade that must beat the baseline on the eval set before becoming
+default.
+
+**Fork B — behavior when retrieval finds nothing relevant.** Options on
+the table: strict refusal ("this isn't in your materials"), ungrounded
+answer clearly flagged, or an explicit opt-in toggle. Operator's product
+philosophy call; default lean recorded so far is strict refusal. Not
+final — this is a trust/product-positioning decision.
+
+**Fork C — answer shape and citation contract.** Working direction: every
+factual claim carries an inline locator citation; the retrieval trace
+(chunks, scores, prompt) stored on every answer. Detail level of
+citation rendering, per-claim vs per-answer granularity, and how
+"unsupported claim" is rendered are open.
+
+**Fork D — first-ship scope.** Working direction: single-turn grounded
+Q&A first; conversation threads and follow-up memory not load-bearing
+until the basics are solid. Open.
+
+**Fork E — TOC's role at query time.** TOC is written at ingestion
+(update_toc stage) but is not load-bearing for retrieval until the
+TOC-guided routing beats the keyword baseline on the eval set (golden
+rule 5). The comparison is the deliverable; "smarter" is not a
+justification by itself.
+
+**Also open, related**: eval question set for retrieval+answer quality
+(hand-written from real uploads, committed to data/eval/); the "did the
+chunk actually support the claim" audit loop; conversation storage scope
+(schema exists, not load-bearing).
+
+Context for the revisit: the ingestion side is built and aligned
+(233 tests green, locators are citation-grade after the drift fix);
+retrieval reads chunks+locators directly, so nothing blocks Fork A work
+except the conversation itself.

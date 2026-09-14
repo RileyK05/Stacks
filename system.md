@@ -38,8 +38,13 @@ appears below.
 
 Implementation status matters throughout this document: schemas, auth,
 owner/enrollment permission rules, source-to-course-object identity, ingestion
-run state, upload storage, and archive-then-purge services are implemented. File
-parsing, retrieval, and tutor orchestration remain planned. Diagrams for those later flows are
+run state, upload storage, archive-then-purge services, and the deterministic
+ingestion stages (file parsing → text + locators → token-bounded chunks, with
+a DB-backed run ledger, persistent queue claims, and tier/budget gating) are
+implemented. Retrieval and tutor orchestration remain planned. The model
+stages (update_toc, course_knowledge_extraction) are wired through the
+provider seam but fail closed until a provider is chosen — runs are
+inspectably failed, never falsely successful. Diagrams for the later flows are
 the intended design, not claims that the code already performs them.
 
 The system is a **pipeline with a memory**. Think of it like a **library that
@@ -88,7 +93,7 @@ flowchart TB
     subgraph Models["Model providers (API, no data retention)"]
         GEN["Generative model<br/>(deepseek v4 flash)"]
         TOCW["TOC-writer model<br/>(small, stable)"]
-        OCR["OCR model<br/>(only if scans)"]
+        OCR["OCR model<br/>(only if scans; planned)"]
     end
 
     B -->|"ask / answer (HTTP JSON)"| API
@@ -116,15 +121,16 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    F["your files<br/>(PDF / MD / TXT / PNG)"] --> ING["librarian reads + files them"]
+    F["your files<br/>(PDF / MD / TXT)"] --> ING["librarian reads + files them"]
     ING --> PG[("Postgres — the stacks")]
     ING --> GEN["generative model<br/>(writes the study guide)"]
-    ING --> OCR["OCR model<br/>(reads scanned pages)"]
+    ING --> OCR["OCR specialist<br/>(planned — scans currently<br/>fail loudly instead)"]
 ```
 
 **Analogy:** you hand the librarian a stack of papers. They read each one, note the
 page numbers, and file the text onto the shelves. For scanned pages they call in an
-OCR specialist to read the handwriting. They also draft a study guide (course
+OCR specialist to read the handwriting (that specialist is planned, not hired yet —
+image-only sources fail with a clear error today). They also draft a study guide (course
 knowledge — the study guide is course content, not memory) as they go.
 
 ### 1.3 Layer 2 — Retrieval (the card catalog)
@@ -704,29 +710,35 @@ flowchart TB
 
 ```mermaid
 flowchart LR
-    F["file: PDF / MD / TXT / PNG"] --> TYPE{text layer?}
+    F["file: PDF / MD / TXT"] --> TYPE{text layer?}
     TYPE -->|yes| PARSE["parser → text"]
-    TYPE -->|no| OCR["OCR model<br/>(scanned / image)"]
-    PARSE --> CLEAN
-    OCR --> CLEAN["clean + structure text"]
-    CLEAN --> LOC["build locators<br/>(per-format TOC)"]
-    LOC --> CHUNK["token-bounded chunking"]
+    TYPE -->|no| REVIEW_QUEUE["fail loudly:<br/>scanned/image sources<br/>need OCR (planned)"]
+    PARSE --> LOC["build locators<br/>(PDF pages / MD sections /<br/>text line ranges)"]
+    LOC --> CHUNK["token-bounded chunking<br/>(mapped to locators)"]
     CHUNK --> DB[("Postgres:<br/>sources, locators, chunks")]
-    CHUNK --> EXTRACT["extract concepts / formulas<br/>(generative model)"]
-    EXTRACT --> MEM[("knowledge store")]
     LOC --> TOC["TOC model writes<br/>course table of contents"]
     TOC --> DB
     DB --> REVIEW{"uncertain /<br/>conflicting?"}
-    MEM --> REVIEW
     REVIEW -->|yes| QUEUE["flagged for human review"]
     REVIEW -->|no| DONE["indexed"]
 ```
 
-**Steps:** accept file → detect type/OCR need → extract text with structure
-offsets → clean → build **locators** (the per-format table of contents) → split
-into **token-bounded chunks** → write sources, locators, chunks to Postgres →
-propose memory objects with evidence links → a small **TOC model** writes the
+**Steps:** accept file (streamed, deduped by hash) → dispatch on the
+supported-mime whitelist → extract text with structure
+offsets (PDF pages via pypdf, markdown sections fence-aware, plain-text
+line ranges; UTF-8 with BOM stripping, cp1252 fallback) → build **locators**
+(the per-format table of contents, separator-aligned with the joined text) →
+split into **token-bounded chunks**, each mapped to the locators it spans →
+write sources, locators, chunks to Postgres → a small **TOC model** writes the
 course table of contents → flag uncertain extractions for review.
+
+**Queueing:** every uploaded or copied source lands in `pending_ingestion`;
+a worker claims rows by a persistent state transition (`claimed_at` —
+not a row lock, which would evaporate at the pipeline's first commit) and
+runs the pipeline. Failure clears the queue row and marks the source
+`failed` with the reason; `requeue_failed_source` is the deliberate
+failed → uploaded retry path. Claims are single-flight (claimed rows are
+not re-claimable until cleared or swept).
 
 **Rules:** block solution documents from cold-probe context; prefer instructor
 sources over student notes; store a retrieval trace for every query.
@@ -735,8 +747,10 @@ The persisted pipeline order is text extraction → locators → chunks → casc
 TOC update → course-knowledge extraction. Each stage depends on the previous successful
 stage. Stage attempts and handler/configuration versions are recorded; the MVP
 configuration allows two total attempts, after which the run becomes failed and
-later stages remain unstarted. Handlers must be idempotent so retrying a stage
-does not duplicate derived data.
+later stages remain unstarted. Handlers are idempotent (each clears its own
+derived rows first) so a retry re-executes from the top safely. The run ledger
+commits per stage: completed stage output survives a later stage's failure, and
+the audit trail (run, stage rows, error messages) is always queryable.
 
 ---
 
@@ -746,6 +760,12 @@ Retrieval is **TOC-guided**, not embedding-similarity-based. The model-written
 table of contents tells the tutor where content lives, and the tutor fetches the
 specific token-bounded chunks via locators. This avoids cross-model embedding
 misalignment and keeps retrieval inspectable.
+
+**Open (Fork A in `docs/notes.md`):** the exact query-time mechanism — whether
+questions resolve against the TOC via a model call per query, via static
+matching over TOC entries + concept synonyms (no model call), or as a measured
+upgrade over a keyword (tsvector) baseline. The TOC structure, versioning, and
+locator path below are ratified; the matching mechanism is the open conversation.
 
 ```mermaid
 sequenceDiagram
@@ -787,7 +807,7 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     RAW["raw file on disk"] --> PARSE["parse / extract"]
-    PARSE --> TXT["extracted text → Postgres<br/>(locators + chunks, ground truth)"]
+    PARSE --> TXT["extracted text → chunks<br/>(token-bounded, with locators)"]
     RAW --> SIZE{is raw large?}
     SIZE -->|small / text-layer| KEEP["keep on disk"]
     SIZE -->|giant / scanned| CONFIRM{"manually confirmed<br/>parse OK?"}
@@ -795,7 +815,9 @@ flowchart LR
     CONFIRM -->|no| HOLD["hold for review"]
 ```
 
-- Extracted text always persists (tiny, ground truth); objects are stored whole.
+- Extracted text persists as **token-bounded chunks** in Postgres (ground truth
+  for retrieval, each mapped to its locator); raw objects are stored whole on
+  disk under server-generated names, never inlined into Postgres row values.
 - Raw originals trimmed when large/scanned, only after a successful confirmed parse.
 - Text-layer PDFs are small → usually kept; they cost nothing and let you re-parse.
 
@@ -809,12 +831,18 @@ low (a provider-served DeepSeek v4 flash is cheaper than self-hosting) and pushe
 the privacy requirement onto a *contract*: the provider must not retain prompts or
 responses. Verify this for whichever provider is chosen.
 
+**Single seam:** every model call in the backend goes through
+`common/provider.py` — task + prompt in, text out, gated and billed inside.
+Providers are an implementation detail behind that one function; swapping
+providers never touches ingestion/tutor code. No SDK objects, keys, or HTTP
+clients leak past this module.
+
 | Task | Model class | In MVP? | Note |
 |---|---|---|---|
 | Generative answer / extraction / classification | DeepSeek v4 flash | **Yes** | generative model |
 | Table-of-contents writer/updater | **small, stable** model | **Yes** | keeps TOC descriptions consistent over time |
 | Embeddings (retrieval) | separate embedding model | No | only if TOC path fails; `pgvector` |
-| OCR (scanned/image slides) | OCR/vision model | Only if scans exist | math-in-PNG is hard; avoid if text-layer |
+| OCR (scanned/image slides) | OCR/vision model | Only if scans exist | math-in-PNG is hard; avoid if text-layer; scanned PDFs currently fail loudly instead |
 | Reranker | separate reranker | No | later, if retrieval precision suffers |
 
 **"ML earns its role":** retrieval is TOC-guided, not embedding-based. Add
@@ -842,6 +870,15 @@ row to `generation_ledger` (user, course, task, model, tokens).
   inspectable state (spent / budget / remaining / week start) — no opaque
   scores. It gates but does not reserve; brief overshoot under concurrency is
   accepted at this scale.
+- **Two pools:** the weekly budget is split into independent pools per
+  `SpendKind` — `generation` (interactive: tutor answers, probes, artifacts)
+  and `ingestion` (bulk: `toc_update`, `course_knowledge_extraction`), the
+  latter capped by `ingestion_token_budget` in the same config. Pools never
+  cross: a large upload can drain the ingestion pool only, never the budget a
+  user needs for answers. Task→pool routing is derived from
+  `INGESTION_TASKS` in `schemas/base.py` (single source of truth) and
+  enforced inside the provider seam — no call site can silently bill the
+  wrong pool.
 - **Course limits:** each tier also caps owned courses (`max_owned_courses`:
   free 2, paid 20) via `budget.check_course_limit`; enrollment is not capped,
   and deleted courses free their slot. Per-course storage is capped
@@ -866,8 +903,12 @@ row to `generation_ledger` (user, course, task, model, tokens).
   model, paid gets the newer one, the small stable TOC-writer is shared. The
   loader rejects a config that omits a task for any tier.
 - **Charging:** ingestion model calls (`toc_update`, `course_knowledge_extraction`) are
-  charged to the uploading owner's budget. Payment processing is out of scope;
-  subscriptions are operator-managed until a billing flow exists.
+  charged to the uploading owner's ingestion pool. The provider seam is the
+  single model-call path: it resolves + verifies the tier from the account,
+  gates the caller's pool, calls, then records the ledger row with the call's
+  real token counts — no call site supplies token counts or pools. Payment
+  processing is out of scope; subscriptions are operator-managed until a
+  billing flow exists.
 - Decision record: `docs/decisions/004_tiers_and_spend_control.md`.
 
 ---
