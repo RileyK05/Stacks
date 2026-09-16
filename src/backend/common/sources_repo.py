@@ -154,6 +154,14 @@ def upload_source(
                 },
             ).fetchone()
             assert row is not None
+            cur.execute(
+                get("ingestion", "enqueue_pending"),
+                {
+                    "source_id": source_id,
+                    "course_id": course_id,
+                    "reason": "uploaded_new_source",
+                },
+            )
             course_memory.refresh_for_owner(cur, course_id)
             conn.commit()
         return _stored_source(row, raw_size)

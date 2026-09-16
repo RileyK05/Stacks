@@ -1,0 +1,17 @@
+[version]
+retrieval_config_version = "1"
+
+[funnel]
+# Per-seam candidate limits before fusion.
+keyword_limit = 20
+toc_limit = 20
+dependency_limit = 15
+embedding_limit = 15
+# Final cited set size after fusion.
+final_k = 10
+# Fusion cap: at most N chunks from any one source (near-duplicate flood
+# control).
+per_source_cap = 4
+# How many embedding-only candidates (found by no other layer) may enter
+# the final set. 0 disables semantic expansion.
+embedding_only_quota = 3

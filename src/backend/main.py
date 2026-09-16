@@ -7,20 +7,25 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from src.backend.api import archives, auth, courses, enrollments, sources
 from src.backend.common import archive_maintenance
+from src.backend.ingest import worker as ingestion_worker
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     del app
     stop = asyncio.Event()
-    task = asyncio.create_task(archive_maintenance.run_forever(stop))
+    maintenance_task = asyncio.create_task(
+        archive_maintenance.run_forever(stop)
+    )
+    ingestion_task = asyncio.create_task(ingestion_worker.run_forever(stop))
     try:
         yield
     finally:
         stop.set()
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        for task in (maintenance_task, ingestion_task):
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
 
 def create_app() -> FastAPI:

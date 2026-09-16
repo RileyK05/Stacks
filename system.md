@@ -23,9 +23,10 @@ appears below.
 - **Inference:** several models for different tasks (generative answer/extraction,
   a small stable TOC-writer, optional OCR), called through a **hosted API
   provider that does not retain data** (not self-hosted).
-- **Retrieval:** **TOC-guided** — a model-written table of contents locates content
-  and token-bounded chunks are fetched via locators; embeddings only if a
-  versioned eval question proves the TOC path fails.
+- **Retrieval:** **hybrid three-layer** (decision 008) — TOC routing +
+  keyword + embeddings as candidate generators, fused, citation contract as
+  the harness; every surviving chunk carries its locator. Fusion must beat
+  the best single layer on the eval set.
 - **Data ownership:** course material and study history live in our Postgres.
   Inference is a no-retention API.
 - **Deletion:** an exact course archive provides a 90-day copy grace period;
@@ -137,16 +138,18 @@ knowledge — the study guide is course content, not memory) as they go.
 
 ```mermaid
 flowchart LR
-    Q["your question"] --> RET["card catalog<br/>(keyword search + filters)"]
+    Q["your question"] --> RET["card catalog<br/>(TOC + keyword + embeddings,<br/>fused; citations mandatory)"]
     RET --> PG[("Postgres — the stacks")]
     PG --> RET
-    RET --> A["matching pages + citations"]
+    RET --> A["ranked chunks + citations"]
 ```
 
-**Analogy:** you ask "what's the factorization condition?" The catalog flips through
-its index cards and hands you the exact pages that mention it, with page numbers.
-(If keyword search later misses things that *mean* the same thing but use different
-words, we add an embedding specialist — but only if a test proves the catalog fails.)
+**Analogy:** you ask "what's the factorization condition?" The catalog checks the
+index (TOC — where the topic is *taught*), sweeps the shelves for the words
+(keyword — where it's *used*), and asks a specialist who thinks in meanings
+(embeddings — where it's *implied*). Each hands over candidate pages; the desk
+merges them, keeps the best, and every page it hands you has its page number.
+(Decision 008: all three run; fusion must beat any single one on the eval set.)
 
 ### 1.4 Layer 3 — Course knowledge (the study guide)
 
@@ -398,8 +401,9 @@ erDiagram
   `end_value` (reserved word); the data layer maps it to the Pydantic field `end`.
 - **`CHUNKS`** are **token-bounded** retrieval slices sized to fit the model's
   context window (not arbitrary lines), each pointing back to the locator it
-  spans. No embedding column — retrieval is TOC-guided; embeddings return only if
-  a versioned eval proves the TOC path failing.
+  spans. Chunk embeddings (pgvector) are planned per decision 008's hybrid
+  retrieval — added when the provider pick + migration land, and kept only
+  if the fusion measurably helps.
 
 ### 2.3 Course knowledge (concepts, evidence & TOC)
 
@@ -463,10 +467,11 @@ erDiagram
   and `prereq_kind` (`in_course` / `external`) + `external_ref` represent
   out-of-course prereqs (e.g. Calc 2 integrals depend on Calc 1 integration).
 - **`TABLES_OF_CONTENTS`** + **`TOC_ENTRIES`** are the model-written, per-course
-  index describing what's in the course and where. It is the retrieval path that
-  **replaces embedding similarity** (avoiding cross-model embedding misalignment).
-  Written by a small, stable TOC model so descriptions stay consistent over time.
-  Versioned, so the current version is knowable and previous versions recoverable.
+  index describing what's in the course and where. It is the coarse layer of
+  hybrid retrieval (decision 008): the canonical-location signal among three
+  candidate generators. Written by a small, stable TOC model so descriptions
+  stay consistent over time. Versioned, so the current version is knowable
+  and previous versions recoverable.
 - **`evidence_level`** on memory objects: `direct` / `derived` / `hypothesis`.
 - Legacy naming note (decision 007): `memory_objects` / `memory_id` /
   `MEMORY_OBJECT_EVIDENCE` predate the memory vocabulary. They are course-
@@ -695,9 +700,12 @@ flowchart TB
   published canonical objects. Enrollment grants source use and generation,
   never canonical mutation. Learner generations are private user artifacts;
   student history and tutor preferences also stay private per user.
-- **TOC-based retrieval, not embeddings.** A model-written table of contents
-  describes the course and locates content, avoiding cross-model embedding
-  misalignment. Written by a small, stable TOC model.
+- **Hybrid retrieval (decision 008).** TOC, keyword, dependency-walk, and
+  embeddings are candidate generators fused at query time; the citation
+  contract keeps every strategy accountable. Embeddings join when the
+  provider + pgvector land, and stay only if the fusion measurably helps
+  on the eval set. The TOC itself is written by a small, stable TOC model
+  so its index vocabulary stays consistent over time.
 - **No rigid type system.** `kind` (course objects), `locator_type`,
   `content_type`, `claim_type`, and `target_type` are free strings, so new kinds
   and formats insert without a schema migration.
@@ -756,16 +764,40 @@ the audit trail (run, stage rows, error messages) is always queryable.
 
 ## 4. Retrieval & answer flow
 
-Retrieval is **TOC-guided**, not embedding-similarity-based. The model-written
-table of contents tells the tutor where content lives, and the tutor fetches the
-specific token-bounded chunks via locators. This avoids cross-model embedding
-misalignment and keeps retrieval inspectable.
+Retrieval is a **four-seam funnel** (decision 008), mixed not scored. Each
+seam is a candidate generator answering a different question; fusion unions
+their output with layer attribution, applies per-source caps, and cuts to
+the final cited set. Every surviving chunk carries its locator; citations
+are layer-agnostic — the same contract no matter which seam surfaced the
+chunk — so retrieval strategy is an internal, swappable detail and trust
+lives at the citation boundary.
 
-**Open (Fork A in `docs/notes.md`):** the exact query-time mechanism — whether
-questions resolve against the TOC via a model call per query, via static
-matching over TOC entries + concept synonyms (no model call), or as a measured
-upgrade over a keyword (tsvector) baseline. The TOC structure, versioning, and
-locator path below are ratified; the matching mechanism is the open conversation.
+- **Keyword** (fine, day one): tsvector OR-match over chunks. Catches exact
+  phrasing and scattered mentions ("when did we *use* linearity" → chapters
+  5–6). Works with zero model dependency.
+- **TOC routing** (coarse): static matching of the query against entry
+  titles/descriptions → chunks under matched entries' locators. Catches
+  where a topic is *primarily taught*. Dormant until entries exist;
+  model-routed matching is a measured upgrade option.
+- **Dependency walk** (expansion): matched concepts → 1-hop prereq/dependent
+  chunks via the `dependencies` graph. Built as a seam, **dormant until
+  model-extracted edges pass the evidence bar** — a wrong edge misdirects
+  silently, so dormant-until-trustworthy is the design. A seam with no data
+  contributes nothing and breaks nothing.
+- **Embeddings** (ranking): ingestion-time chunk embeddings (pgvector-ready
+  column; float8[] dot-product now). Orders the merged set by meaning and
+  admits a small quota of semantic-only extras. Gated on the provider pick
+  (no-retention embedding endpoint) and on measured help.
+
+**Trace:** every query stores a retrieval trace recording the cited chunk
+ids, which layers contributed each, and matched concept ids — auditors see
+WHY a chunk was retrieved, not just that it was.
+
+**Measured, not assumed:** recall@k per seam AND fused, over a hand-written
+eval set in students' voice (`data/eval/retrieval/`). Fusion must beat the
+best single seam or it is simplified; each seam must beat the funnel
+without it or it is turned off. Funnel quotas/caps/k live in
+`configs/retrieval.toml` (versioned), never hardcoded.
 
 ```mermaid
 sequenceDiagram
@@ -793,9 +825,13 @@ sequenceDiagram
 
 **Retrieval evolution (measured, not assumed):**
 
-1. **Baseline:** TOC-guided chunk selection + metadata filters. No embedding model.
-2. **If eval shows gaps:** consider embeddings + `pgvector`, reranker — only when a
-   versioned eval question fails the baseline. Embeddings remain optional.
+1. **Ship order:** keyword baseline → static TOC layer → fusion (decision
+   008) → measured upgrades (model-routed TOC, embeddings + `pgvector`,
+   reranker).
+2. **Each step must beat the previous on the eval set** — recall@k per layer
+   and fused. Fusion that cannot beat the best single layer is dropped;
+   embeddings that do not measurably add are dropped. "Always-on" means
+   *candidates*, not *cargo*.
 
 
 **Never** answer an uploaded-material question without showing sources.
@@ -841,18 +877,21 @@ clients leak past this module.
 |---|---|---|---|
 | Generative answer / extraction / classification | DeepSeek v4 flash | **Yes** | generative model |
 | Table-of-contents writer/updater | **small, stable** model | **Yes** | keeps TOC descriptions consistent over time |
-| Embeddings (retrieval) | separate embedding model | No | only if TOC path fails; `pgvector` |
+| Embeddings (retrieval) | separate embedding model | Yes (decision 008) | ingestion-time embedding, pgvector; kept only if fusion measurably helps; no-retention check applies |
 | OCR (scanned/image slides) | OCR/vision model | Only if scans exist | math-in-PNG is hard; avoid if text-layer; scanned PDFs currently fail loudly instead |
 | Reranker | separate reranker | No | later, if retrieval precision suffers |
 
-**"ML earns its role":** retrieval is TOC-guided, not embedding-based. Add
-embeddings/OCR/reranker/fine-tuning only for a documented, versioned baseline
-failure on a measured eval task.
+**"ML earns its role":** add models/rerankers/fine-tuning only for a
+documented, versioned baseline failure on a measured eval task. Decision 008
+extends this to combinations: the fusion itself is measured, and any layer
+that stops paying for its complexity is dropped.
 
 > Why a dedicated TOC model? A small, stable model keeps course descriptions
-> consistent over time (one model's embeddings may not align with another's, so
-> we avoid relying on embeddings for retrieval entirely). A separate embedding
-> model would be needed only if the TOC path measurably fails.
+> consistent over time, which is what makes both static matching and
+> model-routed matching against the TOC reliable. Retrieval also fuses a
+> keyword and an embedding signal (decision 008), so the TOC no longer
+> carries retrieval alone — but its stability still anchors the
+> canonical-location signal.
 
 ---
 
@@ -1037,7 +1076,10 @@ servers.
 - **Choose a model API provider that does not retain data** (OpenRouter / Groq /
   similar); verify their data-retention policy before committing.
 - Whether OCR is in scope depends on whether pilot slides are scanned/image-heavy.
-- When (if ever) to adopt embeddings/reranker — gated on a failing eval question.
+- Embedding model choice (part of the provider pick) — needs a no-retention
+  embedding endpoint; pgvector migration + ingestion embedding step follow.
+- Whether model-routed TOC matching (vs static) earns its per-query model
+  call — measured against the static TOC layer.
 - Login throttling and token revocation policy before external deployment.
 
 ---

@@ -1422,3 +1422,192 @@ Context for the revisit: the ingestion side is built and aligned
 (233 tests green, locators are citation-grade after the drift fix);
 retrieval reads chunks+locators directly, so nothing blocks Fork A work
 except the conversation itself.
+
+## Ratified: Fork A — hybrid three-layer retrieval (2026-09-12)
+
+Operator decision after the Fork A conversation. Supersedes the "TOC alone,
+embeddings only on failure" posture; the near-duplicate-precision objection
+to embeddings is answered by the fusion layer (candidate merging + ranking
+caps), not by excluding embeddings.
+
+**All three layers run; every layer is a candidate generator, not an
+authority:**
+
+1. **TOC routing** — question → TOC entries (titles, descriptions, concept
+   refs) → chunks under those entries. Coarse, canonical location. Query-time
+   mechanism (static match vs model-routed) is still open — see below.
+2. **Keyword (tsvector)** — term overlap over chunks. Catches scattered
+   mentions the TOC misses ("when did we USE linearity" → chapters 5–6, not
+   just the chapter 2 definition).
+3. **Embeddings (semantic)** — vector similarity over chunks for paraphrase
+   cases. Stored at ingestion by a separate embedding model; query time is
+   vector-only.
+
+**Fusion + citation contract = the harness:** all three layers emit chunk
+candidates; fusion merges and ranks; every surviving chunk carries its
+locator. Citations are layer-agnostic — the same contract regardless of
+which layer surfaced the chunk. Retrieval strategy is an internal, swappable
+detail; trust lives at the citation boundary. The operator's near-duplicate
+concern (many similar hits from similar course text) is handled as a ranking
+problem at fusion (per-source/per-chapter candidate caps), not by excluding
+embeddings.
+
+**Consequences:**
+- Decision record needed (docs/decisions/008) amending the no-embeddings
+  rule: embeddings are now an always-on third signal in a fusion, not a
+  fallback-for-TOC-failure. Cross-model alignment concern is superseded by
+  the fusion design; a separate embedding model is still subject to the
+  no-retention provider check.
+- Eval set is now load-bearing: recall@k per layer AND fused; fusion must
+  beat the best single layer on the eval or it loses (golden rule 5 applies
+  to combinations). Eval questions + marked answer chunks go to data/eval/.
+- Build order implication: TOC + keyword are buildable now (no model call at
+  query time, no new provider); embeddings wait for the provider pick +
+  migration (embedding column/vector index). Ship order: keyword → TOC
+  static → fusion → model-routed → embeddings, each measured against the
+  previous.
+
+**Still open within Fork A:**
+- Query-time TOC matching: static (entries + synonyms, no model call) vs
+  model-routed per query. Leaning static-first, model upgrade measured.
+- Embedding model choice + storage (pgvector) — gated on provider pick.
+- Fusion ranking policy (weights, caps, dedup) — tunables in configs/, not
+  hardcoded.
+
+## Fork A implemented: the retrieval funnel is real code (2026-09-13)
+
+Decision 008 revised after the design conversation (fusion = mixing not
+scoring; seams are built up front and activate as their data arrives —
+"build the seam whenever, turn it on when the data's real"). Then
+implemented:
+
+- **`src/backend/retrieval/`**: `funnel.py` (four seams + fusion),
+  `config.py` + `configs/retrieval.toml` v1 (all funnel tunables:
+  per-seam limits, final_k, per-source cap, embedding-only quota),
+  `trace.py` (per-query trace with layer attribution), `evals.py`
+  (recall@k eval runner; cases in `data/eval/retrieval/cases.json`,
+  matched by locator label so cases survive re-ingestion).
+- **Migration 025**: `chunk_embeddings` (float8[] now, pgvector swap is a
+  later migration) + `chunks.search_vector` generated tsvector with GIN
+  index.
+- **Fusion is mixing, not scoring** — exactly as ratified: keyword/TOC/
+  dependency/embedding candidates union with layer attribution
+  (multi-layer hits merge layers, max rank), ordering is embedding rank
+  when present else keyword rank, per-source cap bounds the near-duplicate
+  flood, embedding-only candidates enter through an explicit quota, final
+  cut to final_k. No weighted score arithmetic anywhere.
+- **Dormant seams verified by tests**: no TOC entries / no dependency
+  edges / no embeddings → empty candidates, no errors, no contribution.
+- **Trace**: `retrieval_traces.retrieved_chunk_ids` jsonb now carries the
+  full audit payload (ordered chunk ids + layer_contribution +
+  matched_concept_ids).
+
+Bugs caught by my own tests during the build (for the reviewer's
+attention): (1) tsvector AND semantics missed partial-query chunks — the
+keyword seam uses OR now; (2) Postgres has no float8[]*float8[] operator —
+dot products computed via unnest-zip SUM; (3) the fusion merge loop
+originally omitted the embeddings dict — embedding-only candidates could
+never enter (the quota was dead code); caught by the quota test; (4) the
+embedding seam read a `rank` column that the query named `dot` — ranks
+were silently re-derived from row order; (5) psycopg's client-side parser
+trips on literal `%` inside SQL comments — wildcard comments removed.
+
+Gate: 246 tests (13 retrieval), ruff, mypy green.
+
+## Retrieval-batch review: 16 findings, all fixed (2026-09-13)
+
+External review (with live DB probes) of the funnel batch. All findings
+fixed before commit:
+
+- **Keyword crash on math syntax (high)**: to_tsquery treats ( ) < > !
+  & | : * as operators; "f(x) = x^2" killed retrieve() with a SyntaxError.
+  The seam now tokenizes with a strict [a-z0-9]+ regex BEFORE any SQL —
+  operator characters cannot reach the parser. Single-char tokens dropped.
+  Regression tests: math queries and a hostile-query battery (unbalanced
+  parens, <-> operators, empty strings).
+- **Eval harness false-pass modes (high)**: substring label matching made
+  "page 1" hit "page 12"; any() contradicted the docstring's all-expected
+  rule; the decision-008 kill-switch metric (recall per seam AND fused)
+  was not computed; unresolved course tags silently passed. The runner is
+  rewritten: exact label set membership, ALL expected labels required,
+  per-seam recall AND fused recall computed, unresolved cases reported
+  and excluded (never a pass), and an EvalSummary that answers the
+  decision rule directly ("fusion beats best single: yes/no"). Two
+  eval-runner tests pin the exact-label and unresolved semantics.
+- **Embedding dimension mismatch (high)**: unnest zips unequal arrays by
+  silent truncation — a model swap would rank garbage without error.
+  cardinality() equality guard added in SQL; test pins it.
+- **Trace lost the WHY (high)**: per-chunk layer attribution was dropped
+  at record_trace despite Candidate.layers holding it; toc_entry_ids was
+  dead (never populated). Traces now store per_chunk_layers (each cited
+  chunk with the seams that surfaced it); toc_seam returns matched entry
+  ids and retrieve() passes them through to the trace. Test asserts the
+  payload shape.
+- **TOC seam raw-substring ILIKE (medium)**: %word% with no boundaries
+  matched "we" → "Week"/"power"/"answer"; user wildcards unescaped. The
+  seam now full-text matches (to_tsvector on title+description, stemmed,
+  stopword-filtered — consistent with the keyword seam); locator_id IS
+  NULL entries excluded explicitly (they have no chunks).
+- **Single-letter concept matches (medium)**: position() substring match
+  made concepts named f/R/T match nearly every query. Word-boundary
+  regex matching + 2-char minimum (enforced in SQL and conceptually in
+  the tokenizer). Test pins "rat" not matching "iteration".
+- **Dependency seam precision + nondeterminism (medium)**: OR-join
+  defeated both indexes and SELECT DISTINCT...LIMIT without ORDER BY made
+  runs irreproducible. Rewritten as UNION (index-friendly per branch) +
+  deterministic ORDER BY. KNOWN GAP documented in SQL: memory_objects
+  links concepts to sources not locators, so the seam is coarse until a
+  locator link migration exists — flagged as a schema TODO, not hidden.
+- **course_by_tag nondeterminism (medium)**: exact-match-first + stable
+  secondary ordering. (Also discovered the hard way: psycopg named-param
+  mode requires literal % escaped as %% inside query text, and courses has
+  no created_at column.)
+- **Smaller**: eval embedding model name now a parameter (real model name
+  from config when a provider exists); migration 025 comment corrected
+  (absence = no row, never NULL); rank unit-mixing documented on
+  Candidate (seam-local, never compared cross-seam); prereq_id index
+  (migration 026 — 025 was already applied, so it got its own file);
+  trailing newlines restored; system.md §7 glued sentence reattached to
+  the TOC bullet correctly; per-source-cap test's inline SQL shared via
+  fixture helper where practical.
+
+Two psycopg client-side parser gotchas worth remembering (recorded here
+so the next batch doesn't rediscover them): literal % must be %% in
+named-param SQL INCLUDING comments adjacent to placeholders, and jsonb
+columns return parsed dicts, not strings.
+
+Gate: 255 tests (22 retrieval, +9 review regressions), ruff, mypy green.
+
+## M1 close-out: ingestion worker + upload handoff (2026-09-13)
+
+The ingestion loop is now closed end to end: upload → queue → worker →
+pipeline → terminal state, all inspectable.
+
+- **Worker** (`src/backend/ingest/worker.py`): `process_batch` claims
+  bounded batches via the persistent-claim seam, resolves the course
+  owner + account (tier verified inside the provider seam at call time),
+  runs `run_ingestion` per source. Pipeline failures are already recorded
+  by the run ledger; unexpected errors get a claim-cleanup path so no row
+  is stranded. `run_forever` mirrors archive_maintenance's loop shape and
+  is wired into the app lifespan (main.py) alongside it.
+- **Stale-claim recovery**: rows claimed by a crashed worker become
+  re-claimable after STALE_CLAIM_AFTER (30 min, module constant); the
+  claimed_runs counter keeps the event visible. Test pins
+  claim → age-out → reclaim.
+- **Upload handoff**: `sources_repo.upload_source` now enqueues the
+  source into pending_ingestion in the SAME transaction as the insert
+  (reason: uploaded_new_source) — no window where a source exists but is
+  unqueued. The copy seam's enqueue (copied_from_archive:*) was already
+  in place.
+- **Tests (5)**: upload enqueues; worker batch records failure state
+  honestly (provider-less = failed run, no zombie queue row); stubbed
+  provider end-to-end goes indexed + queue cleared; requeue-after-failure
+  produces a second run; stale claims release.
+
+Honest gap kept visible: the worker runs in-process with the API (small
+user base); a separate worker process is the scaling seam — the loop is
+already a to_thread pattern so lifting it out is mechanical. Model
+stages still fail closed (no provider); the stubbed-provider test proves
+the success path works the moment a real client lands.
+
+Gate: 260 tests, ruff, mypy green.

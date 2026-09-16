@@ -136,3 +136,19 @@ ON CONFLICT (source_id) DO NOTHING;
 INSERT INTO pending_ingestion (source_id, course_id, reason)
 VALUES (%(source_id)s, %(course_id)s, 'requeue_after_failure')
 ON CONFLICT (source_id) DO NOTHING;
+
+-- name: course_owner
+SELECT owner_user_id
+FROM courses
+WHERE course_id = %(course_id)s;
+
+-- name: release_stale_claims
+UPDATE pending_ingestion
+SET claimed_at = NULL
+WHERE claimed_at IS NOT NULL
+  AND claimed_at < %(threshold)s;
+
+-- name: queued_at_for
+SELECT created_at
+FROM pending_ingestion
+WHERE source_id = %(source_id)s;
