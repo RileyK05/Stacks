@@ -210,3 +210,28 @@ def test_corrupt_gzip_raises_value_error() -> None:
     finally:
         path.unlink(missing_ok=True)
         path.parent.rmdir()
+
+
+def test_corrupt_deflate_body_reads_as_value_error() -> None:
+    """A valid gzip header with a garbage payload is the likeliest real
+    corruption, and it raises zlib.error — neither BadGzipFile nor EOFError.
+    It must still surface as the documented ValueError, not leak out raw."""
+    import gzip as gzip_module
+
+    good = gzip_module.compress(b"course notes " * 5000)
+    corrupt = good[:12] + bytes(b ^ 0xFF for b in good[12:-8]) + good[-8:]
+    course_id, source_id = uuid4(), uuid4()
+    path = storage.source_disk_path(course_id, source_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(corrupt)
+    with pytest.raises(ValueError, match="corrupt"):
+        storage.read_stored(
+            course_id, source_id, "gzip", max_decompressed_bytes=10_000_000
+        )
+
+
+def test_sanitize_display_name_strips_nul_bytes() -> None:
+    """Postgres text columns reject NUL outright, so a filename carrying one
+    turned an ordinary upload into a 500 from inside the insert."""
+    assert storage.sanitize_display_name("a\x00b.pdf") == "ab.pdf"
+    assert storage.sanitize_display_name("\x00") == "upload"

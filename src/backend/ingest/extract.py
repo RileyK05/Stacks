@@ -166,10 +166,34 @@ def _mask_code_fences(text: str) -> str:
 
 
 def _markdown_locators(text: str) -> tuple[LocatorSpan, ...]:
+    """Section locators for markdown, with total character coverage.
+
+    Headings alone do not cover the whole document: a file with no headings
+    yields no locators at all, and a file with a preamble before its first
+    heading leaves that preamble uncovered. Both matter because build_chunks
+    rejects any chunk that maps to no locator ("citation grounding is
+    mandatory") — so an ordinary .md of notes would fail ingestion outright.
+    Worse, an uncovered preamble that shares a chunk with the first heading
+    gets CITED as that heading, which is a wrong citation rather than a
+    missing one.
+
+    So any region no heading covers falls back to the same line-range
+    locators plain text uses: every character stays addressable, and
+    preamble text is cited as lines rather than as somebody else's section.
+    """
     heading_text = _mask_code_fences(text)
     spans: list[LocatorSpan] = []
     line_starts = [0] + [match.end() for match in re.finditer(r"\n", text)]
     headings = list(_HEADING_RE.finditer(heading_text))
+    if not headings:
+        return _line_locators(text)
+    first_start = headings[0].start()
+    if text[:first_start].strip():
+        spans.extend(
+            span
+            for span in _line_locators(text[:first_start])
+            if span.end > span.start
+        )
     for index, match in enumerate(headings):
         char_start = match.start()
         if index + 1 < len(headings):
@@ -271,6 +295,11 @@ def _pdf_page_texts(
         )
         reader = pypdf.PdfReader(io.BytesIO(raw))
     else:
-        path = storage.source_disk_path(course_id, source_id)
-        reader = pypdf.PdfReader(io.BytesIO(path.read_bytes()))
+        raw = storage.read_stored(
+            course_id,
+            source_id,
+            stored_encoding,
+            max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+        )
+        reader = pypdf.PdfReader(io.BytesIO(raw))
     return [page.extract_text() or "" for page in reader.pages]

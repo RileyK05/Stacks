@@ -3,10 +3,12 @@
 agreement, not just shape."""
 
 import io
-from uuid import uuid4
+from unittest.mock import patch
+from uuid import UUID, uuid4
 
 import pytest
 from src.backend.common import storage
+from src.backend.ingest import chunking
 from src.backend.ingest.extract import (
     EmptyExtractionError,
     UnsupportedSourceTypeError,
@@ -180,6 +182,86 @@ def test_pdf_roundtrip_pages_and_text() -> None:
     path = storage.write_stored(course_id, source_id, buffer.getvalue())
     try:
         with pytest.raises(EmptyExtractionError):
+            extract(
+                course_id,
+                source_id,
+                "application/pdf",
+                stored_encoding="identity",
+            )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+def test_markdown_without_headings_is_still_grounded() -> None:
+    """A .md of notes with no '#' headings yielded ZERO locators, so every
+    chunk mapped to none and build_chunks failed the whole ingestion. Plain
+    notes are ordinary input, not an edge case."""
+    text = "Just notes with no markdown headings.\nA second line of notes.\n"
+    locators = _markdown_locators(text)
+    assert locators
+    spans = chunking.chunk_text(text, locators, max_tokens=64)
+    assert spans
+    assert all(span.locator_ids for span in spans)
+
+
+def test_markdown_preamble_is_covered_and_not_miscited() -> None:
+    """Text before the first heading was uncovered: long preambles orphaned
+    their chunks (hard ingest failure), and a short preamble sharing a chunk
+    with the first heading was CITED AS that heading — a wrong citation."""
+    preamble = "Lecture notes week one, covering linearity. " * 12
+    text = preamble + "\n\n# Chapter 1\n\n" + ("Content under the heading. " * 12)
+    locators = _markdown_locators(text)
+    spans = chunking.chunk_text(text, locators, max_tokens=64)
+    assert all(span.locator_ids for span in spans)
+
+    label_of = {loc.locator_id: loc.label for loc in locators}
+    heading_start = text.index("# Chapter 1")
+    for span in spans:
+        if span.end <= heading_start:
+            labels = [label_of[i] for i in span.locator_ids]
+            assert all(not label.startswith("§") for label in labels), (
+                f"preamble chunk cited as a section it is not in: {labels}"
+            )
+
+
+def test_pdf_identity_path_reads_through_the_capped_seam() -> None:
+    """PDFs always store as identity, and the identity branch of
+    _pdf_page_texts used to call path.read_bytes() directly — the one file
+    type that always took that path skipped the decompression ceiling that
+    every other read goes through. It must read via read_stored, which
+    caps identity files at their on-disk size."""
+    from pypdf import PdfWriter
+    from src.backend.common.storage import DecompressionLimitExceededError
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    pdf_bytes = buffer.getvalue() + b"x" * 64
+    course_id = uuid4()
+    source_id = uuid4()
+    path = storage.write_stored(course_id, source_id, pdf_bytes)
+    try:
+        original = storage.read_stored
+
+        def capped_read(
+            course_id: UUID,
+            source_id: UUID,
+            stored_encoding: str | None,
+            *,
+            max_decompressed_bytes: int,
+        ):
+            return original(
+                course_id,
+                source_id,
+                stored_encoding,
+                max_decompressed_bytes=len(pdf_bytes) - 1,
+            )
+
+        with (
+            patch.object(storage, "read_stored", capped_read),
+            pytest.raises(DecompressionLimitExceededError),
+        ):
             extract(
                 course_id,
                 source_id,

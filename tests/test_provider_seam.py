@@ -3,7 +3,7 @@ from uuid import uuid4
 import pytest
 from src.backend.common import provider, spend_repo, users_repo
 from src.backend.common.auth import hash_password
-from src.backend.common.schemas.base import SpendKind
+from src.backend.common.schemas.base import SpendKind, UserTier
 from src.backend.common.tiers import load_tier_policies
 
 
@@ -32,7 +32,9 @@ def test_ingestion_task_bills_ingestion_pool(monkeypatch) -> None:
     spent_generation = spend_repo.weekly_spend(
         account.user_id, spend_kind=SpendKind.GENERATION
     )
-    assert spent_ingestion == 120
+    assert spent_ingestion == 126, (
+        "120 base + 5% free-tier overhead (decision 004)"
+    )
     assert spent_generation == 0
 
 
@@ -48,8 +50,8 @@ def test_interactive_task_bills_generation_pool(monkeypatch) -> None:
     )
     assert (
         spend_repo.weekly_spend(account.user_id, spend_kind=SpendKind.GENERATION)
-        == 60
-    )
+        == 63
+    ), "60 base + 5% free-tier overhead (decision 004)"
     assert (
         spend_repo.weekly_spend(account.user_id, spend_kind=SpendKind.INGESTION)
         == 0
@@ -62,6 +64,23 @@ def test_unknown_task_rejected_before_anything() -> None:
         provider.generate(
             "not_a_task", "prompt", account.user_id, account.tier
         )
+
+
+def test_paid_tier_carries_no_overhead(monkeypatch) -> None:
+    account = _user()
+    spend_repo.start_subscription(account.user_id, UserTier.PAID)
+    paid = users_repo.get_by_id(account.user_id)
+    assert paid is not None and paid.tier == UserTier.PAID
+
+    def fake_call(task, model, prompt):
+        return ("answer", 100, 20)
+
+    monkeypatch.setattr(provider, "_call_provider", fake_call)
+    provider.generate("tutor_answer", "prompt", paid.user_id, paid.tier)
+    assert (
+        spend_repo.weekly_spend(account.user_id, spend_kind=SpendKind.GENERATION)
+        == 120
+    ), "paid tiers carry free_tier_overhead_percent=0"
 
 
 def test_tier_mismatch_rejected_inside_seam() -> None:

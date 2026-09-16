@@ -2,10 +2,11 @@
 seam, anti-enumeration on reset requests, resource-creation gating, and
 the verify-email side effect of a successful password reset."""
 
+import time
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
-from src.backend.common import email_repo
+from src.backend.common import email_repo, users_repo
 from src.backend.common.db import connection
 from tests.conftest import verify_email
 
@@ -216,3 +217,52 @@ def test_upload_blocked_until_verified(client: TestClient) -> None:
         headers=_headers(token),
     )
     assert upload.status_code == 201, upload.text
+
+def test_consume_token_lost_race_is_rejected_not_asserted() -> None:
+    """Two requests redeeming the same token concurrently (double-clicked
+    reset link, mail scanner prefetching the URL) both pass the SELECT; the
+    loser's guarded UPDATE matches nothing. That is a rejected token, not a
+    broken invariant — it must not surface as an AssertionError 500."""
+    import threading
+
+    from src.backend.common.db import connect
+
+    user = users_repo.create("Race", f"{uuid4().hex}@test.invalid", "x")
+    with connection() as conn:
+        token = email_repo.issue_token(
+            conn,
+            user_id=user.user_id,
+            kind=email_repo.RESET_KIND,
+            to_email="a@b.invalid",
+            subject="s",
+            body_template="{token}",
+        )
+        conn.commit()
+
+    winner = connect()
+    email_repo.consume_token(
+        winner, kind=email_repo.RESET_KIND, plaintext=token
+    )
+    outcome: dict[str, str] = {}
+
+    def loser() -> None:
+        conn = connect()
+        try:
+            email_repo.consume_token(
+                conn, kind=email_repo.RESET_KIND, plaintext=token
+            )
+            outcome["result"] = "double-consumed"
+        except email_repo.TokenRejectedError:
+            outcome["result"] = "rejected"
+        except AssertionError:
+            outcome["result"] = "assertion-error"
+        finally:
+            conn.close()
+
+    thread = threading.Thread(target=loser)
+    thread.start()
+    time.sleep(1.0)
+    winner.commit()
+    winner.close()
+    thread.join(timeout=20)
+    assert outcome.get("result") == "rejected"

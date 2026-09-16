@@ -470,6 +470,52 @@ def test_concept_matches_word_boundary_not_substring(course_pair) -> None:
     assert str(rat_concept) not in {str(r["concept_id"]) for r in matches}
 
 
+def test_concept_matches_survives_regex_metacharacters(course_pair) -> None:
+    """Concept names are model-extracted, so regex metacharacters in them
+    must be escaped before they reach the regex engine. Unescaped, 'f(x'
+    raises InvalidRegularExpression and takes down the whole retrieve()
+    call — a single bad extracted name would break every question on the
+    course. 'O(n)' and 'f(x)' are the common case in a maths/CS course."""
+    _user, course = course_pair
+    for broken_name in ("f(x", "a**b", "x{2,", "set A [unclosed"):
+        _add_concept(course.course_id, broken_name, [])
+    _add_concept(course.course_id, "bad synonym holder", ["g(y"])
+    on_concept = _add_concept(course.course_id, "O(n)", [])
+    with connection() as conn:
+        matches = funnel.concept_matches(
+            conn, course.course_id, "what is o(n) complexity here", 10
+        )
+    assert str(on_concept) in {str(row["concept_id"]) for row in matches}
+
+
+def test_concept_matches_metacharacters_are_literal(course_pair) -> None:
+    """Escaped metacharacters match literally, not as regex operators: a
+    concept named 'a+b' must match 'a+b' and must NOT match 'aaab'."""
+    _user, course = course_pair
+    plus_concept = _add_concept(course.course_id, "a+b", [])
+    with connection() as conn:
+        literal = funnel.concept_matches(
+            conn, course.course_id, "why does a+b hold", 10
+        )
+        quantifier = funnel.concept_matches(
+            conn, course.course_id, "we saw aaab today", 10
+        )
+    assert str(plus_concept) in {str(row["concept_id"]) for row in literal}
+    assert str(plus_concept) not in {str(row["concept_id"]) for row in quantifier}
+
+
+def test_retrieve_survives_malformed_concept_names(course_pair) -> None:
+    """End to end: one malformed extracted concept name must not break
+    retrieval for the whole course — the keyword seam still answers."""
+    _user, course = course_pair
+    hit = _add_chunk(course_pair, "linearity of transformations")
+    _add_concept(course.course_id, "f(x", [])
+    policy = _policy()
+    with connection() as conn:
+        result = funnel.retrieve(conn, course.course_id, QUERY, policy)
+    assert str(hit) in {str(c.chunk_id) for c in result.candidates}
+
+
 def test_toc_seam_word_boundary_not_substring(course_pair) -> None:
     """Entry 'Week 1 overview' must not match query word 'we' via raw
     substring ILIKE — the seam full-text matches now."""

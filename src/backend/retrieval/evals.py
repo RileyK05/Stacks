@@ -5,9 +5,11 @@ that MUST appear in the retrieved set for the case to count as a hit
 (ALL expected labels must match, exactly, per label — no substring games:
 "page 1" must not match "page 12").
 
-`run_eval` computes what decision 008's kill-switch requires:
+`run_eval` computes what decision 008's kill-switch requires, with every
+number taken at the SAME k (policy.final_k) so the comparison is fair:
 - recall@k for EACH seam alone (keyword-only, toc-only, dependency-only,
-  embedding-only when a query embedding function is supplied)
+  embedding-only when a query embedding function is supplied), each seam
+  truncated to its own best final_k
 - recall@k for the FUSION
 - per-case resolution: an eval case whose course_tag resolves to no
   course is UNRESOLVED, never a silent pass.
@@ -128,6 +130,21 @@ def _labels_for_candidates(
     return frozenset(row["label"] for row in rows)
 
 
+def _top(
+    seam: dict[UUID, Candidate], k: int
+) -> tuple[Candidate, ...]:
+    """The seam's own best k, in seam order.
+
+    Seam dicts are built from rows the SQL already ordered (rank DESC for
+    keyword/embedding, position for TOC, deterministic for dependency), so
+    insertion order IS the seam's ranking. Truncating here is what makes the
+    per-seam and fused numbers comparable: without it each seam is scored at
+    its own limit (20) while the fusion is scored at final_k (10), and
+    `fusion_beats_best_single` — decision 008's kill switch — measures the k
+    gap instead of the fusion."""
+    return tuple(seam.values())[:k]
+
+
 def _hit(expected: tuple[str, ...], retrieved: frozenset[str]) -> bool:
     """All expected labels must appear exactly in the retrieved label set.
     Exact set membership — 'page 1' never matches 'page 12'."""
@@ -200,33 +217,35 @@ def run_eval(
             embedding_model,
             policy.embedding_limit,
         )
-        fused = funnel.retrieve(
-            conn,
-            course_id,
-            case.question,
-            policy,
-            query_embedding=embedding,
-            embedding_model=embedding_model,
+        # Fuse the seams already computed above rather than calling
+        # funnel.retrieve(), which would re-run all four seams plus the
+        # concept match — double the DB work per case for the same answer.
+        fused_candidates = funnel.fuse(
+            keyword, toc, dependency, embeddings, policy=policy
         )
+        layer_contribution: dict[str, int] = {}
+        for candidate in fused_candidates:
+            for layer in candidate.layers:
+                layer_contribution[layer] = layer_contribution.get(layer, 0) + 1
 
         per_seam_hits: dict[str, bool] = {}
-        for seam_name, seam_candidates in (
-            ("keyword", keyword.values()),
-            ("toc", toc.values()),
-            ("dependency", dependency.values()),
-            ("embedding", embeddings.values()),
+        for seam_name, seam in (
+            ("keyword", keyword),
+            ("toc", toc),
+            ("dependency", dependency),
+            ("embedding", embeddings),
         ):
-            labels = _labels_for_candidates(conn, tuple(seam_candidates))
+            labels = _labels_for_candidates(conn, _top(seam, policy.final_k))
             per_seam_hits[seam_name] = _hit(case.expected_labels, labels)
 
-        fused_labels = _labels_for_candidates(conn, fused.candidates)
+        fused_labels = _labels_for_candidates(conn, fused_candidates)
         results.append(
             EvalResult(
                 question=case.question,
                 resolved=True,
                 hit=_hit(case.expected_labels, fused_labels),
                 retrieved_labels=tuple(sorted(fused_labels)),
-                layer_contribution=fused.layer_contribution,
+                layer_contribution=layer_contribution,
                 per_seam_hits=per_seam_hits,
             )
         )

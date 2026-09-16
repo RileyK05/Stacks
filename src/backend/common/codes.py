@@ -22,7 +22,7 @@ CODE_LENGTH = 16
 DISPLAY_GROUP = 4
 
 # 16 alphabet chars, optionally grouped with single dashes between groups.
-_CODE_RE = re.compile(rf"^[{''.join(CODE_ALPHABET)}]{{16}}$")
+_CODE_RE = re.compile(rf"^[{CODE_ALPHABET}]{{{CODE_LENGTH}}}$")
 
 
 def generate_code() -> str:

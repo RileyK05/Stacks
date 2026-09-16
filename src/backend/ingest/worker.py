@@ -9,13 +9,15 @@ history must be written before the queue row is deleted).
 
 Stale-claim recovery: rows claimed by a crashed worker become
 re-claimable after STALE_CLAIM_AFTER; the claimed_runs counter is the
-inspectable signal of how often that has happened.
+inspectable signal of how often that has happened (released claims are
+logged, so the event is visible without querying).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -37,14 +39,24 @@ BATCH_SIZE = 5
 STALE_CLAIM_AFTER = timedelta(minutes=30)
 
 
-def process_batch(limit: int = BATCH_SIZE) -> tuple[int, int]:
+def process_batch(
+    limit: int = BATCH_SIZE,
+    *,
+    should_stop: Callable[[], bool] | None = None,
+) -> tuple[int, int]:
     """One worker pass: claim up to `limit` queued sources per round and
     ingest each. Returns (attempted, succeeded). Failures are already
     recorded by run_ingestion (run ledger + source status + queue
-    cleared); this loop counts them and cleans up on unexpected errors."""
+    cleared); this loop counts them and cleans up on unexpected errors.
+
+    `should_stop` is checked between rounds so shutdown does not wait for
+    the whole queue to drain. This runs via asyncio.to_thread, and a
+    thread cannot be cancelled — without the check, cancelling the task at
+    lifespan shutdown returns immediately while the thread keeps draining,
+    holding the process open for an unbounded time on a large backlog."""
     attempted = 0
     succeeded = 0
-    while True:
+    while should_stop is None or not should_stop():
         with connection() as conn:
             _release_stale_claims(conn)
             claimed = runs.claim_pending_sources(conn, limit=limit)
@@ -52,6 +64,8 @@ def process_batch(limit: int = BATCH_SIZE) -> tuple[int, int]:
         if not claimed:
             break
         for row in claimed:
+            if should_stop is not None and should_stop():
+                break
             attempted += 1
             source_id = row["source_id"]
             course_id = row["course_id"]
@@ -109,6 +123,12 @@ def _release_stale_claims(conn: Connection) -> None:
         cur.execute(
             get(_FILE, "release_stale_claims"), {"threshold": threshold}
         )
+        if cur.rowcount > 0:
+            logger.warning(
+                "released %s stale ingestion claim(s) older than %s",
+                cur.rowcount,
+                STALE_CLAIM_AFTER,
+            )
 
 
 def _cleanup_orphaned_claim(source_id: UUID) -> None:
@@ -130,7 +150,7 @@ async def run_forever(stop: asyncio.Event) -> None:
     interval = load_lifecycle_policy().maintenance_interval_seconds
     while not stop.is_set():
         try:
-            await asyncio.to_thread(process_batch)
+            await asyncio.to_thread(process_batch, should_stop=stop.is_set)
         except Exception:
             logger.exception("ingestion worker pass failed")
         try:

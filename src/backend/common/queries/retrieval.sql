@@ -26,8 +26,9 @@ LIMIT %(limit)s;
 -- match the query terms, plus the chunks under those entries' locators.
 -- Uses tsvector (stemmed, stopword-filtered) for the same consistency the
 -- keyword seam has; plain LIKE wildcards from user input never reach SQL.
--- locator_id IS NULL entries are excluded explicitly: they have no chunks
--- to fetch (schema allows NULL).
+-- Entries with a NULL locator_id drop out via the chunks join (no chunk can
+-- match a NULL locator), which is also what bounds the seam to entries that
+-- actually have text behind them.
 WITH current_toc AS (
     SELECT toc_id
     FROM tables_of_contents AS toc
@@ -44,7 +45,6 @@ SELECT chunk.chunk_id,
        entry.title
 FROM toc_entries AS entry
 JOIN current_toc ON current_toc.toc_id = entry.toc_id
-JOIN locators AS locator ON locator.locator_id = entry.locator_id
 JOIN chunks AS chunk ON chunk.source_id = entry.source_id
      AND chunk.locator_id = entry.locator_id
 WHERE to_tsvector('english', entry.title || ' ' || entry.description)
@@ -63,13 +63,16 @@ LIMIT %(limit)s;
 -- this seam is coarse by design; the limit bounds the flood. Dormant when
 -- no edges exist — the caller passes only matched concept ids and edge
 -- trust is enforced upstream.
+-- The branches select identical columns (no via_concept_id) so UNION
+-- deduplicates: a chunk reachable BOTH as a prereq and as a dependent would
+-- otherwise survive as two rows, burn two LIMIT slots, and then collapse to
+-- one in Python — returning fewer distinct chunks than dependency_limit.
 (
     SELECT chunk.chunk_id,
            chunk.source_id,
            chunk.locator_id,
            chunk.chunk_index,
-           chunk.text,
-           dep.dependent_id AS via_concept_id
+           chunk.text
     FROM concepts AS matched
     JOIN dependencies AS dep ON dep.prereq_id = matched.concept_id
     JOIN memory_objects AS mo ON mo.concept_id = dep.dependent_id
@@ -83,8 +86,7 @@ UNION
            chunk.source_id,
            chunk.locator_id,
            chunk.chunk_index,
-           chunk.text,
-           dep.prereq_id AS via_concept_id
+           chunk.text
     FROM concepts AS matched
     JOIN dependencies AS dep ON dep.dependent_id = matched.concept_id
     JOIN memory_objects AS mo ON mo.concept_id = dep.prereq_id
@@ -128,18 +130,6 @@ FROM (
 ORDER BY scored.dot DESC
 LIMIT %(limit)s;
 
--- name: chunks_by_ids
--- Fusion output hydration: fetch full chunk rows for a merged candidate
--- id set, preserving caller ordering is the caller's job (returns in id
--- order).
-SELECT chunk.chunk_id,
-       chunk.source_id,
-       chunk.locator_id,
-       chunk.chunk_index,
-       chunk.text
-FROM chunks AS chunk
-WHERE chunk.chunk_id = ANY(%(chunk_ids)s::uuid[]);
-
 -- name: locator_labels
 SELECT locator.locator_id,
        locator.locator_type,
@@ -157,17 +147,27 @@ WHERE locator.locator_id = ANY(%(locator_ids)s::uuid[]);
 -- synonyms appear in the query as whole words (word-boundary regex, case-
 -- insensitive). Single-character names are rejected in SQL too (defense in
 -- depth: 'f' or 'R' would match nearly every question).
+-- Concept names are MODEL-EXTRACTED, so every regex metacharacter in them is
+-- escaped before it reaches the regex engine. Unescaped, a name like 'f(x'
+-- raises InvalidRegularExpression and takes down the whole retrieve() call,
+-- and 'a+b' silently matches 'aaab'. Names like 'O(n)' and 'f(x)' are the
+-- common case in a maths or CS course, not the tail. Same threat model the
+-- keyword seam handles by tokenizing before to_tsquery.
 SELECT concept.concept_id, concept.name
 FROM concepts AS concept
 WHERE concept.course_id = %(course_id)s
   AND (
     (char_length(concept.name) >= 2
-     AND %(query_lower)s ~ ('(^|[^a-z0-9])' || lower(concept.name) || '([^a-z0-9]|$)'))
+     AND %(query_lower)s ~ ('(^|[^a-z0-9])'
+         || regexp_replace(lower(concept.name), '([\\^$.|?*+()[\]{}-])', '\\\1', 'g')
+         || '([^a-z0-9]|$)'))
     OR EXISTS (
         SELECT 1
         FROM jsonb_array_elements_text(concept.synonyms) AS syn
         WHERE char_length(syn) >= 2
-          AND %(query_lower)s ~ ('(^|[^a-z0-9])' || lower(syn) || '([^a-z0-9]|$)')
+          AND %(query_lower)s ~ ('(^|[^a-z0-9])'
+              || regexp_replace(lower(syn), '([\\^$.|?*+()[\]{}-])', '\\\1', 'g')
+              || '([^a-z0-9]|$)')
     )
   )
 LIMIT %(limit)s;

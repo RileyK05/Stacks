@@ -17,7 +17,7 @@ class RegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=200)
-    email: str
+    email: str = Field(max_length=254)
     password: str
 
     @field_validator("email")
@@ -37,7 +37,7 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    email: str
+    email: str = Field(max_length=254)
     password: str = Field(max_length=1024)
 
     @field_validator("email")
@@ -182,7 +182,7 @@ def verify_email(
 class PasswordResetRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    email: str
+    email: str = Field(max_length=254)
 
     @field_validator("email")
     @classmethod

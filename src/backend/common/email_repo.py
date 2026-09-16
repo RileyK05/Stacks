@@ -138,7 +138,14 @@ def consume_token(
         used = cur.execute(
             get(_FILE, "mark_token_used"), {"token_id": row["token_id"]}
         ).fetchone()
-        assert used is not None
+        if used is None:
+            # mark_token_used is guarded by `used_at IS NULL`, so it matches
+            # nothing when a concurrent request claimed the token between
+            # this transaction's SELECT and its UPDATE. That is a normal
+            # lost race (double-clicked reset link, mail scanner prefetching
+            # the URL), not an invariant breach — it must read as a rejected
+            # token, not an AssertionError 500.
+            raise TokenRejectedError("invalid or expired token")
     user_id: UUID = used["user_id"]
     return user_id
 

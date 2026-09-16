@@ -1,4 +1,4 @@
-# 008 — Hybrid three-layer retrieval (with dormant expansion seams)
+# 008 — Hybrid four-seam retrieval (with dormant expansion seams)
 
 Date: 2026-09-12
 Status: Ratified (revised same day after design conversation — fusion is

@@ -147,8 +147,3 @@ UPDATE pending_ingestion
 SET claimed_at = NULL
 WHERE claimed_at IS NOT NULL
   AND claimed_at < %(threshold)s;
-
--- name: queued_at_for
-SELECT created_at
-FROM pending_ingestion
-WHERE source_id = %(source_id)s;

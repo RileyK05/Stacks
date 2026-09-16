@@ -102,6 +102,9 @@ def generate(
         result.output_tokens,
         course_id=course_id,
         spend_kind=spend_kind,
+        overhead_tokens=budget.free_tier_overhead(
+            policy, result.input_tokens + result.output_tokens
+        ),
     )
     return result
 

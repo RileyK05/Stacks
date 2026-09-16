@@ -1611,3 +1611,200 @@ stages still fail closed (no provider); the stubbed-provider test proves
 the success path works the moment a real client lands.
 
 Gate: 260 tests, ruff, mypy green.
+
+## Review pass on the retrieval + worker batch: small fixes applied (2026-09-16)
+
+End-to-end review of `3eea6d6`. Everything below is fixed; two findings are
+left open because they are design calls, not bugs (see the end).
+
+- **Concept-name regex injection (high, was a live crash)**: the dependency
+  seam's matcher interpolated model-extracted concept names straight into a
+  POSIX regex. Verified against the DB: a name like `f(x`, `a**b` or `x{2,`
+  raises InvalidRegularExpression, and because `concept_matches` runs first
+  in `retrieve()`, ONE bad extracted name broke every question on that
+  course — keyword seam and all. Unescaped metacharacters also matched
+  wrongly in both directions: `a+b` matched "aaab", `O(n)` and `f(x)` (the
+  common case in a maths/CS course) never matched themselves. Names and
+  synonyms now go through `regexp_replace` before they reach the engine.
+  Note for next time: Postgres uses `\1` backreferences in the replacement,
+  NOT sed/Oracle's `&` — `'\&'` silently substitutes a literal `&` and
+  looks like it works. Three regression tests, each confirmed to fail
+  against the old SQL.
+- **Eval compared seams at k=20 against fusion at k=10 (high)**: per-seam
+  recall used each seam's full candidate dict (`keyword_limit` etc.) while
+  fused recall used the post-`final_k`, post-cap set. So
+  `fusion_beats_best_single` — decision 008's kill switch — was measuring
+  the k gap, with fusion handicapped 2:1. Seams are now truncated to
+  `final_k` via `_top()` before scoring. Worth remembering: the eval was
+  wrong in the direction that would have made us delete a working design.
+- **Eval did double the DB work**: `run_eval` computed all four seams and
+  then called `funnel.retrieve()`, which re-ran all four plus the concept
+  match. It now fuses the seams it already has.
+- **Worker blocked shutdown**: `process_batch`'s `while True` drained the
+  WHOLE queue, inside `asyncio.to_thread`. Threads are not cancellable, so
+  lifespan shutdown returned instantly while the thread kept ingesting —
+  unbounded hang on a big backlog. Takes a `should_stop` callback now,
+  checked between rounds and between sources; `run_forever` passes
+  `stop.is_set`.
+- **`claimed_runs` was incrementing into the dark**: both worker docstrings
+  called it "the inspectable signal," but nothing read it. Stale-claim
+  releases now log a warning with the row count.
+- **Smaller**: dead `chunks_by_ids` and `queued_at_for` queries removed
+  (added last batch, never called); redundant `locators` join dropped from
+  `toc_candidates` (the chunks join already excludes NULL locators);
+  `dependency_expansion` branches no longer select `via_concept_id` (it was
+  unused, and it defeated the UNION dedupe — a chunk reachable both as
+  prereq and dependent burned two LIMIT slots then collapsed to one in
+  Python, so the seam returned fewer distinct chunks than its limit);
+  migration 027 indexes `chunk_embeddings(model)`, which the embedding seam
+  filters on every query; system.md and decision 008's title said
+  "three-layer" while the code has four seams.
+
+Left open — design calls, not bugs:
+
+1. **`per_source_cap` punishes the single-source course.** The cap is keyed
+   on `source_id` at 4, so a course with one uploaded PDF can never return
+   more than 4 chunks no matter what `final_k` says — and one PDF is the
+   likely first-user shape. Every fusion test gives each chunk its own
+   source, so nothing catches it. Decision 008 says "per-source/per-chapter";
+   only per-source exists. Options: scale with source count, floor it at
+   `final_k` when the course has one source, or key it on chapter/locator.
+2. **Fusion does compare ranks across seams**, despite `Candidate`'s
+   docstring promising it never does. `sort_key` has two buckets, and bucket
+   1 sorts keyword (`ts_rank`, ~0.06), TOC (hardcoded 0.0) and dependency
+   (`-position`) together — so the order is always keyword > TOC >
+   dependency, as an accident of unit choice rather than a decision, and the
+   config cannot tune it. That also inverts 008's framing, where TOC is the
+   scope-giver and keyword the precision net. Related: embeddings only rank
+   chunks the embedding seam itself returned, so a keyword hit outside the
+   vector top-k sorts below every embedding hit — embeddings are a fifth
+   candidate generator that wins ties, not "the relevance ordering over the
+   merged set" as 008 describes. Reconcile doc and code before turning
+   embeddings on, or the measurement gets read through the wrong claim.
+
+Also still true and worth not forgetting: `retrieve()` and `record_trace()`
+have no callers outside `evals.py`, and `retrieve()` takes a `course_id` it
+trusts completely — no enrollment check. The seams all filter by course so
+retrieval cannot cross courses, but nothing verifies the CALLER may read
+that course. That check needs to land with the tutor-flow wiring.
+
+Gate: 263 tests (28 retrieval, +3 regex regressions), ruff, mypy green.
+
+## Full-codebase edge-case sweep (2026-09-16)
+
+Swept all ~5,800 lines of backend source, not just the retrieval batch.
+Findings below were probed against the live DB, not reasoned about. Fixed
+in this pass unless marked open.
+
+- **Markdown with no headings failed ingestion outright (high)**. Section
+  locators came only from `#` headings, so a plain .md of notes produced
+  ZERO locators, every chunk mapped to none, and build_chunks' "citation
+  grounding is mandatory" check failed the whole source. Plain notes are
+  ordinary input. The same gap had a second, quieter half: text before the
+  first heading was uncovered, so a long preamble orphaned its chunks, and
+  a short preamble sharing a chunk with the first heading was CITED AS
+  that heading — a wrong citation, which is worse than a missing one and a
+  direct golden-rule-1 problem. Uncovered regions now fall back to the same
+  line-range locators plain text uses. Two tests, both confirmed failing
+  against the old code.
+- **`read_stored` let `zlib.error` escape (medium)**. It caught
+  BadGzipFile and EOFError, but a valid gzip header with a corrupt deflate
+  body — the likeliest real corruption — raises `zlib.error` and bypassed
+  the documented `ValueError("stored gzip stream is corrupt")`. Caught now.
+- **NUL bytes survived `sanitize_display_name` (medium)**. Postgres text
+  columns reject NUL outright (verified), so an upload whose filename
+  carried one became a 500 from inside the insert. The orphan-cleanup path
+  did hold — no stranded file — but the upload was wasted and the error was
+  wrong. Control characters are stripped now.
+- **`consume_token` turned a lost race into a 500 (medium)**. Its
+  `assert used is not None` fires when a concurrent request claims the
+  token between this transaction's SELECT and its guarded UPDATE.
+  Reproduced with two connections: the loser got AssertionError, not
+  TokenRejectedError. Double-clicked reset links and mail scanners that
+  prefetch URLs make this a routine event, not a rare one. Note this is
+  the same class already logged at notes.md ~line 733 ("AssertionError
+  500s and vanish under python -O") — one surviving instance, and the only
+  one: every other assert in the codebase sits on an INSERT/aggregate
+  RETURNING that cannot return no row (`rotate_join_code`, the other
+  conditional update, already handles None correctly).
+- **Email had no length bound (medium)**. Register/login/reset accepted
+  unbounded email strings: 100k chars stored fine, 1M chars produced a raw
+  `ProgramLimitExceeded` 500 from the btree index. Bounded to 254.
+- **`archive_maintenance.run_once` blocked shutdown** the same way the
+  ingestion worker did (non-cancellable `to_thread`). Same `should_stop`
+  treatment, checked between phases.
+- **`codes._CODE_RE` hardcoded 16** instead of using `CODE_LENGTH`, so
+  changing the constant would silently desync the validator. Uses it now.
+
+Open — needs a decision, not a fix:
+
+1. **A password reset does not invalidate existing sessions.** Verified: a
+   JWT minted before `update_password` still decodes afterwards, and
+   `jwt_expire_minutes` defaults to 7 days. If the reset was prompted by a
+   compromise, the attacker keeps access for a week. There is no
+   `token_version` / `password_changed_at` to check `iat` against, so this
+   needs a column + a check in `current_user`.
+2. **`free_tier_overhead()` is never called.** budget.py defines it,
+   tiers.toml carries `free_tier_overhead_percent`, `record_generation`
+   takes `overhead_tokens`, and test_spend.py tests the function — but
+   `provider.generate`, the only place generation spend is recorded, never
+   passes it. Free-tier overhead is configured, tested, and inert. Wiring
+   it starts charging free users more, so it is a product call.
+3. **PDFs never pass through the capped read seam.** PDFs are in
+   `_INCOMPRESSIBLE_EXACT`, so they always store as identity, and
+   `_pdf_page_texts`' identity branch calls `path.read_bytes()` directly
+   instead of `read_stored`. The one file type that always takes that path
+   is the one type that skips the decompression ceiling. Upload-time raw
+   ceiling still bounds it, so this is a bypassed defense-in-depth seam
+   rather than an unbounded read.
+4. **`migrate.py` silently skips malformed filenames.** `^(\d{3})_.+\.sql$`
+   means `27_x.sql` or `027-x.sql` is ignored with no error, and two files
+   sharing a version number mean the second never runs. Both fail silent.
+
+Also noted, not acted on: `get_settings()` re-reads .env from disk on every
+call (including once per request through `decode_access_token`), and
+`CHARS_PER_TOKEN = 4` under-counts badly for CJK text — both already
+documented as approximations.
+
+Gate: 268 tests (+5 this pass), ruff, mypy green.
+
+## Review of the edge-case sweep (2026-09-16)
+
+Reviewed the other model's sweep pass. Verified against the live DB, not
+just read: the regex-escape fix works (unescaped `f(x` really raises
+InvalidRegularExpression; the shipped `regexp_replace` escapes correctly
+and matches `f(x`/`o(n)` in the real `concept_matches` path), and the
+full gate reproduces (270 tests, ruff, mypy green). The sweep's own
+"Open" list got pruned against decisions already on file:
+
+- **Two "open" items were not decisions — fixed now.**
+  1. **PDFs bypassing the capped read seam**: `read_stored`'s identity
+     branch already applies `max_decompressed_bytes` to identity files,
+     so routing `_pdf_page_texts`'s identity branch through it is a
+     one-line fix, not a design call. Done; a test pins that an
+     identity-encoded PDF over the cap raises
+     DecompressionLimitExceededError (via a patched read_stored with a
+     lowered cap — the real 1 GB policy value is not testable directly).
+  2. **`free_tier_overhead` never wired**: decision 004 already ratified
+     this (5% of input+output, applied at record time, never gating).
+     `provider.generate` now passes
+     `overhead_tokens=free_tier_overhead(policy, input+output)`. The two
+     provider-seam assertions that pinned exact spend picked up the +5%
+     (120→126, 60→63); a paid-tier test pins 0%.
+- **Genuinely open — kept as decisions, not silently deferred:**
+  password reset not invalidating old JWTs (needs a
+  token_version/password_changed_at column + a check in current_user —
+  a real schema change); `per_source_cap` vs the single-source course
+  (decision 008 says "per-source/per-chapter"; needs a ratification
+  call); fusion's rank-bucket ordering contradicting `Candidate`'s
+  docstring and 008's framing (must reconcile before embeddings turn
+  on); `migrate.py` silently skipping malformed filenames; the
+  enrollment check for `retrieve()` (lands with tutor-flow wiring);
+  free-tier CJK token under-count (documented approximation).
+- Sweep findings themselves re-checked and all confirmed real: the
+  markdown no-heading/preamble locator fix, zlib.error catch, NUL-byte
+  filename sanitize, email length bounds, worker/maintenance shutdown
+  cooperation, lost-race token consume, migration index 027, dead-query
+  removal, UNION dedupe fix.
+
+Gate: 270 tests (+2), ruff, mypy green.

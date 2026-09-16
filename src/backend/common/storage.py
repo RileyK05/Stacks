@@ -18,6 +18,7 @@ import hashlib
 import logging
 import shutil
 import tempfile
+import zlib
 from contextlib import suppress
 from io import BytesIO
 from pathlib import Path
@@ -350,13 +351,25 @@ def read_stored(
                         source_id, max_decompressed_bytes, produced
                     )
                 parts.append(chunk)
-    except (EOFError, gzip.BadGzipFile) as error:
+    except (EOFError, gzip.BadGzipFile, zlib.error) as error:
+        # zlib.error is the corrupt-deflate-body case (valid gzip header,
+        # garbage payload) — the likeliest real corruption, and the one mode
+        # that is neither BadGzipFile nor EOFError. Without it a corrupt
+        # stored file escapes as a raw zlib.error instead of this ValueError.
         raise ValueError(f"stored gzip stream is corrupt: {source_id}") from error
     return b"".join(parts)
 
 
 def sanitize_display_name(name: str) -> str:
-    stripped = Path(name.replace("\\", "/")).name.strip()
+    """Display-only filename. Path separators are stripped (disk names are
+    server-generated, so this is not the traversal defense), and so are NUL
+    and other control characters: Postgres text columns reject NUL outright,
+    so an unfiltered upload filename turns a normal upload into a 500 from
+    inside the insert."""
+    without_controls = "".join(
+        char for char in name if char.isprintable() or char in " \t"
+    )
+    stripped = Path(without_controls.replace("\\", "/")).name.strip()
     if not stripped or stripped in {".", ".."}:
         return "upload"
     return stripped[:255]

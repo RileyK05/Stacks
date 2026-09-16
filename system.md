@@ -23,10 +23,11 @@ appears below.
 - **Inference:** several models for different tasks (generative answer/extraction,
   a small stable TOC-writer, optional OCR), called through a **hosted API
   provider that does not retain data** (not self-hosted).
-- **Retrieval:** **hybrid three-layer** (decision 008) — TOC routing +
-  keyword + embeddings as candidate generators, fused, citation contract as
-  the harness; every surviving chunk carries its locator. Fusion must beat
-  the best single layer on the eval set.
+- **Retrieval:** **hybrid four-seam** (decision 008) — keyword, TOC routing,
+  dependency walk, and embeddings as candidate generators, fused, citation
+  contract as the harness; every surviving chunk carries its locator. Seams
+  activate as their data arrives; fusion must beat the best single seam on
+  the eval set.
 - **Data ownership:** course material and study history live in our Postgres.
   Inference is a no-retention API.
 - **Deletion:** an exact course archive provides a 90-day copy grace period;
@@ -138,18 +139,20 @@ knowledge — the study guide is course content, not memory) as they go.
 
 ```mermaid
 flowchart LR
-    Q["your question"] --> RET["card catalog<br/>(TOC + keyword + embeddings,<br/>fused; citations mandatory)"]
+    Q["your question"] --> RET["card catalog<br/>(keyword + TOC + dependency walk<br/>+ embeddings, fused; citations mandatory)"]
     RET --> PG[("Postgres — the stacks")]
     PG --> RET
     RET --> A["ranked chunks + citations"]
 ```
 
-**Analogy:** you ask "what's the factorization condition?" The catalog checks the
-index (TOC — where the topic is *taught*), sweeps the shelves for the words
-(keyword — where it's *used*), and asks a specialist who thinks in meanings
-(embeddings — where it's *implied*). Each hands over candidate pages; the desk
-merges them, keeps the best, and every page it hands you has its page number.
-(Decision 008: all three run; fusion must beat any single one on the eval set.)
+**Analogy:** you ask "what's the factorization condition?" The catalog sweeps the
+shelves for the words (keyword — where it's *used*), checks the index (TOC —
+where the topic is *taught*), pulls what the topic builds on (dependency walk —
+what you need *first*), and asks a specialist who thinks in meanings (embeddings
+— where it's *implied*). Each hands over candidate pages; the desk merges them,
+keeps the best, and every page it hands you has its page number. (Decision 008:
+each seam runs as soon as its data exists; fusion must beat any single one on
+the eval set.)
 
 ### 1.4 Layer 3 — Course knowledge (the study guide)
 
