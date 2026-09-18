@@ -48,6 +48,7 @@ def _to_account(row: dict[str, Any]) -> UserAccount:
         tier=row["tier"],
         email_verified=row["email_verified_at"] is not None,
         password_hash=row["password_hash"],
+        password_changed_at=row["password_changed_at"],
         delete_requested_at=row["delete_requested_at"],
         created_at=row["created_at"],
     )

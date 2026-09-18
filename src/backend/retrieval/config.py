@@ -19,7 +19,6 @@ class RetrievalPolicy(BaseModel):
     dependency_limit: int = Field(ge=1)
     embedding_limit: int = Field(ge=1)
     final_k: int = Field(ge=1)
-    per_source_cap: int = Field(ge=1)
     embedding_only_quota: int = Field(ge=0)
 
 

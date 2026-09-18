@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import jwt
@@ -39,14 +40,26 @@ def test_oversized_password_candidate_is_rejected_without_bcrypt_error() -> None
 
 def test_token_roundtrip() -> None:
     user_id = uuid4()
-    token = create_access_token(user_id)
+    changed_at = datetime.now(UTC)
+    token = create_access_token(user_id, changed_at)
     claims = decode_access_token(token)
     assert claims["sub"] == str(user_id)
+    assert claims["stamp"] == int(changed_at.timestamp() * 1_000_000)
+
+
+def test_token_stamp_none_becomes_zero() -> None:
+    user_id = uuid4()
+    token = create_access_token(user_id, None)
+    claims = decode_access_token(token)
+    assert claims["stamp"] == 0
 
 
 def test_token_user_id_extracts_subject() -> None:
     user_id = uuid4()
-    assert token_user_id(create_access_token(user_id)) == user_id
+    assert (
+        token_user_id(create_access_token(user_id, datetime.now(UTC)))
+        == user_id
+    )
 
 
 def test_expired_token_rejected() -> None:

@@ -123,7 +123,7 @@ def login(payload: LoginRequest) -> dict[str, str]:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
     if user.delete_requested_at is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "account pending deletion")
-    token = auth.create_access_token(user.user_id)
+    token = auth.create_access_token(user.user_id, user.password_changed_at)
     return {"access_token": token, "token_type": "bearer"}
 
 

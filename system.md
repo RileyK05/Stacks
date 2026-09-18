@@ -43,11 +43,13 @@ owner/enrollment permission rules, source-to-course-object identity, ingestion
 run state, upload storage, archive-then-purge services, and the deterministic
 ingestion stages (file parsing → text + locators → token-bounded chunks, with
 a DB-backed run ledger, persistent queue claims, and tier/budget gating) are
-implemented. Retrieval and tutor orchestration remain planned. The model
-stages (update_toc, course_knowledge_extraction) are wired through the
-provider seam but fail closed until a provider is chosen — runs are
-inspectably failed, never falsely successful. Diagrams for the later flows are
-the intended design, not claims that the code already performs them.
+implemented. The retrieval funnel (seams, normalization, relevance
+allocation, traces — §4/§4a) is implemented; the tutor orchestration on top
+of it remains planned. The model stages (update_toc, course_knowledge_extraction,
+and the future ingestion embedding stage) are wired through the provider
+seam but fail closed until a provider is chosen — runs are inspectably
+failed, never falsely successful. Diagrams for the later flows are the
+intended design, not claims that the code already performs them.
 
 The system is a **pipeline with a memory**. Think of it like a **library that
 learns about you**:
@@ -404,9 +406,10 @@ erDiagram
   `end_value` (reserved word); the data layer maps it to the Pydantic field `end`.
 - **`CHUNKS`** are **token-bounded** retrieval slices sized to fit the model's
   context window (not arbitrary lines), each pointing back to the locator it
-  spans. Chunk embeddings (pgvector) are planned per decision 008's hybrid
-  retrieval — added when the provider pick + migration land, and kept only
-  if the fusion measurably helps.
+  spans. Each chunk optionally carries an **embedding row** (see §4a): the
+  schema is live (`chunk_embeddings`, migrations 025/027), and rows are
+  written once an embedding provider exists. Kept only if fusion measurably
+  helps.
 
 ### 2.3 Course knowledge (concepts, evidence & TOC)
 
@@ -767,13 +770,17 @@ the audit trail (run, stage rows, error messages) is always queryable.
 
 ## 4. Retrieval & answer flow
 
-Retrieval is a **four-seam funnel** (decision 008), mixed not scored. Each
-seam is a candidate generator answering a different question; fusion unions
-their output with layer attribution, applies per-source caps, and cuts to
-the final cited set. Every surviving chunk carries its locator; citations
-are layer-agnostic — the same contract no matter which seam surfaced the
-chunk — so retrieval strategy is an internal, swappable detail and trust
-lives at the citation boundary.
+Retrieval is a **four-seam funnel** (decision 008): candidate generation,
+then normalization, then relevance allocation. Each seam is a candidate
+generator answering a different question; fusion unions their output,
+normalizes each seam's ranks to a common 0..1 scale (seam-locally — raw
+units were incomparable), then splits the final cited set across sources
+by relevance (best chunk score per source, proportional with largest
+remainder, a one-slot floor, availability clamping). Every surviving
+chunk carries its locator; citations are layer-agnostic — the same
+contract no matter which seam surfaced the chunk — so retrieval strategy
+is an internal, swappable detail and trust lives at the citation
+boundary.
 
 - **Keyword** (fine, day one): tsvector OR-match over chunks. Catches exact
   phrasing and scattered mentions ("when did we *use* linearity" → chapters
@@ -787,20 +794,71 @@ lives at the citation boundary.
   model-extracted edges pass the evidence bar** — a wrong edge misdirects
   silently, so dormant-until-trustworthy is the design. A seam with no data
   contributes nothing and breaks nothing.
-- **Embeddings** (ranking): ingestion-time chunk embeddings (pgvector-ready
-  column; float8[] dot-product now). Orders the merged set by meaning and
-  admits a small quota of semantic-only extras. Gated on the provider pick
-  (no-retention embedding endpoint) and on measured help.
+- **Embeddings** (meaning): ingestion-time chunk embeddings. Dormant until a
+  provider lands; participates in fusion like any other seam. See §4a for
+  the full embedding architecture.
 
 **Trace:** every query stores a retrieval trace recording the cited chunk
 ids, which layers contributed each, and matched concept ids — auditors see
 WHY a chunk was retrieved, not just that it was.
 
+### 4a. Embedding architecture (decision 008, revised 2026-09-16)
+
+The embedding subsystem end to end — what exists today, what is gated on
+the provider pick, and what never changes:
+
+**Storage (live now, migration 025 + 027).**
+- `chunk_embeddings(chunk_id PK, model TEXT, embedding FLOAT8[], created_at)`
+  — one row per embedded chunk, keyed by the model that produced it. A
+  course can hold rows from more than one model across a model swap; every
+  query filters by exact `model`, so a model swap never mixes vectors.
+- `model` is indexed (migration 027) — the seam filters on it every query.
+- Chunks without an embedding row simply don't participate in the
+  embedding seam; absence is not an error, it's dormancy.
+
+**Ingestion-time embedding (gated on provider).** When the provider pick
+lands, the ingestion pipeline gains an embedding stage: after chunks are
+written, each chunk's text is embedded and stored with the model name.
+Re-ingestion under a new model writes new rows alongside old ones; the
+query-time model filter is what makes a swap safe without a mass rewrite.
+
+**Query-time seam.** `embedding_seam` takes the query embedding (computed
+by the tutor flow at answer time) and returns the top-`embedding_limit`
+chunks by dot product. The SQL computes dot products natively
+(`unnest` zip + `SUM` over float8[] — no pgvector yet), with a
+`cardinality()` equality guard: a mismatched-dimension row is excluded,
+never silently truncated into a garbage score (a model swap must not rank
+garbage). The pgvector swap is a mechanical later migration — same seam,
+`<=>` cosine distance instead of the zip.
+
+**Normalization & direction.** Embedding ranks are "higher = closer to the
+query" already; fusion's normalization keeps that direction (all other
+seams flip sign, since their ranks mean "earlier arrival"). After
+normalization, embedding dots compete on equal footing with keyword and
+TOC scores — the source-relevance allocation (§4) reads them all as one
+currency.
+
+**Quota semantics.** `embedding_only_quota` (config v2) bounds chunks
+found ONLY by embeddings when grounded seams (keyword/toc/dependency)
+also matched — semantic expansion must not displace grounded hits. When
+no grounded seam matched anything, the quota does not apply: embeddings
+are the only evidence there is.
+
+**Dimension guard & determinism.** The seam never compares vectors of
+different dimensionality (SQL-level guard, tested); ordering is stable
+(dot DESC, chunk_index, chunk_id).
+
+**The kill switch.** The embedding seam earns its keep on the eval set
+like everything else: if the funnel without embeddings matches or beats
+the funnel with them (recall@k per §4's "measured, not assumed"), the
+seam is turned off via config, not code deletion.
+
 **Measured, not assumed:** recall@k per seam AND fused, over a hand-written
 eval set in students' voice (`data/eval/retrieval/`). Fusion must beat the
 best single seam or it is simplified; each seam must beat the funnel
-without it or it is turned off. Funnel quotas/caps/k live in
-`configs/retrieval.toml` (versioned), never hardcoded.
+without it or it is turned off. Funnel quotas/k live in
+`configs/retrieval.toml` (versioned, v2 — allocation replaced the
+per-source cap), never hardcoded.
 
 ```mermaid
 sequenceDiagram
@@ -880,7 +938,7 @@ clients leak past this module.
 |---|---|---|---|
 | Generative answer / extraction / classification | DeepSeek v4 flash | **Yes** | generative model |
 | Table-of-contents writer/updater | **small, stable** model | **Yes** | keeps TOC descriptions consistent over time |
-| Embeddings (retrieval) | separate embedding model | Yes (decision 008) | ingestion-time embedding, pgvector; kept only if fusion measurably helps; no-retention check applies |
+| Embeddings (retrieval) | separate embedding model | Yes (decision 008) | ingestion-time embedding (§4a: chunk_embeddings table live, dot-product seam live, dormancy until provider); kept only if fusion measurably helps; no-retention check applies |
 | OCR (scanned/image slides) | OCR/vision model | Only if scans exist | math-in-PNG is hard; avoid if text-layer; scanned PDFs currently fail loudly instead |
 | Reranker | separate reranker | No | later, if retrieval precision suffers |
 
@@ -1080,7 +1138,9 @@ servers.
   similar); verify their data-retention policy before committing.
 - Whether OCR is in scope depends on whether pilot slides are scanned/image-heavy.
 - Embedding model choice (part of the provider pick) — needs a no-retention
-  embedding endpoint; pgvector migration + ingestion embedding step follow.
+  embedding endpoint. The full embedding architecture (storage, ingestion
+  stage, query seam, guards) is specified in §4a; the only missing piece is
+  the provider itself, plus the pgvector swap (mechanical, later).
 - Whether model-routed TOC matching (vs static) earns its per-query model
   call — measured against the static TOC layer.
 - Login throttling and token revocation policy before external deployment.

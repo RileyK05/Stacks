@@ -1,9 +1,11 @@
 # 008 — Hybrid four-seam retrieval (with dormant expansion seams)
 
 Date: 2026-09-12
-Status: Ratified (revised same day after design conversation — fusion is
+Status: Ratified (revised 2026-09-12 after design conversation — fusion is
 mixing, not scoring; expansion seams are built up front and activate as
-their data arrives)
+their data arrives; revised again 2026-09-16 — fusion normalizes seam
+ranks to a common 0..1 scale and ALLOCATES the final slots across sources
+by relevance; see "Revision 2026-09-16" at the end)
 Supersedes: the "embeddings only when the TOC path fails an eval" posture
 (decision 001-era; system.md prior retrieval-evolution list). TOC-as-index
 structure (system.md §2.3) unchanged.
@@ -55,7 +57,8 @@ arrives — a seam with no data contributes nothing and breaks nothing
 - Embeddings = the relevance ordering over the merged set. This avoids
   weighted-score fusion entirely — incompatible units never compete.
 - Caps: per-source/per-chapter candidate caps at fusion absorb the
-  near-duplicate-flood concern.
+  near-duplicate-flood concern. (Revised 2026-09-16: replaced by
+  relevance allocation — see the revision section.)
 
 **The citation contract is the harness.** Every chunk surviving fusion
 carries its locator; citations are layer-agnostic. Retrieval strategy is an
@@ -90,3 +93,41 @@ contributions stay inspectable.
 - Static vs model-routed TOC matching (default static, measured upgrade).
 - Embedding model choice (part of the provider pick).
 - Funnel quotas/caps/k values — config tunables set by measurement.
+## Revision 2026-09-16 — normalization + relevance allocation
+
+The design conversation (user-ratified) replaced the per-source cap with
+relevance allocation, and made cross-seam comparison legal by
+normalization. Two user-framed problems, one pipeline:
+
+1. **Normalize (the "ordering is an accident" fix).** Each seam's ranks
+   are min-max normalized into 0..1 WITHIN the seam before any
+   comparison: keyword ts_rank (~0.06) and dependency arrival position
+   (7, 8, 9) were incomparable units; after normalization they are the
+   same currency. Embedding dots keep their direction ("higher = closer
+   to the query"); arrival-ordered seams flip sign. A seam of one
+   candidate (or all-equal ranks) normalizes to 0.5 — weak information,
+   not zero. The merge keeps a multi-layer chunk's BEST normalized rank.
+2. **Allocate (the "max 4 per file starves a one-file course" fix).**
+   A source's relevance = its best chunk's normalized score from any
+   seam (the softmax-style proportional split the conversation settled
+   on, without the temperature knob: plain proportional is inspectable —
+   "lecture 3 earned 7 of 10 slots" — and indistinguishable from softmax
+   at these score ranges). final_k slots are split by largest remainder
+   with three guardrails: one-slot floor per contributing source
+   (weak-but-matching stays represented), availability clamping (a
+   source with 2 chunks cannot hold 7 slots; remainder reflows), and
+   backfill so final_k is met when candidates exist.
+
+Known failure mode, stated on purpose: relevance-by-best-chunk rewards
+the lecture that EXPLAINS it best only as far as any scoring layer can
+tell; volume is explicitly NOT the signal (allocation is by best chunk,
+not chunk count). The eval set is the judge; embeddings improve the
+allocation when they land.
+
+Embedding-only quota semantics clarified: the quota keeps semantic
+expansion from displacing grounded (keyword/toc/dependency) hits. When
+no grounded seam matched anything, embeddings ARE the evidence — the
+quota does not apply.
+
+Config: retrieval.toml v2 — `per_source_cap` removed; final_k,
+per-seam limits, and embedding_only_quota remain.

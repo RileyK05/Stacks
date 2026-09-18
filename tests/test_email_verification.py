@@ -11,7 +11,7 @@ from src.backend.common.db import connection
 from tests.conftest import verify_email
 
 PASSWORD = "correct-horse-battery"
-NEW_PASSWORD = "a-different-long-password"
+NEW_PASSWORD = "different-long-pass"
 
 
 def _register(client: TestClient) -> tuple[str, str, dict]:
@@ -266,3 +266,62 @@ def test_consume_token_lost_race_is_rejected_not_asserted() -> None:
     winner.close()
     thread.join(timeout=20)
     assert outcome.get("result") == "rejected"
+
+
+def test_password_reset_invalidates_sessions_minted_before_it(
+    client: TestClient,
+) -> None:
+    """The compromise response: if the reset happened because someone else
+    may hold the password, the attacker's pre-reset session must die at
+    the next request. current_user rejects tokens whose stamp predates
+    the live password_changed_at."""
+    token, email, body = _register(client)
+    user_id = UUID(body["user_id"])
+    assert client.get("/auth/me", headers=_headers(token)).status_code == 200
+
+    client.post("/auth/password-reset/request", json={"email": email})
+    plaintext = _outbox_token(user_id, email_repo.RESET_KIND)
+    confirm = client.post(
+        "/auth/password-reset/confirm",
+        json={"token": plaintext, "new_password": NEW_PASSWORD},
+    )
+    assert confirm.status_code == 200, confirm.text
+
+    stale = client.get("/auth/me", headers=_headers(token))
+    assert stale.status_code == 401, "pre-reset session must be dead"
+    assert "password change" in stale.json()["detail"]
+
+    fresh_login = client.post(
+        "/auth/login", json={"email": email, "password": NEW_PASSWORD}
+    )
+    assert fresh_login.status_code == 200
+    assert (
+        client.get(
+            "/auth/me", headers=_headers(fresh_login.json()["access_token"])
+        ).status_code
+        == 200
+    )
+
+
+def test_password_max_length_rejected_at_register(client: TestClient) -> None:
+    """24 chars pass, 25 fail — the boundary is the policy, not an
+    accident of fixture choice."""
+    email = f"{uuid4().hex}@test.invalid"
+    ok = client.post(
+        "/auth/register",
+        json={
+            "name": "Boundary",
+            "email": email,
+            "password": "x" * 24,
+        },
+    )
+    assert ok.status_code == 201, ok.text
+    over = client.post(
+        "/auth/register",
+        json={
+            "name": "Boundary",
+            "email": f"{uuid4().hex}@test.invalid",
+            "password": "x" * 25,
+        },
+    )
+    assert over.status_code == 422

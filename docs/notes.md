@@ -1808,3 +1808,100 @@ full gate reproduces (270 tests, ruff, mypy green). The sweep's own
   removal, UNION dedupe fix.
 
 Gate: 270 tests (+2), ruff, mypy green.
+
+## Password reset invalidates sessions + password length policy (2026-09-16)
+
+User-directed fixes, scoped to exactly two changes.
+
+- **Reset kills pre-reset sessions.** New `users.password_changed_at`
+  column (migration 028, backfilled with now() for existing password
+  rows so no live session broke). Every token carries a `stamp` claim =
+  the stamp at mint time; `current_user` rejects tokens whose stamp
+  predates the live one. Stamp is **microseconds**, not seconds — the
+  same-second collision is real (create at .011s, reset at .321s in one
+  probe run would have compared equal at second precision and left the
+  attacker's session alive). Shared helper `auth.password_stamp`;
+  None -> 0 so the claim is always comparable. End-to-end test: register
+  -> me works -> reset -> same token now 401 -> new login works.
+- **Password policy: 12-24 characters.** `MAX_PASSWORD_LENGTH = 24`
+  added to `validate_password` (the 72-byte bcrypt guard stays, it
+  prevents silent truncation, not a policy bound). Register and
+  password-reset-confirm both funnel through validate_password, so both
+  enforce it. Login intentionally does NOT pre-reject over-long
+  passwords: verification just fails into the same 401 as a wrong
+  password (anti-enumeration unchanged). One test fixture (25 chars)
+  shortened.
+
+Gate: 273 tests (+4: stamp roundtrip, stamp-0, invalidation flow,
+24/25-char boundary), ruff, mypy, migrations clean.
+
+## per_source_cap no longer starves single-source courses (2026-09-16)
+
+User-ratified fix of sweep open-item #3. The cap is flood control, not a
+result ceiling: with one contributing source (the likely first-user shape)
+it used to bound the final set at per_source_cap (4) no matter what
+final_k said.
+
+Rule: effective_cap = max(per_source_cap, ceil(final_k / contributing
+sources)). With >= 3 contributing sources this is just per_source_cap
+(4); with 1 it stops binding entirely. Config value unchanged — the
+behavior now matches decision 008's "per-source/per-chapter" intent.
+
+Tests: single-source course now surfaces all 5 chunks (was exactly 2);
+3-source course with final_k=6 still floods-caps at 2+2+2.
+
+Gate: 274 tests, ruff, mypy green.
+
+## Fusion rebuilt: normalize + allocate (retrieval.toml v2) (2026-09-16)
+
+User-ratified redesign replacing the per-source cap, resolving sweep open
+items #3 and #4 as one pipeline (user's framing: "softmax per source" and
+"order AND normalization").
+
+- **Normalize first.** Each seam's ranks min-max into 0..1 within the
+  seam (embedding dots keep direction; arrival-ordered seams flip sign;
+  all-equal seams normalize to 0.5). This is what makes cross-seam
+  comparison legal — the raw units (ts_rank ~0.06 vs position 7,8,9)
+  were the "ordering is an accident" problem. Caught my own bug here:
+  the layers-membership check intersected a set of STRINGS with a set
+  of FROZENSETS (always empty), silently sign-flipping embeddings;
+  fixed by passing the seam's layer name explicitly.
+- **Allocate second.** Source relevance = its best chunk's normalized
+  rank from any seam (best-chunk, NOT chunk count — volume must not
+  reward rambling lectures). final_k slots split proportionally with
+  largest remainder (Hare quota, deterministic). Guardrails: one-slot
+  floor per contributing source; availability clamping with reflow;
+  backfill so final_k is met when candidates exist.
+- **Embedding-only quota semantics fixed along the way:** the quota
+  exists to keep semantic expansion from displacing grounded hits; when
+  no grounded seam matched, embeddings ARE the evidence and the quota
+  does not apply (was silently capping an embeddings-only course at 3).
+- Config retrieval.toml v2: `per_source_cap` REMOVED (allocation
+  replaces it). RetrievalPolicy field dropped.
+- Tests: 4 new (proportional split 2/1/1 by relevance; floor + 
+  availability 7/1; single source fills naturally; cross-seam max merge
+  admits both) + 2 rewritten (equal relevance splits evenly 2/2/2;
+  single source never starved). 30 retrieval total.
+- Docs kept honest: decision 008 revision section, system.md §4,
+  funnel/Candidate docstrings — the #4 lesson was doc-code drift.
+
+Known tradeoff stated on purpose: relevance-by-best-chunk rewards
+"explains it best" only as far as the scoring layer can tell; the eval
+set judges, embeddings improve the allocation when they land.
+
+Gate: 278 tests, ruff, mypy green.
+
+## system.md: embedding architecture documented (§4a) (2026-09-16)
+
+User-requested. New §4a captures the full embedding subsystem in one
+place: storage (chunk_embeddings, model-keyed rows, indexed model column —
+migrations 025/027), the ingestion-time embedding stage (provider-gated;
+model-name rows make swaps safe without mass rewrites), the query-time
+seam (native float8[] dot products, cardinality dimension guard, stable
+ordering, pgvector swap as mechanical later step), normalization
+direction (dots keep "higher = closer"; other seams flip), quota
+semantics (expansion quota vs the no-grounded-evidence case), and the
+eval kill switch. Stale spots synced: chunk-planning paragraph (§2.2,
+embeddings live not "planned"), status header (retrieval implemented,
+tutor planned), model table row, open-decisions entry, config-version
+mention. No code changes; docs-only commit pending.

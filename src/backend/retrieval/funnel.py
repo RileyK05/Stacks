@@ -1,4 +1,5 @@
-"""The retrieval funnel (decision 008): four seams, mixed not scored.
+"""The retrieval funnel (decision 008, revised): four seams, normalized
+then allocated — not raw-scored.
 
 Seams:
 - keyword: tsvector match (works day one, zero model dependency)
@@ -9,8 +10,13 @@ Seams:
 - embeddings: ranks the merged set by meaning when present (dormant
   without a provider); absent, a deterministic order applies
 
-Fusion mixes: union with layer attribution, per-source caps, final_k cut.
-Every surviving chunk carries its locator id; the layer contribution is
+Fusion: each seam's ranks are min-max normalized INTO 0..1 (the unit
+accident — ts_rank ~0.06 vs dependency position 8 — made cross-seam
+comparison meaningless before this). A source's relevance is its best
+chunk's normalized score from any seam; the final_k slots are split
+across sources proportionally (largest remainder) with a one-slot floor
+per contributing source, availability clamping, and backfill. Every
+surviving chunk carries its locator id; the layer contribution is
 returned for the trace.
 """
 
@@ -51,12 +57,11 @@ def _keyword_tokens(query: str) -> list[str]:
 class Candidate:
     """One chunk candidate with every layer that surfaced it.
 
-    `rank` is seam-local and unit-free by design (ts_rank, dot product,
-    or arrival position); it is only ever compared against ranks from the
-    SAME seam, never across seams — sort_key routes embedding ranks and
-    non-embedding ranks through separate sort buckets so the units never
-    mix. Do not use `rank` for cross-seam scoring; the funnel mixes, it
-    does not score."""
+    `rank` is seam-local on ARRIVAL (ts_rank, dot product, or arrival
+    position) and is normalized to 0..1 inside fuse() before any
+    comparison — that normalization is what makes cross-seam comparison
+    legal. After normalization the ranks ARE comparable: a source's
+    relevance is its best chunk's normalized rank."""
 
     chunk_id: UUID
     source_id: UUID
@@ -235,6 +240,35 @@ def embedding_seam(
     return out
 
 
+def _normalize(seam: dict[UUID, Candidate], layer: str) -> None:
+    """Min-max a seam's ranks into 0.0..1.0 IN PLACE, seam-locally. This
+    is what makes cross-seam comparison legal (the #4 lesson: ts_rank
+    ~0.06 and dependency position 8 were incomparable units). Embedding
+    dots need no shift (already "higher is closer to the query"); for the
+    rest higher rank meant earlier arrival, so the sign flips here. A
+    seam of one candidate (or all-equal ranks) normalizes to a
+    mid-strength 0.5 — it IS weak information, not zero."""
+    if not seam:
+        return
+    ranks = [candidate.rank for candidate in seam.values()]
+    low, high = min(ranks), max(ranks)
+    if high <= low:
+        for candidate in seam.values():
+            _mutate_rank(candidate, 0.5)
+        return
+    span = high - low
+    if layer == EMBEDDING:
+        for candidate in seam.values():
+            _mutate_rank(candidate, (candidate.rank - low) / span)
+    else:
+        for candidate in seam.values():
+            _mutate_rank(candidate, (high - candidate.rank) / span)
+
+
+def _mutate_rank(candidate: Candidate, new_rank: float) -> None:
+    object.__setattr__(candidate, "rank", new_rank)
+
+
 def fuse(
     keyword: dict[UUID, Candidate],
     toc: dict[UUID, Candidate],
@@ -243,13 +277,31 @@ def fuse(
     *,
     policy: RetrievalPolicy,
 ) -> tuple[Candidate, ...]:
-    """Mix, not score. Order: embedding rank when available (the
-    relevance ordering), else seam-arrival rank. Ranks are never compared
-    across seams (see Candidate) — max() below only merges the SAME
-    chunk's ranks so a multi-layer chunk keeps its best same-unit
-    representative; sort_key buckets embedding vs non-embedding first.
-    Per-source caps apply to the final cut; embedding-only candidates
-    (surfaced by no other layer) are admitted up to their quota."""
+    """Normalize each seam to a common 0..1 scale, then allocate the
+    final_k slots across sources by relevance (largest remainder), then
+    fill each source's slots with its best chunks. "Relevance" of a
+    source = the best normalized score any of its chunks earned from any
+    seam — the softmax-style allocation the design conversation settled
+    on, with three guardrails:
+
+    - A floor of one slot per contributing source (relevance can say a
+      lecture barely matters, but it DID match; dropping it entirely is
+      the evaluator's job, not the mixer's).
+    - Slots are clamped to each source's available candidates (a source
+      with 2 chunks cannot hold 7 slots; the remainder reflows).
+    - Allocation is by best-chunk score, not volume: a lecture that
+      mentions the topic 20 times does not outrank one that explains it
+      once (the known failure mode of volume-weighted allocation).
+
+    Embedding-only candidates still enter through their quota, admitted
+    after allocated slots (semantic expansion must not displace
+    grounded hits). A single-source course fills naturally — no source
+    can starve another when there is no competition."""
+    _normalize(keyword, KEYWORD)
+    _normalize(toc, TOC)
+    _normalize(dependency, DEPENDENCY)
+    _normalize(embeddings, EMBEDDING)
+
     merged: dict[UUID, Candidate] = {}
     for seam in (keyword, toc, dependency, embeddings):
         for chunk_id, candidate in seam.items():
@@ -267,28 +319,103 @@ def fuse(
             else:
                 merged[chunk_id] = candidate
 
-    def sort_key(candidate: Candidate) -> tuple[int, float, int]:
-        if candidate.chunk_id in embeddings:
-            return (0, -embeddings[candidate.chunk_id].rank, candidate.chunk_index)
-        return (1, -candidate.rank, candidate.chunk_index)
+    best_by_source: dict[UUID, float] = {}
+    for candidate in merged.values():
+        current = best_by_source.get(candidate.source_id)
+        if current is None or candidate.rank > current:
+            best_by_source[candidate.source_id] = candidate.rank
 
-    ordered = sorted(merged.values(), key=sort_key)
+    total_weight = sum(best_by_source.values())
+    available_by_source: dict[UUID, int] = {}
+    for candidate in merged.values():
+        available_by_source[candidate.source_id] = (
+            available_by_source.get(candidate.source_id, 0) + 1
+        )
+    k = policy.final_k
+    contributing = len(best_by_source)
+    grounded_present = bool(keyword or toc or dependency)
+    if total_weight <= 0 or contributing == 0:
+        # Degenerate (all-zero scores): equal split, availability-clamped.
+        quotas = {sid: min(k // contributing, avail) if contributing else 0
+                  for sid, avail in available_by_source.items()}
+    else:
+        raw = {
+            sid: weight / total_weight * k
+            for sid, weight in best_by_source.items()
+        }
+        # Largest-remainder: floor everything, hand leftover slots to the
+        # biggest fractional remainders (Hare quota — deterministic).
+        quotas = {
+            sid: min(int(allocation), available_by_source[sid])
+            for sid, allocation in raw.items()
+        }
+        remainder = k - sum(quotas.values())
+        by_remainder = sorted(
+            raw.items(),
+            key=lambda item: (item[1] - int(item[1]), -raw[item[0]]),
+            reverse=True,
+        )
+        # A min-1 floor per contributing source (bounded by availability)
+        # keeps weak-but-matching lectures represented. Floor first, then
+        # remaining remainder goes by largest fractional part.
+        for sid, _ in by_remainder:
+            if remainder <= 0:
+                break
+            if quotas[sid] == 0 and available_by_source[sid] > 0:
+                quotas[sid] = 1
+                remainder -= 1
+        for sid, _ in by_remainder:
+            if remainder <= 0:
+                break
+            headroom = available_by_source[sid] - quotas[sid]
+            if headroom > 0:
+                give = min(headroom, remainder)
+                quotas[sid] += give
+                remainder -= give
 
-    counts: dict[UUID, int] = {}
-    embedding_only_admitted = 0
+    ordered = sorted(
+        merged.values(), key=lambda c: (-c.rank, c.chunk_index, c.chunk_id)
+    )
     final: list[Candidate] = []
+    taken: dict[UUID, int] = {}
+    embedding_only_admitted = 0
+    # The quota exists to keep semantic expansion from displacing
+    # grounded (keyword/toc/dependency) hits. When no seam found anything
+    # grounded, embeddings are not "expansion" — they are the only
+    # evidence there is, so the quota does not apply.
+    embedding_quota = (
+        policy.embedding_only_quota if grounded_present else k
+    )
     for candidate in ordered:
+        if len(final) >= k:
+            break
         is_embedding_only = candidate.layers == frozenset({EMBEDDING})
-        if is_embedding_only and embedding_only_admitted >= policy.embedding_only_quota:
+        if is_embedding_only and embedding_only_admitted >= embedding_quota:
             continue
-        if counts.get(candidate.source_id, 0) >= policy.per_source_cap:
+        if taken.get(candidate.source_id, 0) >= quotas.get(candidate.source_id, 0):
             continue
-        counts[candidate.source_id] = counts.get(candidate.source_id, 0) + 1
+        taken[candidate.source_id] = taken.get(candidate.source_id, 0) + 1
         if is_embedding_only:
             embedding_only_admitted += 1
         final.append(candidate)
-        if len(final) >= policy.final_k:
-            break
+    # Unallocated budget (sources too small to fill quotas): backfill in
+    # global order so final_k is met when candidates exist.
+    if len(final) < k:
+        allocated_ids = {c.chunk_id for c in final}
+        for candidate in ordered:
+            if len(final) >= k:
+                break
+            if candidate.chunk_id in allocated_ids:
+                continue
+            is_embedding_only = candidate.layers == frozenset({EMBEDDING})
+            if (
+                is_embedding_only
+                and embedding_only_admitted >= embedding_quota
+            ):
+                continue
+            if is_embedding_only:
+                embedding_only_admitted += 1
+            final.append(candidate)
     return tuple(final)
 
 

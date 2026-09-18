@@ -32,6 +32,7 @@ class UserAccount(User):
     """Internal account state. Never use this model as an API response."""
 
     password_hash: SecretStr | None = None
+    password_changed_at: datetime | None = None
     delete_requested_at: datetime | None = None
 
 
