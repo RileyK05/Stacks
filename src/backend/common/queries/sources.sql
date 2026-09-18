@@ -41,3 +41,13 @@ VALUES
      %(file_hash)s, %(size_bytes)s, %(stored_encoding)s)
 RETURNING source_id, course_id, filename, mime_type, source_type, status,
           file_hash, size_bytes, stored_encoding, created_at;
+
+-- name: lock_user_for_quota
+-- SELECT ... FOR UPDATE: makes the owner-quota check race-free (two
+-- concurrent uploads serialize here). In sources.sql per the
+-- queries-in-named-blocks rule — every statement in upload_source uses
+-- one; this was the last inline holdout.
+SELECT user_id
+FROM users
+WHERE user_id = %(user_id)s
+FOR UPDATE;

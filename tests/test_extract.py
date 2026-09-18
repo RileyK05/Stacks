@@ -271,3 +271,25 @@ def test_pdf_identity_path_reads_through_the_capped_seam() -> None:
     finally:
         path.unlink(missing_ok=True)
         path.parent.rmdir()
+
+
+def test_read_decoded_strips_nul_bytes() -> None:
+    """Review catch #4: a binary uploaded as text/plain decodes via the
+    cp1252 fallback carrying \x00; Postgres TEXT rejects NUL, so the
+    chunk insert 500'd. Control bytes are stripped at the decode choke
+    point."""
+    import gzip as gzip_module
+
+    from src.backend.ingest.extract import read_decoded
+
+    course_id = uuid4()
+    source_id = uuid4()
+    raw = b"linearity notes\x00with embedded binary\x00\nmore text"
+    path = storage.write_stored(course_id, source_id, gzip_module.compress(raw))
+    try:
+        text = read_decoded(course_id, source_id, "gzip")
+        assert "\x00" not in text
+        assert "linearity notes" in text
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()

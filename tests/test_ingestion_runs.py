@@ -63,6 +63,12 @@ def _make_source(course_id, owner_id, mime_type: str, body: bytes):
                 len(body),
             ),
         )
+        # The real upload path enqueues in the same transaction (the
+        # handoff contract); mirror it so run_ingestion's history write
+        # has its queued_at.
+        runs.enqueue_pending(
+            conn, source_id, course_id, "uploaded_new_source"
+        )
         conn.commit()
     return source_id
 
@@ -80,14 +86,7 @@ def test_full_pipeline_deterministic_stages_and_honest_failure(
     source_id = _make_source(
         course.course_id, user.user_id, "text/plain", TEXT_BODY.encode()
     )
-    with connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO pending_ingestion (source_id, course_id, reason)"
-                " VALUES (%s, %s, 'test_queue')",
-                (source_id, course.course_id),
-            )
-        conn.commit()
+    # _make_source now enqueues (the upload-path contract); no manual insert.
 
     _run_and_fail(user, course, source_id)
 
@@ -173,17 +172,9 @@ def test_failed_source_can_be_requeued(source_pair) -> None:
 
 def test_claim_persists_and_excludes_claimed(source_pair) -> None:
     user, course = source_pair
-    first = _make_source(course.course_id, user.user_id, "text/plain", b"one")
-    second = _make_source(course.course_id, user.user_id, "text/plain", b"two")
-    for sid in (first, second):
-        with connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO pending_ingestion (source_id, course_id,"
-                    " reason) VALUES (%s, %s, 'test_claim')",
-                    (sid, course.course_id),
-                )
-            conn.commit()
+    _make_source(course.course_id, user.user_id, "text/plain", b"one")
+    _make_source(course.course_id, user.user_id, "text/plain", b"two")
+    # Both enqueued by _make_source (the upload-path contract).
 
     with connection() as conn:
         first_claim = runs.claim_pending_sources(conn, limit=1)
@@ -295,3 +286,37 @@ def test_budget_exhaustion_fails_ingestion_before_call(
 
     with pytest.raises(IngestionPipelineError), connection() as conn:
         run_ingestion(conn, source_id, user.user_id, user.tier)
+
+def test_ingestion_history_written_with_original_queued_at(
+    source_pair,
+) -> None:
+    """Review catch #2: record_history existed but had no caller — the
+    table was empty since migration 019. Both terminal paths must write
+    a history row carrying the queue row's ORIGINAL queued_at, before
+    the queue row is deleted (the doc-contract in worker.py)."""
+    from psycopg.rows import dict_row as _dict_row
+
+    user, course = source_pair
+    source_id = _make_source(
+        course.course_id, user.user_id, "text/plain", TEXT_BODY.encode()
+    )
+    with connection() as conn, conn.cursor(row_factory=_dict_row) as cur:
+        queued_at = cur.execute(
+            "SELECT created_at AS queued_at FROM pending_ingestion"
+            " WHERE source_id = %s",
+            (source_id,),
+        ).fetchone()["queued_at"]
+
+    with pytest.raises(IngestionPipelineError), connection() as conn:
+        run_ingestion(conn, source_id, user.user_id, user.tier)
+    with connection() as conn, conn.cursor(row_factory=_dict_row) as cur:
+        row = cur.execute(
+            "SELECT reason, queued_at FROM ingestion_history"
+            " WHERE source_id = %s",
+            (source_id,),
+        ).fetchone()
+        assert row is not None, "failed ingestion must record history"
+        assert row["reason"] == "failed"
+        assert row["queued_at"] == queued_at, (
+            "history must carry the ORIGINAL enqueue time"
+        )

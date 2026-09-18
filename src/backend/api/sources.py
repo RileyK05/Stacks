@@ -10,6 +10,8 @@ from src.backend.common import budget, sources_repo, storage
 from src.backend.common import tiers as tier_config
 from src.backend.common.schemas.base import SourceStatus, SourceType
 from src.backend.common.schemas.identity import UserAccount
+from src.backend.ingest import worker as worker_module
+from src.backend.ingest.extract import INGESTABLE_MIME_TYPES
 
 router = APIRouter(prefix="/courses", tags=["sources"])
 
@@ -40,6 +42,17 @@ def upload_source(
 ) -> SourceUploadView:
     require_verified_email(user)
     budget.verify_tier(user.user_id, user.tier)
+    declared = file.content_type or "application/octet-stream"
+    if declared not in INGESTABLE_MIME_TYPES:
+        # Reject BEFORE storage + quota charge: an un-ingestable upload
+        # used to consume storage the user can only reclaim by deleting
+        # the whole course (the quota ratchet). The sniffing note: this
+        # trusts the declared type for dispatch, but the extract stage's
+        # decode + dispatch still fail loudly on a mislabeled body.
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            f"unsupported file type: {declared}",
+        )
     policy = tier_config.load_tier_policies().policy_for(user.tier)
     try:
         result = sources_repo.upload_source(
@@ -69,4 +82,8 @@ def upload_source(
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(err)) from err
     finally:
         file.file.close()
+    # Wake the ingestion worker so upload-to-ingestion latency is
+    # seconds, not the poll interval (worker.wakeup is a no-op when no
+    # loop is running).
+    worker_module.wakeup()
     return SourceUploadView.model_validate(result, from_attributes=True)

@@ -79,8 +79,7 @@ def upload_source(
         )
         with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             user_row = cur.execute(
-                "SELECT user_id FROM users WHERE user_id = %s FOR UPDATE",
-                (owner_user_id,),
+                get(_FILE, "lock_user_for_quota"), {"user_id": owner_user_id}
             ).fetchone()
             if user_row is None:
                 raise UnknownOwnedCourseError("course not found")

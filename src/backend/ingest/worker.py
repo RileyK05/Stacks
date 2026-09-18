@@ -25,9 +25,9 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from src.backend.common import users_repo
 from src.backend.common.db import connection
-from src.backend.common.lifecycle_config import load_lifecycle_policy
 from src.backend.common.queries import get
 from src.backend.ingest import runs
+from src.backend.ingest.config import load_ingestion_config
 from src.backend.ingest.orchestrator import run_ingestion
 from src.backend.ingest.pipeline import IngestionPipelineError
 
@@ -146,14 +146,61 @@ def _cleanup_orphaned_claim(source_id: UUID) -> None:
         logger.exception("could not clean up claim for source %s", source_id)
 
 
+WAKEUP: asyncio.Event | None = None
+
+
+def wakeup() -> None:
+    """Called by the upload path after enqueueing so the worker polls
+    immediately instead of waiting out the interval (review catch #7:
+    upload-to-ingestion latency was up to an hour on a knob named for
+    something else). Safe to call from sync context via loop.call_soon_
+    threadsafe by async callers; a no-op when no loop is running
+    (tests, worker entrypoint)."""
+    if WAKEUP is not None:
+        WAKEUP.set()
+
+
 async def run_forever(stop: asyncio.Event) -> None:
-    interval = load_lifecycle_policy().maintenance_interval_seconds
+    global WAKEUP
+    interval = load_ingestion_config().poll_interval_seconds
+    WAKEUP = asyncio.Event()
     while not stop.is_set():
         try:
             await asyncio.to_thread(process_batch, should_stop=stop.is_set)
         except Exception:
             logger.exception("ingestion worker pass failed")
+        WAKEUP.clear()
         try:
-            await asyncio.wait_for(stop.wait(), timeout=interval)
+            await asyncio.wait_for(
+                asyncio.gather(stop.wait(), WAKEUP.wait(),
+                               return_exceptions=True),
+                timeout=interval,
+            )
         except TimeoutError:
             continue
+
+def main() -> None:
+    """Standalone worker process entrypoint (review catch #8): run with
+    `.venv/Scripts/python -m src.backend.ingest.worker` to drain the
+    queue outside the API process — extraction CPU and deploy restarts
+    then never touch API replicas. Polls until Ctrl+C."""
+    logging.basicConfig(level=logging.INFO)
+    logger.info("ingestion worker starting (standalone)")
+    try:
+        while True:
+            try:
+                attempted, succeeded = process_batch()
+                if attempted:
+                    logger.info(
+                        "worker pass: %s attempted, %s succeeded",
+                        attempted,
+                        succeeded,
+                    )
+            except Exception:
+                logger.exception("ingestion worker pass failed")
+    except KeyboardInterrupt:
+        logger.info("ingestion worker stopped")
+
+
+if __name__ == "__main__":
+    main()

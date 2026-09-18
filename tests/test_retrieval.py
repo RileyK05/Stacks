@@ -835,3 +835,45 @@ def test_fuse_multi_seam_relevance_is_cross_seam_max(course_pair) -> None:
     assert len(fused) == 2
     ids = {str(c.chunk_id) for c in fused}
     assert str(kw_chunk) in ids and str(emb_chunk) in ids
+
+
+def test_failed_sources_are_never_citable(course_pair) -> None:
+    """Golden rule 1 guard (review catch #1): the ingestion run ledger
+    deliberately survives stage failure (inspectable history), but the
+    retrieval side must mirror the source lifecycle — only 'indexed'
+    sources are citable. A source that died at a model stage keeps live
+    chunks; seams must never surface them."""
+    user, course = course_pair
+    source_id = _insert_source(user, course)
+    _insert_chunks(source_id, 3)
+    policy = _policy(final_k=10)
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE sources SET status = 'failed' WHERE source_id = %s",
+            (source_id,),
+        )
+        conn.commit()
+    with connection() as conn:
+        keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
+        emb = funnel.embedding_seam(
+            conn, course.course_id, None, "test-embed", 20
+        )
+    assert funnel.fuse(keyword, {}, {}, emb, policy=policy) == ()
+
+
+def test_pending_sources_are_never_citable(course_pair) -> None:
+    """Same guard, other pre-indexed states: an 'uploaded' source whose
+    chunks exist mid-run (the deliberate stage-commit behavior) is
+    invisible until it is indexed."""
+    user, course = course_pair
+    source_id = _insert_source(user, course)
+    _insert_chunks(source_id, 3)
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE sources SET status = 'uploaded' WHERE source_id = %s",
+            (source_id,),
+        )
+        conn.commit()
+    with connection() as conn:
+        keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
+    assert keyword == {}

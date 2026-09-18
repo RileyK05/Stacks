@@ -17,6 +17,7 @@ SELECT chunk.chunk_id,
 FROM chunks AS chunk
 JOIN sources AS source ON source.source_id = chunk.source_id
 WHERE source.course_id = %(course_id)s
+  AND source.status = 'indexed'
   AND chunk.search_vector @@ to_tsquery('english', %(or_query)s)
 ORDER BY rank DESC, chunk.chunk_index
 LIMIT %(limit)s;
@@ -47,7 +48,11 @@ FROM toc_entries AS entry
 JOIN current_toc ON current_toc.toc_id = entry.toc_id
 JOIN chunks AS chunk ON chunk.source_id = entry.source_id
      AND chunk.locator_id = entry.locator_id
-WHERE to_tsvector('english', entry.title || ' ' || entry.description)
+WHERE chunk.source_id IN (
+          SELECT s.source_id FROM sources AS s
+          WHERE s.course_id = %(course_id)s AND s.status = 'indexed'
+      )
+  AND to_tsvector('english', entry.title || ' ' || entry.description)
       @@ to_tsquery('english', %(or_query)s)
 ORDER BY entry.position, chunk.chunk_index
 LIMIT %(limit)s;
@@ -77,8 +82,10 @@ LIMIT %(limit)s;
     JOIN dependencies AS dep ON dep.prereq_id = matched.concept_id
     JOIN memory_objects AS mo ON mo.concept_id = dep.dependent_id
     JOIN chunks AS chunk ON chunk.source_id = mo.source_id
+    JOIN sources AS src ON src.source_id = chunk.source_id
     WHERE matched.concept_id = ANY(%(concept_ids)s::uuid[])
       AND matched.course_id = %(course_id)s
+      AND src.status = 'indexed'
 )
 UNION
 (
@@ -91,8 +98,10 @@ UNION
     JOIN dependencies AS dep ON dep.dependent_id = matched.concept_id
     JOIN memory_objects AS mo ON mo.concept_id = dep.prereq_id
     JOIN chunks AS chunk ON chunk.source_id = mo.source_id
+    JOIN sources AS src ON src.source_id = chunk.source_id
     WHERE matched.concept_id = ANY(%(concept_ids)s::uuid[])
       AND matched.course_id = %(course_id)s
+      AND src.status = 'indexed'
 )
 ORDER BY chunk_index, chunk_id
 LIMIT %(limit)s;
@@ -122,6 +131,7 @@ FROM (
     CROSS JOIN LATERAL unnest(emb.embedding, %(query_embedding)s::float8[])
         AS t(emb_value, q_value)
     WHERE source.course_id = %(course_id)s
+      AND source.status = 'indexed'
       AND emb.model = %(model)s
       AND cardinality(emb.embedding) = cardinality(%(query_embedding)s::float8[])
     GROUP BY chunk.chunk_id, chunk.source_id, chunk.locator_id,

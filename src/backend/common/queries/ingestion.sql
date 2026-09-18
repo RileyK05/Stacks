@@ -72,6 +72,7 @@ WITH candidate AS (
     FROM pending_ingestion AS inner_pending
     JOIN sources AS source ON source.source_id = inner_pending.source_id
     WHERE inner_pending.claimed_at IS NULL
+      AND inner_pending.claimed_runs < inner_pending.claimed_runs_max
       AND source.status = 'uploaded'
     ORDER BY inner_pending.created_at
     LIMIT %(limit)s
@@ -147,3 +148,12 @@ UPDATE pending_ingestion
 SET claimed_at = NULL
 WHERE claimed_at IS NOT NULL
   AND claimed_at < %(threshold)s;
+
+-- name: queued_at_for
+-- The queue row's original enqueue time, read BEFORE the row is deleted
+-- so the history row preserves it (doc-contract in worker.py). Aliased
+-- to queued_at: the history insert's parameter name and the row's
+-- column name differ.
+SELECT created_at AS queued_at
+FROM pending_ingestion
+WHERE source_id = %(source_id)s;

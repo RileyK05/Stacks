@@ -256,15 +256,23 @@ def run_ingestion(
             handler_set.handlers(),
             max_attempts=ingestion_config.max_attempts,
             observe=observer.observe,
+            conn=conn,
         )
         observer.finish(IngestionStatus.SUCCEEDED, None)
         runs.mark_source_indexed(conn, source_id)
+        runs.record_history(
+            conn,
+            source_id,
+            source.course_id,
+            "ingested",
+            runs.queued_at_for(conn, source_id),
+        )
         runs.clear_pending_source(conn, source_id)
         conn.commit()
     except IngestionPipelineError as err:
         message = str(err)[:500]
         _commit_failure_audit(
-            conn, run.run_id, source_id, message, failed_stage=err
+            conn, run.run_id, source_id, source.course_id, message, failed_stage=err
         )
         raise
     return run.run_id
@@ -274,18 +282,25 @@ def _commit_failure_audit(
     conn: Connection,
     run_id: UUID,
     source_id: UUID,
+    course_id: UUID,
     message: str,
     *,
     failed_stage: IngestionPipelineError | None = None,
 ) -> None:
     """Record run/source failure and commit it on its own: the pipeline
     exception aborted the caller's transaction, and the audit trail must
-    survive the rollback of any partial derived rows. Queue rows are
-    cleared too — a failed source must not linger as a permanently
-    unclaimable zombie (requeue is a deliberate operator/API action, see
-    requeue_failed_source)."""
+    survive the rollback of any partial derived rows. The history row is
+    written BEFORE the queue row is deleted (queued_at captured first —
+    the doc-code-drift lesson). Queue rows are cleared too — a failed
+    source must not linger as a permanently unclaimable zombie (requeue
+    is a deliberate operator/API action, see requeue_failed_source)."""
     conn.rollback()
+    queued_at = runs.queued_at_for(conn, source_id)
     runs.mark_run_failed_direct(conn, run_id, message, failed_stage=failed_stage)
     runs.mark_source_failed(conn, source_id, message)
+    if queued_at is not None:
+        runs.record_history(
+            conn, source_id, course_id, "failed", queued_at
+        )
     runs.clear_pending_source(conn, source_id)
     conn.commit()

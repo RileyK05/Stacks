@@ -200,3 +200,28 @@ def test_archived_course_copy_recreates_stored_sources(
         )
         == raw
     )
+
+
+def test_upload_rejects_uningestable_mime_before_charge(client) -> None:
+    """Review catch #12: a zip used to be stored + charged against quota,
+    then failed at extract_text — the quota ratchet. The boundary now
+    rejects before any storage write: 415, and nothing exists after."""
+    from src.backend.common.db import connection
+
+    owner_token, _owner_id = _user(client)
+    course_id = _course(client, owner_token)
+    response = client.post(
+        f"/courses/{course_id}/sources",
+        data={"source_type": "notes"},
+        files={
+            "file": ("archive.zip", b"PK\x03\x04 fake zip", "application/zip")
+        },
+        headers=_headers(owner_token),
+    )
+    assert response.status_code == 415, response.text
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM sources WHERE course_id = %s",
+            (course_id,),
+        )
+        assert cur.fetchone()[0] == 0, "rejected upload must store nothing"

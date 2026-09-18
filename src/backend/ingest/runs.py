@@ -230,6 +230,18 @@ def claim_pending_sources(
     return list(rows)
 
 
+def queued_at_for(conn: Connection, source_id: UUID) -> Any:
+    """The queue row's original queued_at, captured BEFORE the row is
+    deleted so the history row preserves the original enqueue time (the
+    doc-contract in this module's worker docstring). Returns None when
+    the row is already gone (e.g. double terminal path)."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        row = cur.execute(
+            get(_FILE, "queued_at_for"), {"source_id": source_id}
+        ).fetchone()
+    return row["queued_at"] if row else None
+
+
 def clear_pending_source(conn: Connection, source_id: UUID) -> None:
     """Remove the queue row; the caller must have written ingestion_history
     first (queued_at is passed explicitly, not subselected)."""
@@ -291,8 +303,19 @@ def enqueue_pending(
 
 
 def mark_source_indexed(conn: Connection, source_id: UUID) -> None:
-    with conn.cursor() as cur:
-        cur.execute(get(_FILE, "mark_source_indexed"), {"source_id": source_id})
+    """uploaded → indexed. The guarded UPDATE is an invariant, not a
+    filter: if the row isn't 'uploaded' (a concurrent claim stole it —
+    review catch #13), this run must not report SUCCEEDED while the
+    source stays unindexed, so the no-op raises."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        row = cur.execute(
+            get(_FILE, "mark_source_indexed"), {"source_id": source_id}
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(
+                f"mark_source_indexed matched no row for {source_id}:"
+                " source was not in 'uploaded' state"
+            )
 
 
 def mark_source_failed(conn: Connection, source_id: UUID, error_message: str) -> None:

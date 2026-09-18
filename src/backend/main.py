@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
-from src.backend.api import archives, auth, courses, enrollments, sources
+from src.backend.api import archives, auth, courses, enrollments, sources, tutor
 from src.backend.common import archive_maintenance
 from src.backend.ingest import worker as ingestion_worker
 
@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(courses.router)
     app.include_router(enrollments.router)
     app.include_router(sources.router)
+    app.include_router(tutor.router)
     app.include_router(archives.router)
     return app
 

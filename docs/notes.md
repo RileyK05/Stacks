@@ -1905,3 +1905,98 @@ eval kill switch. Stale spots synced: chunk-planning paragraph (§2.2,
 embeddings live not "planned"), status header (retrieval implemented,
 tutor planned), model table row, open-decisions entry, config-version
 mention. No code changes; docs-only commit pending.
+
+## Tutor answer endpoint (M1 close-out) (2026-09-16)
+
+POST /courses/{course_id}/ask — the last big M1 piece. Retrieval, trace,
+and the billed provider call share ONE transaction: a failed generation
+rolls the trace back (an answer that never happened leaves no
+evidence-shaped noise; test pins this).
+
+- **Enrollment check** (the review's open item, resolved here): owner OR
+  active enrollment; strangers get 404 (existence not disclosed). Test
+  covers stranger, owner, and self-enrolled learner.
+- **Fork B lean enforced**: empty retrieval = 404 "nothing in the course
+  materials matches this question" — never an ungrounded answer.
+- **Honest failure**: provider-unavailable = 503 with the real reason
+  (the provider seam fails closed until the pick); budget exhausted =
+  403. The endpoint never pretends to answer.
+- **Fork C working direction in the prompt**: numbered chunks, "use ONLY
+  the numbered material, cite as [n], say so plainly if not here."
+- Answer, chunk_ids, and trace_id returned; the trace's stored
+  retrieved_chunk_ids must equal the answer's citations (pinned).
+
+Open remaining: citation rendering detail (per-claim granularity —
+Fork C's open half), conversation threads (Fork D explicitly not
+load-bearing), query-embedding plumbing when the provider lands (the
+endpoint's embedding params exist and pass None until then).
+
+Gate: 284 tests (+6 tutor), ruff, mypy green.
+
+## Review of worker/retrieval batch #2: critical + high fixed (2026-09-18)
+
+External review, 16 findings. Triage: 11 fixed now, 5 deferred as design
+calls (listed at the end). All 290 tests, ruff, mypy green.
+
+FIXED:
+1. **Failed sources were citable (critical, golden rule 1)**: no seam
+   filtered source.status — a source that died at update_toc kept its
+   committed locators+chunks (deliberate, ledger-pinned) and retrieval
+   surfaced them. All four seams now require status='indexed'. Explicit
+   ruling: mid-run chunks are invisible; 'indexed' is the only citable
+   state. Two tests (failed + uploaded states).
+2. **ingestion_history had no caller (doc-code drift)**: wired into both
+   terminal paths, queued_at captured before the queue row is deleted;
+   helper _make_source now enqueues (mirroring the upload contract); a
+   test pins the history row carrying the ORIGINAL queued_at.
+3. **DB-level stage failure poisoned the ledger (critical)**: a psycopg
+   error aborted the transaction, the observer's FAILED write raised
+   InFailedSqlTransaction (uncatchable by the orchestrator's
+   IngestionPipelineError handler), run stayed 'running' forever. Fixed
+   with per-attempt SAVEPOINTs (savepoint/rollback/release around every
+   handler call; pipeline takes conn). Test pins fence+rollback.
+4. **NUL bytes in chunk text (the #3 trigger)**: binary-as-text/plain
+   decoded via cp1252 fallback carrying \x00 → chunk insert 500.
+   Stripped at read_decoded's choke point. Test.
+12. **Un-ingestable mime stored + charged then failed (quota ratchet)**:
+   upload boundary rejects against INGESTABLE_MIME_TYPES (415) BEFORE
+   storage+quota. Test pins 415 + zero rows.
+13. **mark_source_indexed silent no-op**: guarded UPDATE now raises when
+   it matches nothing — a run must not report SUCCEEDED over an
+   unindexed source (the #5 double-claim symptom).
+14. **Dead branch**: _pdf_page_texts' gzip/else branches were identical;
+   collapsed (every read via the capped seam).
+16. **Inline FOR UPDATE SQL**: moved to named block lock_user_for_quota
+   (AGENTS.md queries rule; last inline holdout in upload_source).
+5. **Claim safety backstops** (migration 029): UNIQUE
+   (source_id, locator_id, chunk_index) on chunks (double-claim
+   delete-then-insert races now fail loudly); claimed_runs_max=5 — the
+   claim query refuses over-cap rows (dead-letter by omission: the
+   source stays 'uploaded', visible in source stats; requeue is the
+   path back after inspection).
+7. **Worker poll latency**: ingestion.toml v2 gains its own
+   poll_interval_seconds=5 (was sharing lifecycle's 3600s); upload path
+   calls worker.wakeup() — an asyncio Event the loop waits on alongside
+   stop — so upload-to-ingestion is seconds, not an hour.
+8. **Standalone worker entrypoint**: `python -m src.backend.ingest.worker`
+   (process_batch already standalone; lifting out before replica > 1).
+
+DEFERRED — design calls, recorded for ratification:
+- **#6's read/delete surface**: list/status/requeue endpoints are
+  mechanical, but per-source delete needs the citation-snapshot shape
+  (golden rule 6) ratified first. Requeue endpoint rides along with it.
+- **#9 lock-scope refactor**: file write after commit + memory refresh
+  off the upload path — needs the orphan-sweep window reasoned through
+  against concurrent uploads (the sweep exists; the invariant check is
+  the work).
+- **#10 chunk/locator dedupe (chunk_locators join table)**: agreed the
+  right shape, MUST land before embeddings populate (else triple-stored
+  vectors); scheduled as its own migration task now.
+- **#11 uri second source of truth**: confirmed mechanical once #10's
+  migration is open (same batch).
+- **#5's heartbeat**: claimed_runs_max dead-letters the pathological
+  case; a claim heartbeat + liveness check is the scaling follow-up
+  when replica count > 1 (with #8's entrypoint split).
+
+Gate: 290 tests (+6: failed/pending citability ×2, history queued_at,
+savepoint fence, NUL strip, 415-no-store), ruff, mypy green.

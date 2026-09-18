@@ -39,6 +39,13 @@ _TEXT_MIME_EXACT = {
 }
 _PDF_MIME = "application/pdf"
 
+# The upload boundary (api/sources.py) rejects anything outside this set
+# BEFORE storage and quota charge — a zip charged against quota then
+# failed at extraction was the review's "quota is a one-way ratchet"
+# half. Keep in sync with extract()'s dispatch (they share the module so
+# drift fails loudly at the dispatch's UnsupportedSourceTypeError).
+INGESTABLE_MIME_TYPES = frozenset(_TEXT_MIME_EXACT | {_PDF_MIME})
+
 
 @dataclass(frozen=True)
 class ExtractedSource:
@@ -97,9 +104,15 @@ def read_decoded(
         max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
     )
     try:
-        return raw.decode("utf-8-sig")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        return raw.decode("cp1252")
+        text = raw.decode("cp1252")
+    # Postgres TEXT rejects NUL outright (storage.py documents the same
+    # hazard for filenames): a binary uploaded as text/plain decodes via
+    # the cp1252 fallback carrying \x00, turning the extract stage into
+    # a NotNullViolation 500 inside the chunk insert. Control bytes carry
+    # no citable content; drop them at the decode choke point.
+    return text.replace("\x00", "")
 
 
 def _line_of(line_starts: list[int], offset: int) -> int:
@@ -286,15 +299,11 @@ def _pdf_page_texts(
 
     if raw_pdf_bytes is not None:
         reader = pypdf.PdfReader(io.BytesIO(raw_pdf_bytes))
-    elif stored_encoding == "gzip":
-        raw = storage.read_stored(
-            course_id,
-            source_id,
-            stored_encoding,
-            max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
-        )
-        reader = pypdf.PdfReader(io.BytesIO(raw))
     else:
+        # Every read goes through the capped seam regardless of stored
+        # encoding: read_stored's identity branch applies the ceiling
+        # itself (review catch #3's PDF fix — the branches were
+        # character-for-character identical and are collapsed here).
         raw = storage.read_stored(
             course_id,
             source_id,
