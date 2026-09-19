@@ -51,3 +51,31 @@ SELECT user_id
 FROM users
 WHERE user_id = %(user_id)s
 FOR UPDATE;
+
+-- name: list_sources
+-- The course's source surface (review catch #6: the API was write-only —
+-- a user never learned their upload failed). Owner-only read: statuses
+-- include the failure reason, which is owner-facing operational data.
+SELECT source.source_id,
+       source.object_id,
+       source.uploaded_by_user_id,
+       source.filename,
+       source.mime_type,
+       source.source_type,
+       source.status,
+       source.error_message,
+       source.size_bytes,
+       source.created_at
+FROM sources AS source
+JOIN courses AS course ON course.course_id = source.course_id
+WHERE source.course_id = %(course_id)s
+ORDER BY source.created_at DESC, source.source_id;
+
+-- name: verify_owner_source
+-- Ownership gate for source-level actions (requeue): the caller must be
+-- the course's owner. Returns the course_id on success.
+SELECT source.course_id
+FROM sources AS source
+JOIN courses AS course ON course.course_id = source.course_id
+WHERE source.source_id = %(source_id)s
+  AND course.owner_user_id = %(owner_user_id)s;

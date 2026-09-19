@@ -56,6 +56,7 @@ def process_batch(
     holding the process open for an unbounded time on a large backlog."""
     attempted = 0
     succeeded = 0
+    touched_courses: set[UUID] = set()
     while should_stop is None or not should_stop():
         with connection() as conn:
             _release_stale_claims(conn)
@@ -71,7 +72,32 @@ def process_batch(
             course_id = row["course_id"]
             if _ingest_claimed(source_id, course_id):
                 succeeded += 1
+                touched_courses.add(course_id)
+    # Course-memory refresh is per-BATCH, not per-upload (ratified fix #9):
+    # five uploads to one course used to rebuild the same summary five
+    # times inside five upload transactions, each holding the owner's
+    # quota lock across several queries + summary assembly. One refresh
+    # at the end of a successful batch sees all five.
+    for course_id in touched_courses:
+        _refresh_course_memory(course_id)
     return attempted, succeeded
+
+
+def _refresh_course_memory(course_id: UUID) -> None:
+    """The batch-end memory refresh. Own transaction (the pipeline's
+    transactions are closed by now); failures are logged, not fatal — a
+    missed refresh is caught by the next terminal path that touches the
+    course."""
+    from src.backend.common import course_memory
+
+    try:
+        with connection() as conn:
+            course_memory.refresh_for_owner(conn.cursor(), course_id)
+            conn.commit()
+    except Exception:
+        logger.exception(
+            "course-memory refresh failed for course %s", course_id
+        )
 
 
 def _ingest_claimed(source_id: UUID, course_id: UUID) -> bool:

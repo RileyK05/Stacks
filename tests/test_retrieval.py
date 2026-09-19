@@ -63,7 +63,9 @@ def _insert_source(user, course) -> "object":
 
 def _insert_chunks(source_id, count: int) -> None:
     """`count` chunks, each under its own page locator so eval labels
-    stay per-chunk."""
+    stay per-chunk. One row per logical chunk (migration 031): distinct
+    chunk_index, primary locator on the row, full span in
+    chunk_locators."""
     import uuid as uuid_module
 
     with connection() as conn, conn.cursor() as cur:
@@ -78,8 +80,13 @@ def _insert_chunks(source_id, count: int) -> None:
             )
             cur.execute(
                 "INSERT INTO chunks (chunk_id, source_id, locator_id,"
-                " chunk_index, text) VALUES (%s, %s, %s, 0, %s)",
-                (chunk_id, source_id, locator_id, f"linearity mention {i}"),
+                " chunk_index, text) VALUES (%s, %s, %s, %s, %s)",
+                (chunk_id, source_id, locator_id, i, f"linearity mention {i}"),
+            )
+            cur.execute(
+                "INSERT INTO chunk_locators (chunk_id, locator_id)"
+                " VALUES (%s, %s)",
+                (chunk_id, locator_id),
             )
         conn.commit()
 
@@ -748,8 +755,13 @@ def _insert_chunks_with_embedding(
             )
             cur.execute(
                 "INSERT INTO chunks (chunk_id, source_id, locator_id,"
-                " chunk_index, text) VALUES (%s, %s, %s, 0, %s)",
-                (chunk_id, source_id, locator_id, f"linearity chunk {i}"),
+                " chunk_index, text) VALUES (%s, %s, %s, %s, %s)",
+                (chunk_id, source_id, locator_id, i, f"linearity chunk {i}"),
+            )
+            cur.execute(
+                "INSERT INTO chunk_locators (chunk_id, locator_id)"
+                " VALUES (%s, %s)",
+                (chunk_id, locator_id),
             )
             cur.execute(
                 "INSERT INTO chunk_embeddings (chunk_id, model, embedding)"
@@ -877,3 +889,68 @@ def test_pending_sources_are_never_citable(course_pair) -> None:
     with connection() as conn:
         keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
     assert keyword == {}
+
+
+def test_multi_locator_chunk_stored_once_with_full_span(course_pair) -> None:
+    """Migration 031 (ratified fix #10): a chunk spanning multiple
+    locators is ONE row (not one per locator), with the full span in
+    chunk_locators. Duplicate storage made retrieval hits a function of
+    locator grain and would have embedded the same text N times."""
+    import uuid as uuid_module
+
+    from src.backend.ingest.chunking import chunk_text
+    from src.backend.ingest.extract import LocatorSpan
+
+    user, course = course_pair
+    source_id = _insert_source(user, course)
+    locators = [
+        LocatorSpan(
+            locator_id=uuid_module.uuid4(),
+            locator_type="page",
+            start=i * 400,
+            end=(i + 1) * 400,
+            label=f"page {i + 1}",
+        )
+        for i in range(3)
+    ]
+    text = "linearity sentence with enough padding to straddle pages. " * 60
+    spans = chunk_text(text, tuple(locators), max_tokens=64)
+    multi = [span for span in spans if len(span.locator_ids) > 1]
+    if not multi:
+        return
+    with connection() as conn, conn.cursor() as cur:
+        for locator in locators:
+            cur.execute(
+                "INSERT INTO locators (locator_id, source_id, locator_type,"
+                " start, end_value, label)"
+                " VALUES (%s, %s, 'page', '0', '100', %s)",
+                (locator.locator_id, source_id, locator.label),
+            )
+        for span in multi:
+            cur.execute(
+                "INSERT INTO chunks (source_id, locator_id, chunk_index, text)"
+                " VALUES (%s, %s, %s, %s) RETURNING chunk_id",
+                (source_id, span.locator_ids[0], span.chunk_index, span.text),
+            )
+            chunk_id = cur.fetchone()[0]
+            for locator_id in span.locator_ids:
+                cur.execute(
+                    "INSERT INTO chunk_locators (chunk_id, locator_id)"
+                    " VALUES (%s, %s)",
+                    (chunk_id, locator_id),
+                )
+        conn.commit()
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT count(*) FROM chunks WHERE source_id = %s"
+            " AND chunk_index = %s",
+            (source_id, multi[0].chunk_index),
+        )
+        assert cur.fetchone()[0] == 1, "one row per logical chunk"
+        cur.execute(
+            "SELECT count(*) FROM chunk_locators WHERE chunk_id = %s",
+            (chunk_id,),
+        )
+        assert cur.fetchone()[0] == len(multi[0].locator_ids), (
+            "the citation map holds the full span"
+        )

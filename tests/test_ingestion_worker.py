@@ -159,3 +159,121 @@ def test_stale_claims_are_released(owner, course) -> None:
         reclaimed = runs.claim_pending_sources(conn, limit=1)
         conn.commit()
     assert len(reclaimed) == 1
+
+def test_batch_refreshes_course_memory_once(monkeypatch, owner, course) -> None:
+    """Fix #9 ratified: the course-memory summary is rebuilt once per
+    successful batch (not per upload, not per source). Two uploads to the
+    same course -> one refresh call covering both."""
+    calls: list = []
+    monkeypatch.setattr(
+        "src.backend.ingest.worker._refresh_course_memory",
+        lambda course_id: calls.append(course_id),
+    )
+
+    def fake_call(task, model, prompt):
+        return (f"stub output for {task}", 100, 20)
+
+    monkeypatch.setattr(
+        "src.backend.common.provider._call_provider", fake_call
+    )
+    _upload(course.course_id, owner.user_id, body=b"first upload body " * 50)
+    _upload(course.course_id, owner.user_id, body=b"second upload body " * 50)
+    attempted, succeeded = worker.process_batch(limit=10)
+    assert succeeded == 2
+    assert calls == [course.course_id], (
+        "one refresh per touched course per batch, not per source"
+    )
+
+
+def test_live_run_is_never_reclaimed(owner, course) -> None:
+    """Fix #5 (ratified): the heartbeat fence. A claim whose heartbeat is
+    fresh is NOT stale even if its claim time is ancient — a
+    slow-but-alive run is never re-claimed out from under a live worker
+    (two pipelines racing delete-then-insert was the failure mode)."""
+    stored = _upload(course.course_id, owner.user_id)
+    with connection() as conn:
+        claimed = runs.claim_pending_sources(conn, limit=1)
+        conn.commit()
+    assert len(claimed) == 1
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE pending_ingestion SET claimed_at = %s,"
+            " heartbeat_at = now() WHERE source_id = %s",
+            (
+                datetime.now(UTC)
+                - worker.STALE_CLAIM_AFTER
+                - timedelta(minutes=5),
+                stored.source_id,
+            ),
+        )
+        conn.commit()
+    with connection() as conn:
+        worker._release_stale_claims(conn)
+        conn.commit()
+    with connection() as conn:
+        still_claimed = runs.claim_pending_sources(conn, limit=1)
+        conn.commit()
+    assert still_claimed == [], "fresh heartbeat must fence the re-claim"
+
+
+def test_dead_run_without_heartbeat_is_reclaimed(owner, course) -> None:
+    """The other half of the fence: a claim with NO heartbeat yet (worker
+    died before its first stage transition) still ages out on claimed_at
+    — the original 30-minute budget bounds the pre-stage crash window."""
+    stored = _upload(course.course_id, owner.user_id)
+    with connection() as conn:
+        claimed = runs.claim_pending_sources(conn, limit=1)
+        conn.commit()
+    assert len(claimed) == 1
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE pending_ingestion SET claimed_at = %s,"
+            " heartbeat_at = NULL WHERE source_id = %s",
+            (
+                datetime.now(UTC)
+                - worker.STALE_CLAIM_AFTER
+                - timedelta(minutes=5),
+                stored.source_id,
+            ),
+        )
+        conn.commit()
+    with connection() as conn:
+        worker._release_stale_claims(conn)
+        conn.commit()
+    with connection() as conn:
+        reclaimed = runs.claim_pending_sources(conn, limit=1)
+        conn.commit()
+    assert len(reclaimed) == 1
+
+
+def test_stale_sweep_clears_heartbeat(owner, course) -> None:
+    """A released claim loses its stale heartbeat too: the next claim
+    starts a fresh liveness budget."""
+    stored = _upload(course.course_id, owner.user_id)
+    with connection() as conn:
+        runs.claim_pending_sources(conn, limit=1)
+        conn.commit()
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE pending_ingestion SET claimed_at = %s,"
+            " heartbeat_at = %s WHERE source_id = %s",
+            (
+                datetime.now(UTC)
+                - worker.STALE_CLAIM_AFTER
+                - timedelta(minutes=5),
+                datetime.now(UTC) - timedelta(hours=2),
+                stored.source_id,
+            ),
+        )
+        conn.commit()
+    with connection() as conn:
+        worker._release_stale_claims(conn)
+        conn.commit()
+    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        row = cur.execute(
+            "SELECT claimed_at, heartbeat_at FROM pending_ingestion"
+            " WHERE source_id = %s",
+            (stored.source_id,),
+        ).fetchone()
+    assert row["claimed_at"] is None
+    assert row["heartbeat_at"] is None

@@ -7,12 +7,15 @@ from pathlib import Path
 from typing import Any, BinaryIO
 from uuid import UUID, uuid4
 
+from psycopg import Connection
 from psycopg.rows import dict_row
-from src.backend.common import budget, course_memory, storage
+from src.backend.common import budget, storage
 from src.backend.common.db import connection
 from src.backend.common.queries import get
 from src.backend.common.schemas.base import SourceStatus, SourceType, UserTier
+from src.backend.common.schemas.source_content import Source
 from src.backend.common.tiers import TierPolicy
+from src.backend.ingest import runs as _ingest_runs
 
 _FILE = "sources"
 
@@ -161,7 +164,10 @@ def upload_source(
                     "reason": "uploaded_new_source",
                 },
             )
-            course_memory.refresh_for_owner(cur, course_id)
+            # Course-memory refresh moved off the upload path (ratified
+            # fix #9): the ingestion worker refreshes once per successful
+            # batch, instead of rebuilding the same summary inside every
+            # upload's quota-locked transaction.
             conn.commit()
         return _stored_source(row, raw_size)
     except BaseException:
@@ -171,3 +177,49 @@ def upload_source(
             with suppress(OSError):
                 storage.remove_stored(course_id, source_id)
         raise
+
+
+def list_sources(course_id: UUID) -> list[Source]:
+    """The course's source rows (owner-facing; includes failure reasons).
+    Review catch #6: the API was write-only, so a user never learned
+    their upload failed."""
+    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        rows = cur.execute(
+            get(_FILE, "list_sources"), {"course_id": course_id}
+        ).fetchall()
+    return [
+        Source(
+            source_id=row["source_id"],
+            object_id=row["source_id"],
+            uploaded_by_user_id=row["uploaded_by_user_id"],
+            course_id=course_id,
+            filename=row["filename"],
+            mime_type=row["mime_type"],
+            source_type=row["source_type"],
+            status=row["status"],
+            size_bytes=row["size_bytes"],
+            error_message=row["error_message"],
+            created_at=row["created_at"],
+        )
+        for row in rows
+    ]
+
+
+def requeue_failed(
+    conn: Connection, source_id: UUID, course_id: UUID, owner_user_id: UUID
+) -> bool:
+    """Owner-facing requeue: verify the caller owns the source's course,
+    then run the same deliberate failed→uploaded transition the
+    orchestrator describes. Returns False when the source is not in a
+    failed state."""
+    with conn.cursor(row_factory=dict_row) as cur:
+        row = cur.execute(
+            get(_FILE, "verify_owner_source"),
+            {
+                "source_id": source_id,
+                "owner_user_id": owner_user_id,
+            },
+        ).fetchone()
+    if row is None:
+        return False
+    return _ingest_runs.requeue_failed_source(conn, source_id, course_id)

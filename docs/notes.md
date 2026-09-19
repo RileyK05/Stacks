@@ -2000,3 +2000,57 @@ DEFERRED — design calls, recorded for ratification:
 
 Gate: 290 tests (+6: failed/pending citability ×2, history queued_at,
 savepoint fence, NUL strip, 415-no-store), ruff, mypy green.
+
+## Ratified batch: source surface, batch refresh, heartbeat, chunk dedupe (2026-09-18)
+
+User ratified all four deferred items. All 299 tests, ruff, mypy green.
+
+**#6 — source read surface (the file browser's data layer).** The API was
+write-only; a user never learned their upload failed. New owner-only
+endpoints on sources.py:
+- GET /courses/{id}/sources — the file list with live status,
+  error_message, size, timestamps (the central-area file browser's
+  feed; the viewer rendering is frontend work, the data layer is now
+  there). 404 for non-owners (existence not disclosed).
+- POST /courses/{id}/sources/{source_id}/requeue — the deliberate retry
+  path, previously unreachable from anywhere. failed→uploaded + queue
+  row + worker wakeup. 409 when not failed.
+Per-source DELETE stays deferred to the citation-snapshot design (the
+golden-rule-6 record must exist before anything can be destroyed).
+
+**#9 — course-memory refresh is per-BATCH, not per-upload.** The upload
+path no longer rebuilds the summary inside the quota-locked transaction;
+the worker refreshes once per touched course at the end of a successful
+batch. Five uploads to one course: one rebuild, not five. The refresh
+owns its own transaction and logs (never crashes) its failures — the
+next terminal path touching the course catches a missed refresh.
+Upload tests updated to the batch contract; a worker test pins
+one-refresh-per-course-per-batch.
+
+**#5 — dead-progress fix (heartbeat fence, migration 030).** The run's
+stage ledger IS the liveness signal: every stage transition heartbeats
+pending_ingestion.heartbeat_at. The stale-claim sweep now judges
+HEARTBEAT freshness, not claim age — a slow-but-alive run is never
+re-claimed out from under a live worker (the two-pipelines-racing
+delete-then-insert failure mode is fenced). Claims with no heartbeat yet
+fall back to claimed_at (the pre-first-stage crash window keeps the
+30-min budget). Released claims lose their stale heartbeat. Plus 029's
+claimed_runs_max=5 dead-letters the cursed-source kill-loop, and
+chunks gained UNIQUE (source_id, locator_id, chunk_index) as the
+race backstop. Three tests: fresh heartbeat fences, no-heartbeat still
+ages out, sweep clears both fields.
+
+**#10 — chunk/locator dedupe (migration 031, before embeddings).** One
+row per LOGICAL chunk now: primary locator on chunks, full span in the
+new chunk_locators join table (citation map, ON DELETE CASCADE). The
+backfill re-pointed every duplicate row's locator at the group's kept
+row (min locator_id — UUIDs have no MIN(), found via ordered subquery)
+and deleted duplicates; uq_chunks_source_index added as the forward
+backstop. The pipeline's chunk writer inserts one row + N join rows.
+Effect: retrieval hits no longer scale with locator grain; the same
+text will never be embedded N times. Test pins one-row + full-span.
+Live DB backfill verified: 0 dupe groups remaining.
+
+Remaining open (unchanged): citation-snapshot shape (#6's delete),
+#9's file-write-after-commit refinement, provider pick (now unblocked
+for embeddings — 031 landed first as promised), real eval set.

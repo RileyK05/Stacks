@@ -120,8 +120,17 @@ INSERT INTO locators (locator_id, source_id, locator_type, start, end_value, lab
 VALUES (%(locator_id)s, %(source_id)s, %(locator_type)s, %(start)s, %(end_value)s, %(label)s, %(description)s);
 
 -- name: insert_chunk
+-- One row per LOGICAL chunk (review catch #10): the primary locator on
+-- the row, the full span in chunk_locators. chunk_locators is the
+-- citation map; chunks.locator_id is the deterministic primary.
 INSERT INTO chunks (source_id, locator_id, chunk_index, text)
-VALUES (%(source_id)s, %(locator_id)s, %(chunk_index)s, %(text)s);
+VALUES (%(source_id)s, %(locator_id)s, %(chunk_index)s, %(text)s)
+RETURNING chunk_id;
+
+-- name: insert_chunk_locator
+INSERT INTO chunk_locators (chunk_id, locator_id)
+VALUES (%(chunk_id)s, %(locator_id)s)
+ON CONFLICT DO NOTHING;
 
 -- name: delete_chunks
 DELETE FROM chunks WHERE source_id = %(source_id)s;
@@ -144,10 +153,24 @@ FROM courses
 WHERE course_id = %(course_id)s;
 
 -- name: release_stale_claims
+-- The heartbeat fence (migration 030 / review catch #5): a claim is
+-- stale only when its HEARTBEAT is old, not its claim time. The run's
+-- stage transitions keep heartbeat_at fresh, so a slow-but-alive run is
+-- never re-claimed out from under a live worker. Rows with no heartbeat
+-- yet (claimed but the first stage hasn't reported) fall back to
+-- claimed_at — the original 30-minute budget still bounds a worker that
+-- died before its first stage.
 UPDATE pending_ingestion
-SET claimed_at = NULL
+SET claimed_at = NULL, heartbeat_at = NULL
 WHERE claimed_at IS NOT NULL
-  AND claimed_at < %(threshold)s;
+  AND COALESCE(heartbeat_at, claimed_at) < %(threshold)s;
+
+-- name: heartbeat_claim
+-- The liveness signal (stage ledger driven): called by the run observer
+-- on every stage transition. Cheap, indexed by PK, no contention.
+UPDATE pending_ingestion
+SET heartbeat_at = now()
+WHERE source_id = %(source_id)s;
 
 -- name: queued_at_for
 -- The queue row's original enqueue time, read BEFORE the row is deleted

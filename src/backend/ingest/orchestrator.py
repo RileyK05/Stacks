@@ -165,14 +165,31 @@ class IngestionHandlers:
                         f"chunk {span.chunk_index} maps to no locator — "
                         "citation grounding is mandatory"
                     )
+                # One row per logical chunk (ratified fix #10): the
+                # primary locator goes on the chunk row, every locator in
+                # the span goes into chunk_locators (the citation map).
+                cur.execute(
+                    get(_FILE, "insert_chunk"),
+                    {
+                        "source_id": self.source.source_id,
+                        "locator_id": span.locator_ids[0],
+                        "chunk_index": span.chunk_index,
+                        "text": span.text,
+                    },
+                )
+                inserted = cur.fetchone()
+                if inserted is None:
+                    raise RuntimeError(
+                        "insert_chunk returned no chunk_id — pipeline"
+                        " invariant violated"
+                    )
+                chunk_id = inserted[0]
                 for locator_span_id in span.locator_ids:
                     cur.execute(
-                        get(_FILE, "insert_chunk"),
+                        get(_FILE, "insert_chunk_locator"),
                         {
-                            "source_id": self.source.source_id,
+                            "chunk_id": chunk_id,
                             "locator_id": locator_span_id,
-                            "chunk_index": span.chunk_index,
-                            "text": span.text,
                         },
                     )
 
@@ -250,7 +267,7 @@ def run_ingestion(
         ingestion_config.max_attempts,
     )
     conn.commit()
-    observer = runs.RunObserver(conn, run.run_id)
+    observer = runs.RunObserver(conn, run.run_id, source_id=source_id)
     try:
         execute_pipeline(
             handler_set.handlers(),

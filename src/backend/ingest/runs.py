@@ -132,11 +132,24 @@ class RunObserver:
     connection. Commits after each SUCCEEDED transition so completed stage
     output survives a later stage's failure — a retry does not redo
     committed stages. Failed/pending transitions are written but not
-    committed (the driver's failure-audit commit covers them)."""
+    committed (the driver's failure-audit commit covers them).
 
-    def __init__(self, conn: Connection, run_id: UUID) -> None:
+    Every transition also heartbeats the claim (pending_ingestion.
+    heartbeat_at): the stage ledger IS the liveness signal, so the
+    stale-claim sweep judges heartbeat freshness, not claim age — a
+    slow-but-alive run is never re-claimed out from under a live worker
+    (migration 030, review catch #5)."""
+
+    def __init__(
+        self,
+        conn: Connection,
+        run_id: UUID,
+        *,
+        source_id: UUID | None = None,
+    ) -> None:
         self._conn = conn
         self._run_id = run_id
+        self._source_id = source_id
         self._run_started = False
 
     def observe(
@@ -164,6 +177,12 @@ class RunObserver:
             )
         if status == IngestionStatus.SUCCEEDED:
             self._conn.commit()
+        if self._source_id is not None:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    get(_FILE, "heartbeat_claim"),
+                    {"source_id": self._source_id},
+                )
 
     def finish(self, status: IngestionStatus, error_message: str | None) -> None:
         with self._conn.cursor(row_factory=dict_row) as cur:
