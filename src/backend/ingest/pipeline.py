@@ -10,6 +10,7 @@ PIPELINE_STAGES = (
     IngestionStage.EXTRACT_TEXT,
     IngestionStage.BUILD_LOCATORS,
     IngestionStage.BUILD_CHUNKS,
+    IngestionStage.EMBED_CHUNKS,
     IngestionStage.UPDATE_TOC,
     IngestionStage.EXTRACT_KNOWLEDGE,
 )

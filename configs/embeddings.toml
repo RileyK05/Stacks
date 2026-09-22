@@ -1,0 +1,28 @@
+[version]
+embeddings_config_version = "1"
+
+[model]
+# Self-hosted, in-process (sentence-transformers): course text never
+# leaves the machine, so the no-retention vendor check does not apply to
+# embeddings. Rows in chunk_embeddings are keyed by this name; changing
+# it orphans old rows rather than corrupting them (dimension guard in
+# the retrieval seam rejects mixed-dimension candidates loudly).
+model = "ibm-granite/granite-embedding-english-r2"
+# Expected output dimension. The ingestion stage and the query seam both
+# enforce this; a mismatch is a hard error, never a silent rank.
+dimension = 768
+# Query/document prefixes. The R2 card must be checked for these before
+# go-live: a wrong or missing prefix silently degrades quality with no
+# error. Empty string = symmetric model, no prefix.
+query_prefix = ""
+document_prefix = ""
+
+[ingest]
+# Chunks embedded per model.forward call. CPU batch sizes 32-64 are
+# typical; larger batches trade RAM for throughput.
+batch_size = 32
+
+[query]
+# The retrieval seam embeds one query per ask. Candidates must exceed
+# this dot product to count as relevant at all.
+min_similarity = 0.0

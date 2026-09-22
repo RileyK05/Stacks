@@ -85,7 +85,7 @@ src/
       db.py          # the single Postgres connection seam
       migrate.py     # versioned migration runner
       migrations/    # 00X_*.sql, append-only, applied in order
-  frontend/        # web UI; talks to backend only via its API
+  frontend/        # SvelteKit + TS SPA; talks to backend only via its API
 tests/           # pytest; mirrors src/backend/ layout
 runs/            # experiment + eval logs — GITIGNORED
 docs/
@@ -131,6 +131,18 @@ Run from the project root, using the venv:
 
 All three checks must pass before declaring work done. `.env` must exist with
 Postgres credentials for DB work (see `config.py` for expected keys).
+
+Frontend (see `src/frontend/README.md` — separate npm codebase, run from
+`src/frontend/`):
+
+```
+npm run check    # svelte-check typecheck/diagnostics (must pass)
+npm run build    # static SPA into build/
+npm run gen:api  # regenerate API types from the backend's OpenAPI schema
+```
+
+`src/frontend/src/lib/api/schema.d.ts` is generated from the backend — never
+hand-edit it; re-run `npm run gen:api` after backend route/schema changes.
 
 ## Workflow expectations for agents
 

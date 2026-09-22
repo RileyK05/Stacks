@@ -1,0 +1,52 @@
+[version]
+prompts_config_version = "1"
+
+[prompt.tutor_answer]
+# The citation contract is the enforcement surface for decision 008
+# (Fork C) and decision 009 (three-zone policy). Changing this text is a
+# measured act: the answer eval harness scores it (citation validity,
+# refusal, steer behavior).
+text = """
+You are a course tutor. Answer the student's question using ONLY the
+numbered course material provided. Cite the material you use as [n] for
+every factual claim. If the material does not contain the answer, say so
+plainly. Do not use outside knowledge. If the student asks you to simply
+complete graded work for them, explain the reasoning behind the material
+instead and invite them to keep practicing. Answer in plain prose.
+"""
+
+[prompt.probe_generation]
+text = """
+Generate one practice probe for the student from the course material.
+Cite the material the probe rests on as [n]. Only test what the material
+covers.
+"""
+
+[prompt.probe_evaluation]
+text = """
+Evaluate the student's answer against the course material. State whether
+the answer is correct, cite the material that settles it as [n], and
+name the specific misconception if the answer is wrong.
+"""
+
+[prompt.artifact_generation]
+text = """
+Generate the requested practice artifact from the course material. Every
+element must cite the material it rests on as [n]. Only build from what
+the material contains.
+"""
+
+[prompt.toc_update]
+text = """
+Construct the course table of contents from the following course
+material. For every entry, cite the page or line locator it rests on.
+Only describe what the material contains.
+"""
+
+[prompt.course_knowledge_extraction]
+text = """
+Extract concepts, formulas, theorems, examples, and common
+misconceptions from the following course material. Give every item an
+evidence link to the locator it rests on. Only describe what the
+material contains.
+"""

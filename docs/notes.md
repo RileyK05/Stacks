@@ -2054,3 +2054,184 @@ Live DB backfill verified: 0 dupe groups remaining.
 Remaining open (unchanged): citation-snapshot shape (#6's delete),
 #9's file-write-after-commit refinement, provider pick (now unblocked
 for embeddings — 031 landed first as promised), real eval set.
+
+## Embeddings live: self-hosted granite R2 (2026-09-19)
+
+Provider pick ratified as **ibm-granite/granite-embedding-english-r2**
+(149M ModernBERT, 768d, 8192-token context, Apache 2.0, no query/doc
+prefixes — symmetric). Self-hosted IN-PROCESS via sentence-transformers:
+course text never leaves the machine, so the no-retention vendor check
+does not apply to embeddings by construction. Generation (tutor_answer,
+update_toc, extract_knowledge) stays on the hosted `generate` seam —
+contract ratified: OpenAI-style chat-completions API for that provider
+when it's picked. The two seams are deliberately separate:
+- `provider.embed_query/embed_chunks` — local, unbilled, no tier gate;
+  contract in configs/embeddings.toml (model name is the
+  chunk_embeddings row key; dimension enforced loudly at load AND per
+  call; normalize_embeddings=True — R2 ships unnormalized vectors).
+- `provider.generate` — hosted HTTP, still _call_provider-stubbed until
+  the chat provider lands.
+
+New pipeline stage EMBED_CHUNKS after build_chunks (6 stages now;
+ingestion.toml v4 gained the stage row). Stage is delete-first
+idempotent like the rest: delete_chunk_embeddings by source, then one
+replace_chunk_embedding per chunk keyed by model name. New query blocks
+delete_chunk_embeddings / chunk_ids_by_source_index /
+replace_chunk_embedding (ON CONFLICT (chunk_id) upsert).
+
+api/tutor.py ask: now embeds the query (embed_query + model name from
+configs) and passes both into answer_question — the embedding seam
+participates in retrieval end to end.
+
+Tests: autouse conftest fixture _fake_embedding_backend stubs the
+backend (deterministic vectors at the configured dimension — the seam's
+dimension check applies to fakes too, which caught a fake bug the first
+time). No test loads the real 600MB model. Worker test pins the whole
+pipeline succeeding with the fake; runs test asserts the 6-stage ledger
+order. Gate: 300 tests, ruff, mypy green.
+
+Remaining for full M2: chat provider behind `generate` (OpenAI-style API
+contract, no-retention check on that key = go-live gate), pgvector swap
+(still float8[]; mechanical), real eval set (real material).
+
+## Eval harness v1 + prompt registry (decision 010) (2026-09-20)
+
+Plan doc: docs/decisions/010_eval_harness_v1.md (ratified shape: boring,
+mechanical scorers, no LLM judge in v1, provider-free, expandable by
+case-kind). Built:
+
+**Prompt registry.** configs/prompts.toml (v1) holds every
+system/instruction prompt: tutor_answer, toc_update,
+course_knowledge_extraction, probe_generation, probe_evaluation,
+artifact_generation (the last three are stubs awaiting their subsystems;
+the validator enforces full KNOWN_GENERATION_TASKS coverage, so a new
+task forces a prompt decision). Loader:
+src/backend/common/prompt_registry.py — load_prompt(task) +
+load_prompt_policy() with prompts_config_version for trace attribution.
+Consumers wired: build_prompt (tutor/answer.py) and the orchestrator's
+update_toc/extract_knowledge now read prompts from config; behavior
+identical to the old hardcoded strings (all existing tests pass
+unchanged). Tutor prompt now also carries the three-zone steer line
+(decision 009): fill-in requests get reasoning + practice invitation.
+
+**Answer harness.** src/backend/evals/answer.py — the answer-side twin
+of retrieval/evals.py. Cases in data/eval/answer/cases.json, 6 v1 cases
+across four kinds: green_grounded (citation validity — every [n] must
+index a provided chunk), cold_probe (refusal marker present AND no
+citations = no fabricated specifics), yellow_steer (steer markers
+present AND no bare fill-in shape), red_refuse (same refusal scorer).
+Retrieval is FIXED via seed_chunk_labels — the harness exercises the
+generation contract, not retrieval quality (that's the retrieval eval's
+job). Runner takes `generate(task, prompt) -> str` (stub in v1, real
+provider later) and the tutor's real build_prompt. Summary dataclass
+mirrors EvalSummary (__str__, per-kind pass rates, unresolved cases
+excluded and reported); logs to runs/eval_answer_*.log.
+
+**Tests.** tests/test_eval_answer.py (8): scorers unit-tested against
+scripted shapes; case file sanity (unique ids, known kinds); unknown
+kind fails closed; end-to-end run on the dev DB with a scripted
+provider — all four kinds score correctly, summary logged. Gate: 308
+tests, ruff, mypy green.
+
+Explicitly deferred (documented in 010): LLM-judge scoring, deep-read
+fallback ladder (needs its own decision doc amending Fork B), artifact
+eval (no generator yet), real material (synthetic cases only).
+
+## Harness review round: 13 findings triaged (2026-09-20)
+
+External review of the answer harness verified 13 issues by running it.
+All real. Fixes applied in two passes (scorer semantics, then
+logging/inspection); both design findings resolved by decision and
+written into 010's revision section:
+
+Scorer fixes: citations in refusals are no longer fabrication (#1 —
+the best honest refusal cites what the course covers); steer + refusal
+markers are word-boundary regexes (#2 — "try" no longer matches
+geometry); refusal marker list widened (#12); cold-probe scorer gained
+its fabrication half (#8 — digit-sequences absent from provided chunks
+fail as invented); expectation.citations_required wired (#13).
+
+Runner fixes: course resolution via course_by_tag (#3 — deterministic
+against duplicate names); seed-label typo = UNRESOLVED not model
+failure (#5); seed ordering fully determined (#6); all_passed requires
+every case executed (#4 — never a silent pass).
+
+Logging: every run stamps prompts_config_version (#7) and carries
+per-case inspection records — prompt, answer, chunk ids (#9, golden
+rule 2); microsecond stamps; minors (dead constant, dead import,
+missing newline).
+
+Resolved by decision (010 revision): #10 — harness keeps narrow
+GenerationFn; real provider lands behind an eval adapter billing a
+dedicated eval account (visible spend, never a student's budget). #11 —
+cold vs red share the mechanical scorer deliberately; can't-vs-won't is
+a v2 LLM-judge case; pass rates stay split per kind.
+
+Deferred with the provider: per-kind baseline rates, module entry
+point. Gate: 313 tests (+5), ruff, mypy green.
+
+## Frontend sweep: Kimi leftovers cleared (2026-09-21)
+
+The frontend (SvelteKit + openapi-fetch, generated schema) had 3
+svelte-check errors left over from the Kimi session. Root cause
+diagnosed, not guessed: the three failing endpoints (GET /course-archives,
+GET /course-memories, GET /courses/public) take NO path/query params, so
+FastAPI emits no 422 response for them — openapi-fetch then correctly
+narrows `error` to `never` (a 2xx-or-throw middleware client cannot error
+at the type level on those routes). The pages branched on `r.error`
+anyway. Fix is in the pages: branch on `!r.data` only; network/HTTP
+failures still throw from the onResponse middleware (ApiError), so
+nothing was lost — the dead type-level branch was the only thing
+removed. Verified by probing both shapes (members route WITH 422 passes
+`r.error` checks; archives route WITHOUT 422 never will).
+
+Note: schema regen (`npm run gen:api`) needs a live backend at
+localhost:8000 — currently impossible offline; the committed
+schema.d.ts (1755 lines) is consistent with the backend as-is.
+
+Frontend gate: svelte-check 0 errors/0 warnings, `npm run build` clean.
+Backend gate: 313 tests, ruff, mypy green. provider.py trailing newline
+fixed (review minor).
+
+## MVP wiring: citations endpoint + frontend round (2026-09-21)
+
+**Citations endpoint.** GET /courses/{course_id}/traces/{trace_id}/citations —
+the evidence behind one answer: chunk text, primary locator label/type,
+source filename, in retrieval order. Access: owner-or-active-enrollment
+(strangers 404, existence not disclosed); the trace row is pinned to the
+course (trace_for_course block — a trace id from another course 404s, not
+leaks). New query blocks: trace_for_course, chunks_with_locators_by_ids
+(chunk + primary locator + filename join; enough to say "page 3 of
+lecture2.pdf" without exposing raw files). Schema regenerated from a
+live uvicorn run.
+
+**Frontend wired to it.** The ask flow now fetches citations immediately
+after an answer and renders a "Sources used" panel: numbered [n] entries
+matching the answer's citation markers, each with filename · locator
+label and the chunk text. The dead "trace: <uuid>" line is gone. Golden
+rule 1 is now honored in the UI, not just the data model.
+
+**Source-status polling.** Fresh uploads sat at uploaded→scanned→indexed
+invisibly. After upload AND requeue, the page polls the sources list
+every 1.5s while any row is pending (60-attempt cap), stopping when all
+settle — the worker heartbeat's UI twin. Polling aborts on error; the
+requeue button remains the recovery path.
+
+**Honest errors.** ErrorBanner now has three tones: refusal (404 from
+the ask endpoint) renders amber with the explanation that the tutor only
+answers from course materials — the strict-refusal contract reads as a
+feature, not a crash; unavailable/network renders sky-blue ("working on
+it" tone); everything else stays red. The email-verification hint is
+preserved.
+
+**Spruce-up.** Inter font (self-hostable later), app-wide #f6f7fb
+background, consistent focus rings; sidebar with logo mark, hover/active
+states, tier badge; main content max-w-4xl centered; course cards with
+hover lift; Card titles to small-caps label style; grounded-answer block
+in indigo tint. Empty states (probes/progress/artifacts) untouched —
+they're honest about not being built.
+
+Gates: backend 316 tests (+3 citations tests: happy path, foreign-trace
+404, stranger 404), ruff, mypy green; frontend svelte-check 0/0, build
+clean. MVP is now end-to-end coherent: upload → watch it index → ask →
+grounded answer with visible, readable sources.

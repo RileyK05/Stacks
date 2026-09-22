@@ -160,6 +160,7 @@ class IngestionStage(StrEnum):
     EXTRACT_TEXT = "extract_text"
     BUILD_LOCATORS = "build_locators"
     BUILD_CHUNKS = "build_chunks"
+    EMBED_CHUNKS = "embed_chunks"
     UPDATE_TOC = "update_toc"
     EXTRACT_KNOWLEDGE = "extract_knowledge"
 

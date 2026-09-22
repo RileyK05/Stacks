@@ -21,6 +21,10 @@ name = "build_chunks"
 handler_version = "1"
 
 [[stages]]
+name = "embed_chunks"
+handler_version = "1"
+
+[[stages]]
 name = "update_toc"
 handler_version = "1"
 

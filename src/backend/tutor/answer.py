@@ -18,6 +18,7 @@ from uuid import UUID
 
 from psycopg import Connection
 from src.backend.common import provider
+from src.backend.common.prompt_registry import load_prompt
 from src.backend.common.schemas.base import UserTier
 from src.backend.retrieval import funnel, trace
 from src.backend.retrieval.config import RetrievalPolicy
@@ -96,20 +97,20 @@ def answer_question(
 
 def build_prompt(question: str, candidates: tuple[Candidate, ...]) -> str:
     """The grounded prompt: question + cited chunks with their locator
-    ids. The instruction line carries the citation contract (Fork C
-    working direction): every factual claim cites the locator it rests
-    on; the model may only use the provided material."""
+    ids. The instruction line comes from the prompt registry (decision
+    010) and carries the citation contract (Fork C working direction) +
+    the three-zone steer (decision 009): every factual claim cites the
+    locator it rests on; the model may only use the provided material;
+    homework-fill requests steer to reasoning + practice."""
     blocks = [
         f"[{index + 1}] chunk {candidate.chunk_id}"
         f"\n{candidate.text}"
         for index, candidate in enumerate(candidates)
     ]
     evidence = "\n\n".join(blocks)
+    instruction = load_prompt("tutor_answer")
     return (
-        "You are a course tutor. Answer the student's question using ONLY"
-        " the numbered course material below. Cite the material you use as"
-        " [n]. If the material does not contain the answer, say so"
-        " plainly. Do not use outside knowledge.\n\n"
+        f"{instruction}\n\n"
         f"Question: {question}\n\n"
         f"Course material:\n{evidence}"
     )

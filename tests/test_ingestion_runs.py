@@ -122,6 +122,7 @@ def test_full_pipeline_deterministic_stages_and_honest_failure(
             "extract_text",
             "build_locators",
             "build_chunks",
+            "embed_chunks",
             "update_toc",
             "extract_knowledge",
         ]
@@ -129,6 +130,7 @@ def test_full_pipeline_deterministic_stages_and_honest_failure(
         assert statuses["extract_text"] == "succeeded"
         assert statuses["build_locators"] == "succeeded"
         assert statuses["build_chunks"] == "succeeded"
+        assert statuses["embed_chunks"] == "succeeded"
         assert statuses["update_toc"] == "failed"
         assert statuses["extract_knowledge"] == "pending"
         toc_row = next(row for row in stage_rows if row["stage"] == "update_toc")

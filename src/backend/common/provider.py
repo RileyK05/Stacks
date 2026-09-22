@@ -24,14 +24,24 @@ provider HTTP call itself — `_call_provider` raises ProviderUnavailable
 until the operator picks a provider and the no-retention check passes.
 When it lands, the token counts must come from the provider response, not
 from the caller. Only `_call_provider` + `_parse_usage` change.
+
+Embeddings are a SEPARATE seam (`embed`), deliberately not `generate`:
+the embedding model is self-hosted and in-process (sentence-transformers),
+so it bills nothing, needs no tier, and sends no course text off-machine
+— the no-retention vendor check does not apply to it by construction.
+Its contract lives in configs/embeddings.toml (the model name is the
+chunk_embeddings row key; dimension is enforced loudly on write and read).
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from src.backend.common import budget, spend_repo
+from src.backend.common.embeddings_config import EmbeddingPolicy, load_embedding_policy
 from src.backend.common.schemas.base import (
     INGESTION_TASKS,
     KNOWN_GENERATION_TASKS,
@@ -39,6 +49,9 @@ from src.backend.common.schemas.base import (
     UserTier,
 )
 from src.backend.common.tiers import load_tier_policies
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 
 @dataclass(frozen=True)
@@ -119,3 +132,105 @@ def _call_provider(
     raise ProviderUnavailableError(
         f"no provider client configured yet (task={task}, model={model})"
     )
+
+
+# ---------------------------------------------------------------------
+# Embedding seam (self-hosted, in-process). See module docstring for why
+# this is not `generate`.
+# ---------------------------------------------------------------------
+
+
+class EmbeddingDimensionError(RuntimeError):
+    """The loaded model's output dimension disagrees with the config.
+    A hard error on both write and read paths: the retrieval seam's
+    cardinality guard would otherwise rank garbage silently."""
+
+
+@dataclass(frozen=True)
+class _EmbedBackend:
+    """The loaded sentence-transformers model plus its contract. Built
+    once per process (model load is ~seconds; embedding is per-chunk)."""
+
+    model: SentenceTransformer
+    policy: EmbeddingPolicy
+
+
+_EMBEDDING_BACKEND: _EmbedBackend | None = None
+
+
+def _load_embedding_backend() -> _EmbedBackend:
+    """Idempotent model load. Import is deferred so the whole test suite
+    (and any code path that never touches the embedding seam) never pays
+    the torch/sentence-transformers import cost."""
+    global _EMBEDDING_BACKEND
+    if _EMBEDDING_BACKEND is not None:
+        return _EMBEDDING_BACKEND
+    try:
+        from sentence_transformers import SentenceTransformer
+    except ImportError as err:
+        raise ProviderUnavailableError(
+            "sentence-transformers not installed — embeddings unavailable"
+        ) from err
+    policy = load_embedding_policy()
+    model = SentenceTransformer(policy.model)
+    test_dimension = model.get_embedding_dimension()
+    if test_dimension != policy.dimension:
+        raise EmbeddingDimensionError(
+            f"configured dimension {policy.dimension} != model's actual "
+            f"{test_dimension} for {policy.model}"
+        )
+    _EMBEDDING_BACKEND = _EmbedBackend(model=model, policy=policy)
+    return _EMBEDDING_BACKEND
+
+
+def reset_embedding_backend() -> None:
+    """Test/process hook: drop the cached model so a config change (or a
+    fake in tests) takes effect on the next embed call."""
+    global _EMBEDDING_BACKEND
+    _EMBEDDING_BACKEND = None
+
+
+def embed_texts(
+    texts: Sequence[str],
+    *,
+    kind: str,
+) -> list[list[float]]:
+    """Embed a batch of texts under the configured model's contract.
+
+    `kind` is "query" or "document" — it selects the prefix (asymmetric
+    models require different handling of the two sides; symmetric models
+    ship empty prefixes and this is a no-op). Dimension is verified per
+    call: a model swap that changes dimensionality fails here, loudly,
+    not as silent garbage ranks in Postgres.
+    """
+    if not texts:
+        return []
+    if kind not in ("query", "document"):
+        raise ValueError(f"unknown embed kind: {kind}")
+    backend = _load_embedding_backend()
+    policy = backend.policy
+    prefix = policy.query_prefix if kind == "query" else policy.document_prefix
+    if prefix:
+        texts = [f"{prefix}{text}" for text in texts]
+    vectors = backend.model.encode(
+        list(texts),
+        batch_size=policy.batch_size,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+    )
+    vectors_list = [list(map(float, vector)) for vector in vectors]
+    for vector in vectors_list:
+        if len(vector) != policy.dimension:
+            raise EmbeddingDimensionError(
+                f"model returned {len(vector)} dims, config says "
+                f"{policy.dimension}"
+            )
+    return vectors_list
+
+
+def embed_query(text: str) -> list[float]:
+    return embed_texts([text], kind="query")[0]
+
+
+def embed_chunks(texts: Sequence[str]) -> list[list[float]]:
+    return embed_texts(texts, kind="document")

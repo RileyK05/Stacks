@@ -1,12 +1,13 @@
 """Milestone-1 ingestion orchestrator.
 
 Binds the pipeline executor, the run ledger, and the stage handlers into
-`run_ingestion`: extract_text → build_locators → build_chunks run
-deterministically; update_toc and extract_knowledge call the provider
-seam (gated + billed there). A full retry re-executes every stage from
-the top — the executor has no resume logic — but each stage is
-delete-your-rows-first idempotent, so re-execution is safe, just not
-free. The run ledger records every attempt, so "re-ran and succeeded"
+`run_ingestion`: extract_text → build_locators → build_chunks →
+embed_chunks run deterministically (embeddings are self-hosted and
+in-process — no tier, no billing); update_toc and extract_knowledge call
+the hosted provider seam (gated + billed there). A full retry re-executes
+every stage from the top — the executor has no resume logic — but each
+stage is delete-your-rows-first idempotent, so re-execution is safe, just
+not free. The run ledger records every attempt, so "re-ran and succeeded"
 and "ran once" are distinguishable by attempt history.
 
 Prompt text is inlined into model prompts without escaping (provider
@@ -22,6 +23,8 @@ from uuid import UUID
 from psycopg import Connection
 from psycopg.rows import dict_row
 from src.backend.common import provider
+from src.backend.common.embeddings_config import load_embedding_policy
+from src.backend.common.prompt_registry import load_prompt
 from src.backend.common.queries import get
 from src.backend.common.schemas.base import (
     IngestionStage,
@@ -110,6 +113,7 @@ class IngestionHandlers:
             IngestionStage.EXTRACT_TEXT: self.extract_text,
             IngestionStage.BUILD_LOCATORS: self.build_locators,
             IngestionStage.BUILD_CHUNKS: self.build_chunks,
+            IngestionStage.EMBED_CHUNKS: self.embed_chunks,
             IngestionStage.UPDATE_TOC: self.update_toc,
             IngestionStage.EXTRACT_KNOWLEDGE: self.extract_knowledge,
         }
@@ -196,19 +200,53 @@ class IngestionHandlers:
     def update_toc(self) -> None:
         result = provider.generate(
             MODEL_TASKS[IngestionStage.UPDATE_TOC],
-            self._prompt("Construct the course table of contents from the "
-                         "following course material; cite locators."),
+            self._prompt(load_prompt("toc_update")),
             self.owner_user_id,
             self.tier,
             course_id=self.source.course_id,
         )
         self._require_rows("toc", result)
 
+    def embed_chunks(self) -> None:
+        """Embed every chunk of this source under the configured model's
+        contract. Self-hosted and in-process: no tier, no budget gate, no
+        spend row — course text goes to a local model, so the no-retention
+        vendor check does not apply here by construction (the seam that
+        DOES host out is `generate`, untouched by this stage)."""
+        assert self.spans
+        policy = load_embedding_policy()
+        vectors = provider.embed_chunks([span.text for span in self.spans])
+        with self.conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                get(_FILE, "delete_chunk_embeddings"),
+                {"source_id": self.source.source_id},
+            )
+            cur.execute(
+                get(_FILE, "chunk_ids_by_source_index"),
+                {"source_id": self.source.source_id},
+            )
+            rows = cur.fetchall()
+            by_index = {row["chunk_index"]: row["chunk_id"] for row in rows}
+            for span, vector in zip(self.spans, vectors, strict=True):
+                chunk_id = by_index.get(span.chunk_index)
+                if chunk_id is None:
+                    raise RuntimeError(
+                        f"chunk {span.chunk_index} vanished between "
+                        "build_chunks and embed_chunks"
+                    )
+                cur.execute(
+                    get(_FILE, "replace_chunk_embedding"),
+                    {
+                        "chunk_id": chunk_id,
+                        "model": policy.model,
+                        "embedding": vector,
+                    },
+                )
+
     def extract_knowledge(self) -> None:
         result = provider.generate(
             MODEL_TASKS[IngestionStage.EXTRACT_KNOWLEDGE],
-            self._prompt("Extract concepts, formulas, theorems, examples, "
-                         "and misconceptions with evidence links."),
+            self._prompt(load_prompt("course_knowledge_extraction")),
             self.owner_user_id,
             self.tier,
             course_id=self.source.course_id,

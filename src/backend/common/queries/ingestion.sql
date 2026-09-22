@@ -135,6 +135,28 @@ ON CONFLICT DO NOTHING;
 -- name: delete_chunks
 DELETE FROM chunks WHERE source_id = %(source_id)s;
 
+-- name: delete_chunk_embeddings
+DELETE FROM chunk_embeddings
+WHERE chunk_id IN (
+    SELECT chunk_id FROM chunks WHERE source_id = %(source_id)s
+);
+
+-- name: chunk_ids_by_source_index
+SELECT chunk_id, chunk_index
+FROM chunks
+WHERE source_id = %(source_id)s;
+
+-- name: replace_chunk_embedding
+-- One row per chunk, keyed by model name (decision 008): a model swap
+-- orphans old rows (absence of a row = no embedding) instead of mixing
+-- vector spaces in one column.
+INSERT INTO chunk_embeddings (chunk_id, model, embedding)
+VALUES (%(chunk_id)s, %(model)s, %(embedding)s)
+ON CONFLICT (chunk_id) DO UPDATE
+    SET model = EXCLUDED.model,
+        embedding = EXCLUDED.embedding,
+        created_at = now();
+
 -- name: delete_locators
 DELETE FROM locators WHERE source_id = %(source_id)s;
 -- name: enqueue_pending

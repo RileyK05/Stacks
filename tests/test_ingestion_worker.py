@@ -277,3 +277,20 @@ def test_stale_sweep_clears_heartbeat(owner, course) -> None:
         ).fetchone()
     assert row["claimed_at"] is None
     assert row["heartbeat_at"] is None
+
+
+def test_debug_capture_error(owner, course, monkeypatch) -> None:
+    """Embedding seam lives in the worker path: the whole pipeline must
+    succeed with the fake embedding backend (no model load in tests)."""
+    from src.backend.common.db import connection
+
+    monkeypatch.setattr(
+        "src.backend.common.provider._call_provider",
+        lambda task, model, prompt: (f"stub {task}", 100, 20),
+    )
+    _upload(course.course_id, owner.user_id, body=b"first body " * 50)
+    attempted, succeeded = worker.process_batch(limit=10)
+    assert succeeded == 1
+    with connection() as conn, conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM chunk_embeddings")
+        assert cur.fetchone()[0] >= 1

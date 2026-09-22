@@ -65,6 +65,43 @@ def verify_email(client: TestClient, token: str) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _fake_embedding_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test loads the real embedding model (600MB, seconds per load).
+    The autouse stub installs a deterministic fake backend whose dimension
+    matches the configured contract (the seam enforces the config's
+    dimension per call — the fake must satisfy it, not dodge it); tests
+    that need REAL vectors call the real seam explicitly."""
+    from src.backend.common import provider
+    from src.backend.common.embeddings_config import (
+        load_embedding_policy,
+    )
+
+    class _FakeBackend:
+        def __init__(self, dimension: int) -> None:
+            self._dimension = dimension
+
+        def get_embedding_dimension(self) -> int:
+            return self._dimension
+
+        def encode(self, texts, batch_size=32, normalize_embeddings=True,
+                   show_progress_bar=False):
+            return [
+                [1.0 / (len(text) or 1) for _ in range(self._dimension)]
+                for text in texts
+            ]
+
+    policy = load_embedding_policy()
+    monkeypatch.setattr(
+        provider, "_EMBEDDING_BACKEND",
+        provider._EmbedBackend(
+            model=_FakeBackend(policy.dimension), policy=policy
+        ),
+    )
+    yield
+    provider.reset_embedding_backend()
+
+
+@pytest.fixture(autouse=True)
 def _clean_test_users() -> Iterator[None]:
     yield
     with connection() as conn, conn.cursor(row_factory=dict_row) as cur:

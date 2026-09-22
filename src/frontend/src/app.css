@@ -1,0 +1,19 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+html {
+  background-color: #f6f7fb;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Consistent focus ring across interactive elements */
+:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}

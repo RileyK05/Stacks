@@ -222,3 +222,90 @@ def test_ask_learner_enrollment_granted(client: TestClient, monkeypatch) -> None
     )
     assert response.status_code == 200, response.text
     assert response.json()["chunk_ids"]
+
+def test_trace_citations_happy_path(client: TestClient, monkeypatch) -> None:
+    """The citations endpoint resolves an answer's chunk_ids into
+    readable evidence: chunk text + locator label + filename (golden
+    rule 1 — the UI can show what the tutor read and where it came
+    from)."""
+    token, _, body = _register(client)
+    user_id = body["user_id"]
+    course_id = _verified_course(client, token)
+    _seed_chunks(course_id, user_id)
+    monkeypatch.setattr(
+        provider,
+        "_call_provider",
+        lambda task, model, prompt: ("linearity preserves structure [1].", 40, 12),
+    )
+    asked = client.post(
+        f"/courses/{course_id}/ask",
+        json={"question": "what is linearity"},
+        headers=_headers(token),
+    )
+    assert asked.status_code == 200, asked.text
+    trace_id = asked.json()["trace_id"]
+    response = client.get(
+        f"/courses/{course_id}/traces/{trace_id}/citations",
+        headers=_headers(token),
+    )
+    assert response.status_code == 200, response.text
+    citations = response.json()
+    assert len(citations) == 1
+    citation = citations[0]
+    assert citation["filename"] == "notes.txt"
+    assert citation["label"] == "page 1"
+    assert citation["locator_type"] == "page"
+    assert "linearity" in citation["text"].lower()
+    assert citation["chunk_index"] == 0
+
+
+def test_trace_citations_rejects_foreign_trace(client: TestClient, monkeypatch) -> None:
+    """A trace id from another course must not read as this course's
+    citations — the WHERE pins trace to course; guessing ids 404s."""
+    token, _, body = _register(client)
+    user_id = body["user_id"]
+    course_id = _verified_course(client, token)
+    _seed_chunks(course_id, user_id)
+    monkeypatch.setattr(
+        provider,
+        "_call_provider",
+        lambda task, model, prompt: ("linearity preserves structure [1].", 40, 12),
+    )
+    asked = client.post(
+        f"/courses/{course_id}/ask",
+        json={"question": "what is linearity"},
+        headers=_headers(token),
+    )
+    trace_id = asked.json()["trace_id"]
+    other = _verified_course(client, token)
+    response = client.get(
+        f"/courses/{other}/traces/{trace_id}/citations",
+        headers=_headers(token),
+    )
+    assert response.status_code == 404
+
+
+def test_trace_citations_requires_enrollment(client: TestClient, monkeypatch) -> None:
+    """A stranger (not owner, not enrolled) gets 404 — existence not
+    disclosed."""
+    owner_token, _, owner_body = _register(client)
+    owner_course = _verified_course(client, owner_token)
+    _seed_chunks(owner_course, owner_body["user_id"])
+    monkeypatch.setattr(
+        provider,
+        "_call_provider",
+        lambda task, model, prompt: ("linearity preserves structure [1].", 40, 12),
+    )
+    asked = client.post(
+        f"/courses/{owner_course}/ask",
+        json={"question": "what is linearity"},
+        headers=_headers(owner_token),
+    )
+    assert asked.status_code == 200, asked.text
+    trace_id = asked.json()["trace_id"]
+    stranger_token, _, _ = _register(client)
+    response = client.get(
+        f"/courses/{owner_course}/traces/{trace_id}/citations",
+        headers=_headers(stranger_token),
+    )
+    assert response.status_code == 404
