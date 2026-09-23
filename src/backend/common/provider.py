@@ -19,11 +19,10 @@ Contract (enforced here, not by callers remembering):
   task classification lives in `schemas/base.py` next to the task list
   (single source of truth).
 
-Milestone-1 status: everything above is wired and tested except the
-provider HTTP call itself — `_call_provider` raises ProviderUnavailable
-until the operator picks a provider and the no-retention check passes.
-When it lands, the token counts must come from the provider response, not
-from the caller. Only `_call_provider` + `_parse_usage` change.
+Provider contract: any OpenAI-compatible chat-completions endpoint
+(currently Xiaomi MiMo) — `LLM_API_KEY` + `LLM_BASE_URL` in the
+environment. Token counts come from the provider's usage response, never
+estimated by the caller.
 
 Embeddings are a SEPARATE seam (`embed`), deliberately not `generate`:
 the embedding model is self-hosted and in-process (sentence-transformers),
@@ -133,14 +132,65 @@ def _call_provider(
     *,
     images: Sequence[bytes] | None = None,
 ) -> tuple[str, int, int]:
-    """The provider HTTP call. Intentionally unimplemented until the
-    operator picks a provider and the no-retention policy is verified.
-    Returns (text, input_tokens, output_tokens) — token counts come from
-    the provider's usage response, never estimated by the caller. `images`
-    is present only for the multimodal OCR task."""
-    raise ProviderUnavailableError(
-        f"no provider client configured yet (task={task}, model={model})"
-    )
+    """The provider HTTP call. Returns (text, input_tokens, output_tokens)
+    — token counts come from the provider's usage response, never
+    estimated by the caller. `images` is present only for the multimodal
+    OCR task.
+
+    Provider contract: any OpenAI-compatible chat-completions endpoint
+    (currently Xiaomi MiMo). `LLM_API_KEY` + `LLM_BASE_URL` come from the
+    environment via common.config. Fails closed: missing config or any
+    HTTP/parse failure raises ProviderUnavailableError, which callers
+    surface as a retryable stage failure / 503 — never as a partial row
+    write."""
+    import base64
+
+    import httpx
+    from src.backend.common.config import get_settings
+
+    settings = get_settings()
+    if not settings.llm_api_key or not settings.llm_base_url:
+        raise ProviderUnavailableError(
+            "LLM_API_KEY / LLM_BASE_URL not configured"
+        )
+
+    if images:
+        content: list[dict[str, object]] = [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64.b64encode(img).decode()}"
+                },
+            }
+            for img in images
+        ]
+        content.append({"type": "text", "text": prompt})
+        messages: list[dict[str, object]] = [{"role": "user", "content": content}]
+    else:
+        messages = [{"role": "user", "content": prompt}]
+
+    try:
+        response = httpx.post(
+            settings.llm_base_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": 0.2,
+            },
+            timeout=httpx.Timeout(600.0, connect=15.0),
+        )
+        response.raise_for_status()
+        body = response.json()
+        text = body["choices"][0]["message"]["content"]
+        usage = body.get("usage", {})
+        input_tokens = int(usage.get("prompt_tokens", 0))
+        output_tokens = int(usage.get("completion_tokens", 0))
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as err:
+        raise ProviderUnavailableError(
+            f"provider call failed (task={task}, model={model}): {err}"
+        ) from err
+    return text, input_tokens, output_tokens
 
 
 # ---------------------------------------------------------------------

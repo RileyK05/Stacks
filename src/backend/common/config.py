@@ -39,6 +39,8 @@ class Settings(BaseModel):
     jwt_expire_minutes: int = Field(default=60 * 24 * 7, gt=0, le=60 * 24 * 30)
     jwt_issuer: str = Field(default="course-assistant")
     jwt_audience: str = Field(default="course-assistant-api")
+    llm_api_key: str = Field(default="")
+    llm_base_url: str = Field(default="")
 
     @model_validator(mode="after")
     def _secure_production_secret(self) -> Settings:
@@ -75,4 +77,6 @@ def get_settings() -> Settings:
         jwt_expire_minutes=int(os.getenv("JWT_EXPIRE_MINUTES", "10080")),
         jwt_issuer=os.getenv("JWT_ISSUER", "course-assistant"),
         jwt_audience=os.getenv("JWT_AUDIENCE", "course-assistant-api"),
+        llm_api_key=os.getenv("LLM_API_KEY", ""),
+        llm_base_url=os.getenv("LLM_BASE_URL", ""),
     )

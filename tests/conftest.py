@@ -65,6 +65,25 @@ def verify_email(client: TestClient, token: str) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Tests never depend on the operator's .env: the generation seam is
+    stubbed fail-closed by default (same contract as the pre-provider
+    milestone), so a configured LLM_API_KEY on the dev machine cannot
+    leak live HTTP calls into the suite. Tests that need a working
+    provider monkeypatch `_call_provider` themselves; tests that assert
+    the unavailable-path behavior get it without extra setup."""
+    from src.backend.common import provider
+
+    def _unavailable(task, model, prompt, *, images=None):
+        raise provider.ProviderUnavailableError(
+            f"no provider client configured yet (task={task}, model={model})"
+        )
+
+    monkeypatch.setattr(provider, "_call_provider", _unavailable)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _fake_embedding_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """No test loads the real embedding model (600MB, seconds per load).
     The autouse stub installs a deterministic fake backend whose dimension

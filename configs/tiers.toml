@@ -1,5 +1,5 @@
 [version]
-tiers_config_version = "8"
+tiers_config_version = "9"
 
 [free]
 weekly_token_budget = 100000
@@ -9,7 +9,7 @@ max_course_storage_bytes = 104857600
 max_total_storage_bytes = 1073741824
 max_raw_upload_bytes = 104857600
 free_tier_overhead_percent = 5
-models = { tutor_answer = "deepseek-v4-flash", toc_update = "small-stable-toc", probe_generation = "deepseek-v4-flash", course_knowledge_extraction = "small-stable-toc", probe_evaluation = "deepseek-v4-flash", artifact_generation = "deepseek-v4-flash", ocr = "deepseek-v4-flash" }
+models = { tutor_answer = "mimo-v2.6-flash", toc_update = "mimo-v2.6-flash", probe_generation = "mimo-v2.6-flash", course_knowledge_extraction = "mimo-v2.6-flash", probe_evaluation = "mimo-v2.6-flash", artifact_generation = "mimo-v2.6-flash", ocr = "mimo-v2.6-flash" }
 
 [paid]
 weekly_token_budget = 2000000
@@ -19,4 +19,4 @@ max_course_storage_bytes = 1073741824
 max_total_storage_bytes = 10737418240
 max_raw_upload_bytes = 1073741824
 free_tier_overhead_percent = 0
-models = { tutor_answer = "deepseek-v4", toc_update = "small-stable-toc", probe_generation = "deepseek-v4", course_knowledge_extraction = "small-stable-toc", probe_evaluation = "deepseek-v4", artifact_generation = "deepseek-v4", ocr = "deepseek-v4" }
+models = { tutor_answer = "mimo-v2.6-pro", toc_update = "mimo-v2.6-pro", probe_generation = "mimo-v2.6-pro", course_knowledge_extraction = "mimo-v2.6-pro", probe_evaluation = "mimo-v2.6-pro", artifact_generation = "mimo-v2.6-pro", ocr = "mimo-v2.6-pro" }

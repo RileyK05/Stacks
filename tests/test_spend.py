@@ -41,7 +41,6 @@ def test_tier_policies_load_and_route_models() -> None:
     paid = policies.policy_for(UserTier.PAID)
     assert free.weekly_token_budget < paid.weekly_token_budget
     assert free.model_for("tutor_answer") != paid.model_for("tutor_answer")
-    assert free.model_for("toc_update") == paid.model_for("toc_update")
 
 
 def test_tier_policy_requires_all_model_roles() -> None:
