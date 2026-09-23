@@ -55,7 +55,7 @@
   <Card title="Choose a new password">
     <form onsubmit={confirmReset} class="flex flex-col gap-4">
       {#if error}<ErrorBanner {error} />{/if}
-      {#if notice}<p class="text-sm text-green-700">{notice}</p>{/if}
+      {#if notice}<p class="text-sm text-green-700 dark:text-green-300">{notice}</p>{/if}
       <TextInput
         label="New password"
         type="password"
@@ -66,14 +66,14 @@
       <Button type="submit" {loading}>Update password</Button>
     </form>
     <p class="mt-4 text-center text-sm">
-      <a href="/login" class="text-indigo-600 hover:underline">Back to sign in</a>
+      <a href="/login" class="text-indigo-600 hover:underline dark:text-indigo-300">Back to sign in</a>
     </p>
   </Card>
 {:else}
   <Card title="Reset password">
     <form onsubmit={requestReset} class="flex flex-col gap-4">
       {#if error}<ErrorBanner {error} />{/if}
-      {#if notice}<p class="text-sm text-green-700">{notice}</p>{/if}
+      {#if notice}<p class="text-sm text-green-700 dark:text-green-300">{notice}</p>{/if}
       <TextInput label="Email" type="email" bind:value={email} required autocomplete="email" />
       <Button type="submit" {loading}>Send reset email</Button>
     </form>

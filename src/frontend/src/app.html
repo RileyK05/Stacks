@@ -10,9 +10,18 @@
       rel="stylesheet"
     />
     <title>Course Assistant</title>
+    <script>
+      // Pre-paint theme (mirrors $lib/stores/theme.svelte.ts) so dark-mode
+      // users never see a flash of the light theme before the app boots.
+      try {
+        const stored = localStorage.getItem('theme');
+        const dark = stored ? stored === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.classList.toggle('dark', dark);
+      } catch {}
+    </script>
     %sveltekit.head%
   </head>
-  <body data-sveltekit-preload-data="hover" class="text-slate-900">
+  <body data-sveltekit-preload-data="hover">
     <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>

@@ -11,12 +11,15 @@ from src.backend.common import storage
 from src.backend.ingest import chunking
 from src.backend.ingest.extract import (
     EmptyExtractionError,
+    ScannedPdfNeedsOcrError,
     UnsupportedSourceTypeError,
     _join_pages,
     _line_locators,
     _markdown_locators,
     _pdf_locators,
     extract,
+    ocr_extracted_source,
+    rasterize_pages,
 )
 
 MD_TEXT = """# Chapter 1
@@ -147,6 +150,9 @@ def test_empty_text_extraction_fails_loudly() -> None:
 
 
 def test_scanned_pdf_fails_loudly() -> None:
+    """An image-only PDF has no text layer. It must be classified as the
+    OCR case (ScannedPdfNeedsOcrError, which inherits EmptyExtractionError
+    so old callers still see "no text"), never silently empty."""
     from pypdf import PdfWriter
 
     writer = PdfWriter()
@@ -158,6 +164,14 @@ def test_scanned_pdf_fails_loudly() -> None:
     source_id = uuid4()
     path = storage.write_stored(course_id, source_id, buffer.getvalue())
     try:
+        with pytest.raises(ScannedPdfNeedsOcrError):
+            extract(
+                course_id,
+                source_id,
+                "application/pdf",
+                stored_encoding="identity",
+            )
+        # Back-compat: it is still an EmptyExtractionError.
         with pytest.raises(EmptyExtractionError):
             extract(
                 course_id,
@@ -168,6 +182,41 @@ def test_scanned_pdf_fails_loudly() -> None:
     finally:
         path.unlink(missing_ok=True)
         path.parent.rmdir()
+
+
+def test_rasterize_pages_renders_bounded_png_pages() -> None:
+    """The OCR path renders pages to PNG, capped at max_pages so a huge
+    scan cannot fan out into unbounded billed model calls."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=200, height=200)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    course_id = uuid4()
+    source_id = uuid4()
+    path = storage.write_stored(course_id, source_id, buffer.getvalue())
+    try:
+        pages = rasterize_pages(
+            course_id, source_id, "identity", max_pages=2, scale=1.0
+        )
+        assert len(pages) == 2, "max_pages must cap the render count"
+        assert all(page.startswith(b"\x89PNG") for page in pages)
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+
+def test_ocr_extracted_source_aligns_page_citations() -> None:
+    """OCR text is joined and located with the exact page builder used for
+    text-layer PDFs, so a citation resolves to the page it came from."""
+    page_texts = ["first page words", "second page words", "third page"]
+    extracted = ocr_extracted_source(page_texts)
+    assert extracted.text[extracted.locators[1].start : extracted.locators[1].end] == (
+        "second page words"
+    )
+    assert extracted.locators[1].label == "page 2"
 
 
 def test_pdf_roundtrip_pages_and_text() -> None:

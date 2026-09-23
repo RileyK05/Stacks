@@ -8,9 +8,13 @@ should be questioned, not the file ignored.
 
 Academic assistant that accumulates a source-grounded course memory and a student
 error model, then recommends what to study next. Deployed for a small user base;
-data is owned by the operator, inference uses hosted model APIs that do not
-retain data. See `project.md` for the plan, `system.md` for architecture. Read
-both before making structural decisions.
+data is owned by the operator, inference goes to hosted model APIs that do not
+retain data (generation) and a self-hosted in-process embedding model (granite
+R2 — course text never leaves the machine). See `docs/project.md` for the plan,
+`docs/system.md` for architecture. Read both before making structural decisions.
+
+> All three docs (this file, `docs/project.md`, `docs/system.md`) live in
+> `docs/` — paths in code/tests refer to them as `docs/...`.
 
 ## Golden rules
 
@@ -23,8 +27,8 @@ both before making structural decisions.
    way to measure whether it regressed. Prefer boring, verifiable baselines over
    clever-but-unverifiable ones.
 4. **Data ownership.** Course data and study history live in our own Postgres.
-   Inference goes to a hosted model API that does not retain data. No
-   auto-solving graded work.
+   Generation goes to a hosted model API that does not retain data; embeddings
+   are self-hosted in-process (no data leaves). No auto-solving graded work.
 5. **ML earns its role.** Begin with retrieval, structure, and simple baselines.
    Add models/fine-tuning only for a documented, versioned baseline failure.
 6. **Destruction leaves a distilled record.** Deletes archive a compressed
@@ -66,25 +70,30 @@ Prioritize correctness, clear seams, and future extensibility over brevity.
 ## Structure
 
 ```
-configs/         # ingestion/retrieval/tutor configs (versioned)
+configs/         # ingestion/retrieval/tutor/tiers/prompts/embeddings configs (versioned)
 data/
   raw/           # original course files — GITIGNORED
   processed/     # extracted text, chunks — GITIGNORED
   eval/          # eval questions + held-out sets (committed)
 src/
   backend/
-    ingest/        # parse, locators, token-bounded chunks
-    retrieval/     # TOC-guided retrieval + metadata filters
+    ingest/        # parse, locators, token-bounded chunks, embeddings, OCR
+    retrieval/     # four-seam funnel + traces
     memory/        # concept/dependency store + table of contents
-    student_model/ # attempts, mastery, error model
+    student_model/ # attempts, mastery, error model (schema live; subsystem M3-4)
     tutor/         # source-grounded answers + cold probes
-    evals/         # retrieval/answer/probe/student-model evaluation
+    evals/         # answer eval harness (retrieval evals live in retrieval/)
+    api/           # FastAPI routers (auth, courses, sources, tutor, archives)
     common/
       schemas/       # Pydantic models, one module per storage layer
       config.py      # .env loading + settings
       db.py          # the single Postgres connection seam
       migrate.py     # versioned migration runner
       migrations/    # 00X_*.sql, append-only, applied in order
+      queries/       # named SQL blocks loaded via common.queries.get
+      provider.py    # the single model-call seam (generate + embed)
+      prompt_registry.py  # prompt loading + untrusted-material fencing
+      repos          # per-aggregate SQL callers (courses_repo, sources_repo, ...)
   frontend/        # SvelteKit + TS SPA; talks to backend only via its API
 tests/           # pytest; mirrors src/backend/ layout
 runs/            # experiment + eval logs — GITIGNORED
@@ -106,9 +115,15 @@ frontend are separate codebases; frontend talks to backend only via its API.
   anything persisted or crossing a boundary.
 - **Database:** Postgres via raw SQL (no ORM). Queries live in
   `common/queries/*.sql`; schema changes are new numbered files in
-  `common/migrations/` — never edit an applied migration.
+  `common/migrations/` — never edit an applied migration (currently 001–032).
 - **Config:** tunable/versioned parameters in `configs/`, not hardcoded.
-  Credentials in `.env` (gitignored), loaded via `common/config.py`.
+  Credentials in `.env` (gitignored), loaded via `common/config.py`. System
+  prompts live in `configs/prompts.toml` (versioned) — never inline prompt
+  text in code; uploaded course text must pass through
+  `prompt_registry.grounded_prompt` so it is fenced as untrusted data.
+- **Models:** every model call goes through `common/provider.py` —
+  `generate` (hosted chat APIs, gated + billed) or `embed` (self-hosted,
+  in-process). No SDK objects or keys outside that module.
 - **Extensibility:** `kind`, `locator_type`, `content_type`, `claim_type`, and
   `target_type` are free strings so new types need no schema change. Known
   values are documented in `schemas/base.py` (`KNOWN_*` constants).
@@ -123,7 +138,7 @@ frontend are separate codebases; frontend talks to backend only via its API.
 Run from the project root, using the venv:
 
 ```
-.venv/Scripts/python -m pytest                        # tests
+.venv/Scripts/python -m pytest                        # tests (needs PYTEST_ALLOW_ANY_DB=1 + dev DB)
 .venv/Scripts/python -m ruff check .                  # lint
 .venv/Scripts/python -m mypy src                      # typecheck
 .venv/Scripts/python -m src.backend.common.migrate    # apply DB migrations
@@ -142,11 +157,18 @@ npm run gen:api  # regenerate API types from the backend's OpenAPI schema
 ```
 
 `src/frontend/src/lib/api/schema.d.ts` is generated from the backend — never
-hand-edit it; re-run `npm run gen:api` after backend route/schema changes.
+hand-edit it; re-run `npm run gen:api` after backend route/schema changes
+(it needs a live backend on `localhost:8000`).
+
+Eval harness (answer-side; `src/backend/evals/answer.py`, cases in
+`data/eval/answer/cases.json`): run via tests or in code — cases have five
+kinds (green_grounded / cold_probe / yellow_steer / red_refuse /
+workspace_grounded), scorers are
+mechanical, prompt version is stamped into every run log under `runs/`.
 
 ## Workflow expectations for agents
 
-- Read `project.md` and `system.md` before making structural changes.
+- Read `docs/project.md` and `docs/system.md` before making structural changes.
 - Before writing code, look at existing patterns and reuse `src/backend/common/`.
 - Verify changes run and, where possible, pass tests + lint + typecheck.
 - Never commit unless explicitly requested.

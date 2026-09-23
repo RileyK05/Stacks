@@ -2235,3 +2235,158 @@ Gates: backend 316 tests (+3 citations tests: happy path, foreign-trace
 404, stranger 404), ruff, mypy green; frontend svelte-check 0/0, build
 clean. MVP is now end-to-end coherent: upload → watch it index → ask →
 grounded answer with visible, readable sources.
+
+## Bug sweep + pre-launch fixes: fusion, throttling, OCR (2026-09-22)
+
+Full-repo sweep. One critical bug and three carried go-live items
+addressed; the rest of the codebase passed.
+
+- **[bug, CRITICAL] Fusion inverted keyword/dependency evidence.** The
+  `_normalize` sign-flip premise ("non-embedding ranks mean earlier
+  arrival") was false: keyword is ts_rank (higher better) and
+  toc/dependency use `-position` (higher better). The best keyword chunk
+  normalized to 0.0 and sank below the weakest, and `best_by_source`
+  picked each source's *worst* chunk — corrupting order and the
+  relevance allocation, and making the decision-008 kill-switch measure
+  garbage. Fix: normalize every seam in the same direction; all seams
+  are higher-is-better by construction. Regression tests added for
+  keyword order, dependency order, and the DB end-to-end inversion.
+- **[security] Login throttling** (carried open item, notes.md
+  2026-08-25 + 2026-09-12). New `login_throttle` table (migration 032,
+  SHA-256-of-key only) and `common/login_throttle.py` count failures
+  against BOTH the normalized email and the source IP — per-email stops
+  single-account guessing, per-IP slows spraying. Config-driven
+  (`configs/auth.toml`, `max_failures`/`window_seconds`/`lockout_seconds`)
+  with an opt-in `trust_forwarded_for` because the socket peer is a proxy
+  when fronted. Locked keys return 429 + Retry-After; a successful login
+  clears the email key but deliberately not the IP key (a valid credential
+  must not reset a host's spray counter). Window reset, independent locks,
+  proxy opt-in, and endpoint 429 covered by `test_login_throttle.py`.
+  Token revocation remains open (separate item).
+- **[security] Prompt-injection input marking** (the orchestrator's
+  documented go-live gate). Uploaded course text is untrusted, so every
+  prompt that embeds it now fences it between literal
+  `<<<UNTRUSTED_COURSE_MATERIAL begin/end>>>` markers via
+  `prompt_registry.grounded_prompt`, and the `tutor_answer`/`toc_update`/
+  `course_knowledge_extraction` prompts state the block is data, not
+  instructions. Marker occurrences inside the content are neutralized so
+  an upload cannot close the fence early. Both the ingestion prompt
+  assembly and the tutor prompt builder route through the one seam.
+  `test_prompt_fencing.py` pins the contract. Documented mitigation, not
+  a proof — noted as such in the code.
+- **[ingest] OCR for image-only PDFs** (was "scanned sources fail
+  loudly"). New `ocr` pipeline stage between extract_text and
+  build_locators: extract_text classifies a no-text-layer PDF as
+  `ScannedPdfNeedsOcrError` (still an EmptyExtractionError for old
+  callers) instead of failing; the ocr stage rasterizes pages
+  (pypdfium2 — Apache/BSD, no system binary; capped at `[ocr] max_pages`
+  so one scan cannot fan out into hundreds of calls) and sends them to
+  the multimodal model via the provider seam. `ocr` is a new generation
+  task billed to the **ingestion** pool, routed per tier in tiers.toml
+  v8, prompt in prompts.toml. OCR text is joined with the exact page
+  builder text-layer PDFs use, so page citations align; page separators
+  the model fails to emit degrade to page-1 span rather than
+  misciting. Provider-less deployments fail the ocr stage with an
+  actionable error and the source stays `failed` — never a
+  falsely-indexed empty base. Provider `generate`/`_call_provider` grew
+  an `images` argument (None for every text task); all test stubs updated.
+
+Gate: full pytest (316 → 332), ruff, mypy green; migration 032 applied.
+Not in this batch: model provider (#1) and a real eval set (#2) remain
+the operator's planned work; CI (#3) is a later conversation.
+
+## Docs updated + relocated to docs/ (2026-09-22)
+
+AGENTS.md, project.md, system.md moved into docs/. Updated to current
+reality:
+
+- AGENTS.md: structure tree (provider/prompt_registry/api/queries/repos,
+  evals + retrieval evals split, migrations 001–032), prompt + model-seam
+  conventions (prompts in configs/prompts.toml never inline in code,
+  untrusted-material fencing via grounded_prompt), test gate env note
+  (PYTEST_ALLOW_ANY_DB), eval-harness summary, gen:api needs live backend.
+- project.md: inference section rewritten to the two-seam reality
+  (generation hosted no-retention; embeddings self-hosted granite R2 —
+  no-retention check doesn't apply there by construction); pipeline now
+  includes OCR + chunk-once chunk_locators + embeddings stage; M1 marked
+  DONE (worker, four-seam fusion, tutor ask, citations endpoint);
+  evaluation plan annotated with what's live vs LLM-judge-later; open
+  questions updated (chat provider lean: Xiaomi MiMo; embeddings pick
+  CLOSED).
+- system.md: status paragraphs (§1, TL;DR) reflect full pipeline + tutor
+  + citations endpoint live, only the hosted chat key missing; §3
+  pipeline diagram rewritten (OCR stage, embed stage, chunk_locators,
+  heartbeat-fenced queue, batch memory refresh, SAVEPOINT fence);
+  §4a marked LIVE with the granite contract; §6 split into generate
+  (hosted, fails closed) vs embed (self-hosted) with the MiMo lean
+  noted; sequence diagram now shows embed + citations fetch; §2.2 ER
+  diagram gains CHUNK_LOCATORS; auth section gains password-stamp
+  invalidation + login throttle; 6a gains ocr task + embedding-exempt
+  ledger note; §7/§2.4/§2.5 marked designed-not-built with live-vs-future
+  split; §10 open decisions shrunk to the chat provider + pgvector +
+  revocation.
+- NEW docs/decisions/009_three_zone_assistance_policy.md — the ratified
+  three-zone policy (green/yellow/red, steer-as-feature, pricing-not-
+  policing) written down since 010 and the prompt registry already
+  referenced it.
+- Cross-references audited: every docs/decisions/0XX pointer resolves to
+  a real file; all three docs consistently say two seams, four seams,
+  32 migrations.
+- src/frontend/README.md gets a pointer to the docs/ location.
+
+Gates at close: 335 tests, ruff, mypy green; svelte-check 0/0, build
+clean.
+
+## Chat + workspace harness, dark mode finished (2026-09-22)
+
+Finishes the dark/light mode + "chat left, workspace right" work Kimi left
+uncommitted mid-task. Kimi had built the theme store, dark: variants,
+RichText (markdown + KaTeX + DOMPurify), and a frontend-only
+` ```artifact ` parser with Quiz/EditableDocument/ArtifactPanel. Hanging
+pieces and what replaced them:
+
+- **[golden rule 1 / decision 009] Uncited artifacts rendered.** The
+  frontend parser accepted quizzes/docs with no citations, and the tutor
+  prompt never taught the convention ("Answer in plain prose"), so the pane
+  could never fill in practice. Contract moved to the backend:
+  `tutor/workspace.py` lifts ` ```workspace ` blocks (Pydantic
+  discriminated union: quiz | document) and enforces the decision-009 hard
+  gate in code — every question/document must list `sources`, and every
+  `sources` entry + inline `[n]` must index provided material. Failing
+  blocks are withheld with a human-readable reason (`withheld` on
+  `AnswerView`, rendered inline) and removed from the chat body either way,
+  so a rejected quiz never leaks its answer key as raw JSON. `AnswerView.text`
+  is now the chat body; `workspace` carries the validated items.
+- **Naming.** "Workspace item", not "artifact": `user_artifacts`
+  (decision 003) are persisted learner artifacts; workspace items are
+  ephemeral per-answer views. Saving one is the M5 path.
+- **Prompt v3** (`prompts_config_version` 2 → 3): tutor_answer allows
+  Markdown + LaTeX and teaches the workspace fence with `sources`.
+- **Measured:** new eval kind `workspace_grounded` (scorer reuses the
+  endpoint's gate, so eval and product can't drift) + case
+  `workspace-quiz-linear`; `test_tutor_workspace.py` pins the gate;
+  endpoint test covers lift + withhold.
+- **Frontend:** `ArtifactPanel`/`utils/artifacts.ts` removed; items come
+  typed from the generated schema. `stores/workspace.svelte.ts` holds
+  per-item session state (quiz answers, doc draft) so switching answers
+  keeps progress — fixes Kimi's EditableDocument effect that discarded
+  edits on every Preview toggle. Quiz: per-question source chips after
+  grading, "Ask about what I missed" pre-fills the chat. Doc: Revert +
+  Download .md. Ask tab is now chat-shaped (history above, input below,
+  starter prompts); course page gets a max-w-7xl shell for the split.
+- **Dark-mode bugs:** `.dark html` selector never matched (class is ON
+  html) → `html.dark`; body text was hardcoded slate-900 → themed in CSS;
+  pre-paint script in app.html removes the light flash; last stragglers
+  (input error text, member rows, failed status).
+- **[dev] Vite proxy swallowed page loads:** `/courses` is both an API
+  prefix and an SPA route, so refreshing a course page in dev proxied the
+  navigation to the backend (JSON or 502). Proxy now bypasses requests
+  that accept text/html. The deployment static server needs the same rule.
+
+Open: the app shell has no mobile layout (fixed 240px sidebar leaves
+~110px of content at phone width) — separate item. Workspace grading is
+local only; writing misses into the student model is decision 009's
+"log the struggle" step, blocked on the M3-4 student_model subsystem.
+
+Gates at close: 348 tests, ruff, mypy green; svelte-check 0/0, build
+clean; UI flow verified in both themes with a mocked API (Playwright).

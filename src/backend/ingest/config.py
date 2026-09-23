@@ -16,12 +16,21 @@ class StageConfig(BaseModel):
     handler_version: str
 
 
+class OcrConfig(BaseModel):
+    """Rasterization bounds for the OCR stage (vision model does the
+    recognition; these cap how much we render per source)."""
+
+    max_pages: int = Field(ge=1)
+    scale: float = Field(gt=0)
+
+
 class IngestionConfig(BaseModel):
     pipeline_version: str
     max_attempts: int = Field(ge=1)
     chunk_max_tokens: int = Field(ge=1)
     prompt_window_chars: int = Field(ge=1)
     poll_interval_seconds: int = Field(ge=1)
+    ocr: OcrConfig
     stages: list[StageConfig]
 
     @model_validator(mode="after")

@@ -89,7 +89,7 @@ def test_worker_batch_runs_and_records(owner, course) -> None:
 def test_worker_clears_queue_on_success(monkeypatch, owner, course) -> None:
     stored = _upload(course.course_id, owner.user_id)
 
-    def fake_call(task, model, prompt):
+    def fake_call(task, model, prompt, *, images=None):
         return (f"stub output for {task}", 150, 30)
 
     monkeypatch.setattr(
@@ -170,7 +170,7 @@ def test_batch_refreshes_course_memory_once(monkeypatch, owner, course) -> None:
         lambda course_id: calls.append(course_id),
     )
 
-    def fake_call(task, model, prompt):
+    def fake_call(task, model, prompt, *, images=None):
         return (f"stub output for {task}", 100, 20)
 
     monkeypatch.setattr(
@@ -286,7 +286,7 @@ def test_debug_capture_error(owner, course, monkeypatch) -> None:
 
     monkeypatch.setattr(
         "src.backend.common.provider._call_provider",
-        lambda task, model, prompt: (f"stub {task}", 100, 20),
+        lambda task, model, prompt, *, images=None: (f"stub {task}", 100, 20),
     )
     _upload(course.course_id, owner.user_id, body=b"first body " * 50)
     attempted, succeeded = worker.process_batch(limit=10)

@@ -1,8 +1,9 @@
 # System Design
 
 > Architectural overview of the Course Memory and Adaptive Study System.
-> Read this alongside `project.md` (product/plan) and `AGENTS.md` (contract).
-> Decisions here are the current *agreed* ones; record changes in `docs/decisions/`.
+> Read this alongside `docs/project.md` (product/plan) and `docs/AGENTS.md`
+> (contract). Decisions here are the current *agreed* ones; record changes
+> in `docs/decisions/`.
 
 ## 0. TL;DR
 
@@ -18,18 +19,21 @@ appears below.
 - **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem
 - **Frontend:** `src/frontend/`, talks to backend only via API
 - **Database:** Postgres via raw SQL (no ORM); versioned migrations applied by
-  `common/migrate.py`
-- **Auth:** email + password accounts, per-user isolation, 7-day deletion grace
-- **Inference:** several models for different tasks (generative answer/extraction,
-  a small stable TOC-writer, optional OCR), called through a **hosted API
-  provider that does not retain data** (not self-hosted).
+  `common/migrate.py` (currently 001–032)
+- **Auth:** email + password accounts, per-user isolation, password-change
+  session invalidation, login throttling, 7-day deletion grace
+- **Inference — two seams in `common/provider.py`:** generation through a
+  **hosted chat API provider that does not retain data** (not self-hosted;
+  OpenAI-style contract, still failing closed until the key lands), and
+  **embeddings self-hosted in-process** (`sentence-transformers` +
+  `ibm-granite/granite-embedding-english-r2` — no key, no spend gate, course
+  text never leaves the machine).
 - **Retrieval:** **hybrid four-seam** (decision 008) — keyword, TOC routing,
   dependency walk, and embeddings as candidate generators, fused, citation
   contract as the harness; every surviving chunk carries its locator. Seams
   activate as their data arrives; fusion must beat the best single seam on
   the eval set.
 - **Data ownership:** course material and study history live in our Postgres.
-  Inference is a no-retention API.
 - **Deletion:** an exact course archive provides a 90-day copy grace period;
   expiry leaves only per-user evidence-bearing course memories. Account deletion
   retains its separate grace period.
@@ -38,16 +42,19 @@ appears below.
 
 ## 1. High-level architecture
 
-Implementation status matters throughout this document: schemas, auth,
+Implementation status matters throughout this document: schemas, auth
+(including password-change session invalidation and login throttling),
 owner/enrollment permission rules, source-to-course-object identity, ingestion
-run state, upload storage, archive-then-purge services, and the deterministic
-ingestion stages (file parsing → text + locators → token-bounded chunks, with
-a DB-backed run ledger, persistent queue claims, and tier/budget gating) are
-implemented. The retrieval funnel (seams, normalization, relevance
-allocation, traces — §4/§4a) is implemented; the tutor orchestration on top
-of it remains planned. The model stages (update_toc, course_knowledge_extraction,
-and the future ingestion embedding stage) are wired through the provider
-seam but fail closed until a provider is chosen — runs are inspectably
+run state, upload storage, archive-then-purge services, and the full
+ingestion pipeline (extract → OCR for image-only PDFs → locators → chunks →
+self-hosted embeddings, with a DB-backed run ledger, persistent
+heartbeat-fenced queue claims, and tier/budget gating) are implemented. The
+retrieval funnel (seams, normalization, relevance allocation, traces —
+§4/§4a) is implemented; the tutor orchestration (`ask` with strict refusal,
+prompt-registry prompts with untrusted-material fencing, citations endpoint)
+is implemented on top of it; the generated-schema frontend consumes all of
+it. The hosted chat provider is the one missing piece: `generate` fails
+closed until the operator's key lands — model-stage runs are inspectably
 failed, never falsely successful. Diagrams for the later flows are the
 intended design, not claims that the code already performs them.
 
@@ -94,10 +101,11 @@ flowchart TB
         FS["raw files (trimmed)"]
     end
 
-    subgraph Models["Model providers (API, no data retention)"]
-        GEN["Generative model<br/>(deepseek v4 flash)"]
+    subgraph Models["Model providers"]
+        GEN["Generative model<br/>(deepseek v4 flash;<br/>hosted API, no data retention;<br/>fails closed until key)"]
         TOCW["TOC-writer model<br/>(small, stable)"]
-        OCR["OCR model<br/>(only if scans; planned)"]
+        OCR["OCR model<br/>(multimodal; wired, rasterization-<br/>capped, fails closed until provider)"]
+        EMB["Embedding model<br/>(granite-english-r2, 149M)<br/>self-hosted in-process"]
     end
 
     B -->|"ask / answer (HTTP JSON)"| API
@@ -112,6 +120,7 @@ flowchart TB
     ING --> GEN
     ING --> OCR
     ING --> TOCW
+    ING --> EMB
     RET --> PG
     TUT --> GEN
     TUT --> RET
@@ -128,13 +137,15 @@ flowchart LR
     F["your files<br/>(PDF / MD / TXT)"] --> ING["librarian reads + files them"]
     ING --> PG[("Postgres — the stacks")]
     ING --> GEN["generative model<br/>(writes the study guide)"]
-    ING --> OCR["OCR specialist<br/>(planned — scans currently<br/>fail loudly instead)"]
+    ING --> OCR["OCR specialist<br/>(multimodal model; image-only PDFs —<br/>fails loudly until a provider lands)"]
+    ING --> EMB["embedding model<br/>(self-hosted, in-process)"]
 ```
 
 **Analogy:** you hand the librarian a stack of papers. They read each one, note the
 page numbers, and file the text onto the shelves. For scanned pages they call in an
-OCR specialist to read the handwriting (that specialist is planned, not hired yet —
-image-only sources fail with a clear error today). They also draft a study guide (course
+OCR specialist to read the handwriting (the specialist is wired but has no employer
+yet — with no provider configured, image-only sources fail with a clear error rather
+than a silent empty base). They also draft a study guide (course
 knowledge — the study guide is course content, not memory) as they go.
 
 ### 1.3 Layer 2 — Retrieval (the card catalog)
@@ -309,8 +320,9 @@ erDiagram
   append-only `user_subscriptions` history by a trigger. Tier gates the
   weekly generation budget and model routing (see §6a).
 - **`COURSES`** has one owner and is in exactly one of **three shapes —
-  private, invite_only, public** (decision `006_three_course_shapes.md`; the
-  closed set). Public courses are anonymously viewable (published objects +
+  private, invite_only, public** (decision
+  `docs/decisions/006_three_course_shapes.md`; the closed set). Public
+  courses are anonymously viewable (published objects +
   join code) and self-enrollable; invite_only courses are invisible except
   through their owner-held join code; private courses are reachable only by
   owner invitation. The join code (`courses.code`) is a server-generated
@@ -342,13 +354,15 @@ erDiagram
 ### 2.2 Source content (uploaded material)
 
 ```mermaid
+```mermaid
 erDiagram
     USERS ||--o{ SOURCES : owns
     COURSES ||--o{ SOURCES : contains
     COURSE_OBJECTS ||--|| SOURCES : specializes_as
     SOURCES ||--o{ LOCATORS : indexed_by
     SOURCES ||--o{ CHUNKS : chunked_into
-    LOCATORS ||--o{ CHUNKS : within
+    LOCATORS ||--o{ CHUNK_LOCATORS : maps
+    CHUNKS ||--o{ CHUNK_LOCATORS : cited_via
 
     SOURCES {
         uuid source_id PK
@@ -383,6 +397,10 @@ erDiagram
         int chunk_index
         text text
     }
+    CHUNK_LOCATORS {
+        uuid chunk_id PKFK
+        uuid locator_id PK
+    }
 ```
 
 - **Objects are stored whole**; nothing is destroyed at ingest. `file_hash`
@@ -405,11 +423,15 @@ erDiagram
   use the locator label (e.g. "slide 7", "timestamp 12:30"). The SQL column is
   `end_value` (reserved word); the data layer maps it to the Pydantic field `end`.
 - **`CHUNKS`** are **token-bounded** retrieval slices sized to fit the model's
-  context window (not arbitrary lines), each pointing back to the locator it
-  spans. Each chunk optionally carries an **embedding row** (see §4a): the
-  schema is live (`chunk_embeddings`, migrations 025/027), and rows are
-  written once an embedding provider exists. Kept only if fusion measurably
-  helps.
+  context window (not arbitrary lines), each pointing back to the locators it
+  spans. A chunk is stored ONCE with its locator set in the
+  `chunk_locators` join table (migration 031 — the review catch: storing one
+  row per locator tripled identical chunks, making retrieval hits scale with
+  locator grain and would have embedded the same text N times). Each chunk
+  optionally carries an **embedding row** (see §4a): the schema is live
+  (`chunk_embeddings`, migrations 025/027), and rows are written by the
+  self-hosted `embed_chunks` stage (live — granite R2, in-process). Kept
+  only if fusion measurably helps.
 
 ### 2.3 Course knowledge (concepts, evidence & TOC)
 
@@ -485,6 +507,9 @@ erDiagram
   course says, tied to concepts and sources), not user memory.
 
 ### 2.4 Student model (attempts, mastery & recommendations)
+
+> Status: schema designed and migrated; the probe/recommendation
+> subsystems that write it are Milestones 3–4.
 
 ```mermaid
 erDiagram
@@ -590,6 +615,8 @@ erDiagram
   (what the user sees), and a compressed `CHAT_SUMMARIES` (what the LLM uses as
   context on the next prompt). Summaries are regenerated when the conversation
   grows past a threshold so the model always prompts against current context.
+  Multi-turn chat is Milestone 2+; the live tutor flow is single-turn `ask`
+  (its trace + citations endpoint are §4/§2.6).
 
 ### 2.6 Evidence & grounding
 
@@ -648,6 +675,13 @@ erDiagram
   chain is `Response → Claim → Citation → RetrievalTrace`.
 - **`RETRIEVAL_TRACES`** record what the tutor retrieved and used to produce an
   answer, enabling audit of whether a citation actually supported the answer.
+  The live shape: `retrieved_chunk_ids` jsonb carries
+  `{chunk_ids, per_chunk_layers, layer_contribution, matched_concept_ids}`;
+  the citations endpoint reads it plus `chunks_with_locators_by_ids` to
+  resolve a trace into readable evidence (chunk text + locator label +
+  filename). Full claim-level decomposition (RESPONSES/CLAIMS/CITATIONS) is
+  the citation-snapshot design (Fork C) — the single-turn `ask` records the
+  trace; per-claim rows land with Milestone 2.
 - **`CLAIMS`** + **`CITATIONS`** ground each claim in evidence (a chunk, memory
   object, or TOC entry), with the trace that produced it. `claim_type` and
   `target_type` are free strings; known values live in `schemas/base.py`
@@ -680,10 +714,12 @@ flowchart TB
 - **`COURSE_MEMORIES`** — the course-memory node (decision 007): a per-user,
   per-course focus record stored ONLY for the course's main user (its
   owner) — a bounded summary (course reference, name, key concepts, and a
-  compact evidence snapshot), refreshed on canonical mutations and before
-  archival via the single write seam `course_memory.refresh_for_owner`.
-  `course_id` is stored without a hard FK so the memory outlives the
-  course row. Enrolled learners never get a node (see decision 007).
+  compact evidence snapshot), refreshed via the single write seam
+  `course_memory.refresh_for_owner` (called by the worker once per
+  successful batch — not per upload — and by terminal paths on canonical
+  mutations). `course_id` is stored without a hard FK so the memory
+  outlives the course row. Enrolled learners never get a node (see
+  decision 007).
 - **`CITATION_SNAPSHOTS`** — before a source's citations are removed, a
   compressed record of the citations and why each was valid is written, so
   grounding evidence survives the source.
@@ -708,15 +744,21 @@ flowchart TB
   student history and tutor preferences also stay private per user.
 - **Hybrid retrieval (decision 008).** TOC, keyword, dependency-walk, and
   embeddings are candidate generators fused at query time; the citation
-  contract keeps every strategy accountable. Embeddings join when the
-  provider + pgvector land, and stay only if the fusion measurably helps
-  on the eval set. The TOC itself is written by a small, stable TOC model
-  so its index vocabulary stays consistent over time.
+  contract keeps every strategy accountable. Embeddings are LIVE (self-hosted
+  granite R2, in-process — see §4a) and stay only if the fusion measurably
+  helps on the eval set. The TOC itself is written by a small, stable TOC
+  model so its index vocabulary stays consistent over time.
 - **No rigid type system.** `kind` (course objects), `locator_type`,
   `content_type`, `claim_type`, and `target_type` are free strings, so new kinds
   and formats insert without a schema migration.
 - **Evidence is first-class.** Every claim, artifact, and model decision is
   traceable to evidence, so source grounding is enforceable and auditable.
+- **Learning over completion (decision
+  `docs/decisions/009_three_zone_assistance_policy.md`).** Three-zone
+  behavior policy: green (grounded help) / yellow (steer homework-fill
+  requests into explain + practice) / red (decline submission-shaped
+  artifacts). Hard gates (citation-validated artifacts, budgeted
+  generation) plus a prompt-level steer measured by the answer harness.
 
 ---
 
@@ -726,45 +768,64 @@ flowchart TB
 flowchart LR
     F["file: PDF / MD / TXT"] --> TYPE{text layer?}
     TYPE -->|yes| PARSE["parser → text"]
-    TYPE -->|no| REVIEW_QUEUE["fail loudly:<br/>scanned/image sources<br/>need OCR (planned)"]
+    TYPE -->|no| OCR["rasterize pages →<br/>multimodal OCR<br/>(fails loudly until provider lands)"]
     PARSE --> LOC["build locators<br/>(PDF pages / MD sections /<br/>text line ranges)"]
-    LOC --> CHUNK["token-bounded chunking<br/>(mapped to locators)"]
-    CHUNK --> DB[("Postgres:<br/>sources, locators, chunks")]
-    LOC --> TOC["TOC model writes<br/>course table of contents"]
+    OCR --> LOC
+    LOC --> CHUNK["token-bounded chunking<br/>(one row per chunk,<br/>locators in chunk_locators)"]
+    CHUNK --> EMB["self-hosted embeddings<br/>(granite R2, in-process)"]
+    CHUNK --> DB[("Postgres:<br/>sources, locators, chunks,<br/>chunk_locators, chunk_embeddings")]
+    DB --> TOC["TOC model writes<br/>course table of contents<br/>(fails closed until provider)"]
+    TOC --> KNOW["course-knowledge extraction<br/>(fails closed until provider)"]
     TOC --> DB
-    DB --> REVIEW{"uncertain /<br/>conflicting?"}
-    REVIEW -->|yes| QUEUE["flagged for human review"]
-    REVIEW -->|no| DONE["indexed"]
 ```
 
 **Steps:** accept file (streamed, deduped by hash) → dispatch on the
 supported-mime whitelist → extract text with structure
 offsets (PDF pages via pypdf, markdown sections fence-aware, plain-text
-line ranges; UTF-8 with BOM stripping, cp1252 fallback) → build **locators**
-(the per-format table of contents, separator-aligned with the joined text) →
-split into **token-bounded chunks**, each mapped to the locators it spans →
-write sources, locators, chunks to Postgres → a small **TOC model** writes the
-course table of contents → flag uncertain extractions for review.
+line ranges; UTF-8 with BOM stripping, cp1252 fallback) → **if a PDF has
+no text layer, route to the `ocr` stage: rasterize its pages (pypdfium2,
+capped by `[ocr] max_pages` in `configs/ingestion.toml`) and send pages to
+the multimodal model through the provider seam, billed to the ingestion
+pool** (page alignment is preserved — the model's output is split back
+into per-page texts by a sentinel separator, with honest degradation when
+it does not comply) → build **locators** (the per-format table of
+contents, separator-aligned with the joined text) → split into
+**token-bounded chunks**, one row per logical chunk with the full locator
+span in `chunk_locators` → **embed every chunk with the self-hosted model**
+(`embed_chunks` — no API, no billing, no tier gate; course text never
+leaves the machine) → write sources, locators, chunks, chunk_locators,
+chunk_embeddings to Postgres → a small **TOC model** writes the course
+table of contents → course-knowledge extraction. The two model stages fail
+loudly until the chat provider lands; the embedding stage is already live.
 
 **Queueing:** every uploaded or copied source lands in `pending_ingestion`;
 a worker claims rows by a persistent state transition (`claimed_at` —
 not a row lock, which would evaporate at the pipeline's first commit) and
-runs the pipeline. Failure clears the queue row and marks the source
-`failed` with the reason; `requeue_failed_source` is the deliberate
-failed → uploaded retry path. Claims are single-flight (claimed rows are
-not re-claimable until cleared or swept).
+runs the pipeline. Every stage transition heartbeats
+`pending_ingestion.heartbeat_at` — the stale-claim sweep judges
+heartbeat freshness, so a slow-but-alive run is never re-claimed mid-flight
+while a genuinely dead claim ages out on `claimed_at`. A source that
+repeatedly kills runs dead-letters after `claimed_runs_max` attempts and
+returns to service only via the requeue API. Failure clears the queue row
+and marks the source `failed` with the reason; `requeue_failed_source` is
+the deliberate failed → uploaded retry path. The worker also refreshes the
+owner's course-memory node once per batch (not per upload) at the end of a
+successful batch.
 
 **Rules:** block solution documents from cold-probe context; prefer instructor
 sources over student notes; store a retrieval trace for every query.
 
-The persisted pipeline order is text extraction → locators → chunks → cascading
-TOC update → course-knowledge extraction. Each stage depends on the previous successful
-stage. Stage attempts and handler/configuration versions are recorded; the MVP
-configuration allows two total attempts, after which the run becomes failed and
-later stages remain unstarted. Handlers are idempotent (each clears its own
-derived rows first) so a retry re-executes from the top safely. The run ledger
-commits per stage: completed stage output survives a later stage's failure, and
-the audit trail (run, stage rows, error messages) is always queryable.
+The persisted pipeline order is text extraction → OCR (only for
+image-only PDFs) → locators → chunks → chunk embeddings → cascading TOC
+update → course-knowledge extraction. Each stage depends on the previous
+successful stage. Stage attempts and handler/configuration versions are
+recorded; the MVP configuration allows two total attempts, after which the
+run becomes failed and later stages remain unstarted. Handlers are
+idempotent (each clears its own derived rows first) so a retry re-executes
+from the top safely. Each attempt runs inside a SAVEPOINT so a DB-level
+failure never escapes as a poisoned transaction. The run ledger commits per
+stage: completed stage output survives a later stage's failure, and the
+audit trail (run, stage rows, error messages) is always queryable.
 
 ---
 
@@ -794,20 +855,25 @@ boundary.
   model-extracted edges pass the evidence bar** — a wrong edge misdirects
   silently, so dormant-until-trustworthy is the design. A seam with no data
   contributes nothing and breaks nothing.
-- **Embeddings** (meaning): ingestion-time chunk embeddings. Dormant until a
-  provider lands; participates in fusion like any other seam. See §4a for
-  the full embedding architecture.
+- **Embeddings** (meaning): ingestion-time chunk embeddings via the
+  self-hosted granite R2 model — **live now** (the `embed_chunks` stage),
+  participates in fusion like any other seam. See §4a for the full
+  embedding architecture.
 
 **Trace:** every query stores a retrieval trace recording the cited chunk
 ids, which layers contributed each, and matched concept ids — auditors see
-WHY a chunk was retrieved, not just that it was.
+WHY a chunk was retrieved, not just that it was. The citations endpoint
+(`GET /courses/{course_id}/traces/{trace_id}/citations`) resolves a
+trace's chunk ids into readable evidence — chunk text, locator label,
+source filename — which the frontend renders as the "sources used" panel
+under every answer (golden rule 1, honored in the UI).
 
-### 4a. Embedding architecture (decision 008, revised 2026-09-16)
+### 4a. Embedding architecture (decision 008, revised 2026-09-16; live 2026-09-21)
 
-The embedding subsystem end to end — what exists today, what is gated on
-the provider pick, and what never changes:
+The embedding subsystem end to end — what exists (all of it except the
+pgvector swap), and what never changes:
 
-**Storage (live now, migration 025 + 027).**
+**Storage (live, migration 025 + 027).**
 - `chunk_embeddings(chunk_id PK, model TEXT, embedding FLOAT8[], created_at)`
   — one row per embedded chunk, keyed by the model that produced it. A
   course can hold rows from more than one model across a model swap; every
@@ -816,27 +882,39 @@ the provider pick, and what never changes:
 - Chunks without an embedding row simply don't participate in the
   embedding seam; absence is not an error, it's dormancy.
 
-**Ingestion-time embedding (gated on provider).** When the provider pick
-lands, the ingestion pipeline gains an embedding stage: after chunks are
-written, each chunk's text is embedded and stored with the model name.
-Re-ingestion under a new model writes new rows alongside old ones; the
-query-time model filter is what makes a swap safe without a mass rewrite.
+**Ingestion-time embedding (LIVE — self-hosted).** The `embed_chunks`
+stage runs after chunking: each chunk's text is embedded in-process by
+`sentence-transformers` with
+`ibm-granite/granite-embedding-english-r2` (149M ModernBERT, 768 dims,
+8192-token context, no query/document prefixes, Apache 2.0) and stored
+under the model name. The contract lives in `configs/embeddings.toml`:
+the model name is the row key, the configured dimension is enforced
+loudly at load AND per call (a model swap that changes dimensionality is
+a hard error, never silent garbage ranks), vectors are normalized at
+write (the model ships unnormalized; the seam computes dot products, so
+dot = cosine requires unit length). No API, no key, no spend gate, no
+tier: course text never leaves the machine, so the no-retention vendor
+check does not apply to embeddings by construction. Re-ingestion under a
+new model writes new rows alongside old ones; the query-time model
+filter is what makes a swap safe without a mass rewrite.
 
-**Query-time seam.** `embedding_seam` takes the query embedding (computed
-by the tutor flow at answer time) and returns the top-`embedding_limit`
-chunks by dot product. The SQL computes dot products natively
-(`unnest` zip + `SUM` over float8[] — no pgvector yet), with a
-`cardinality()` equality guard: a mismatched-dimension row is excluded,
-never silently truncated into a garbage score (a model swap must not rank
-garbage). The pgvector swap is a mechanical later migration — same seam,
-`<=>` cosine distance instead of the zip.
+**Query-time seam (live).** `embed_query` embeds the ask-time question
+(query prefix from config — empty for granite R2) and the seam returns
+the top-`embedding_limit` chunks by dot product. The SQL computes dot
+products natively (`unnest` zip + `SUM` over float8[] — no pgvector yet),
+with a `cardinality()` equality guard: a mismatched-dimension row is
+excluded, never silently truncated into a garbage score (a model swap
+must not rank garbage). The pgvector swap is a mechanical later migration
+— same seam, `<=>` cosine distance instead of the zip.
 
-**Normalization & direction.** Embedding ranks are "higher = closer to the
-query" already; fusion's normalization keeps that direction (all other
-seams flip sign, since their ranks mean "earlier arrival"). After
-normalization, embedding dots compete on equal footing with keyword and
-TOC scores — the source-relevance allocation (§4) reads them all as one
-currency.
+**Normalization & direction.** Every seam's seam-local rank is already
+"higher is better" (keyword is ts_rank, embedding is the dot product,
+toc/dependency use arrival position as `-position`), so normalization
+preserves direction for ALL seams uniformly — the earlier per-seam sign
+flip inverted keyword/dependency evidence (the best keyword chunk
+normalized to 0.0 and sank; fixed 2026-09-22). After normalization all
+seams compete on equal footing — the source-relevance allocation (§4)
+reads them all as one currency.
 
 **Quota semantics.** `embedding_only_quota` (config v2) bounds chunks
 found ONLY by embeddings when grounded seams (keyword/toc/dependency)
@@ -866,29 +944,32 @@ sequenceDiagram
     participant A as API
     participant R as Retrieval
     participant P as Postgres
-    participant M as Memory
+    participant E as Embed model (local)
     participant T as Tutor
-    participant G as Gen model
+    participant G as Gen model (hosted)
 
-    F->>A: ask(question, filters)
-    A->>R: resolve query against course TOC
-    R->>P: fetch TOC entries + matching chunks (locator-filtered)
+    F->>A: ask(question)
+    A->>E: embed_query(question)
+    E-->>A: query vector
+    A->>R: retrieve (4 seams + fusion)
+    R->>P: fetch candidates (keyword/TOC/dependency/embedding)
     P-->>R: candidate chunks + locators
-    R-->>A: ranked chunks w/ provenance
-    A->>M: fetch relevant concepts/deps
-    M-->>A: concept context
-    A->>T: prompt(question, chunks, memory, student_model)
-    T->>G: generate answer
+    R-->>A: fused chunks w/ provenance
+    A->>P: record retrieval trace
+    A->>T: grounded_prompt(question, chunks)
+    T->>G: generate answer (fails closed until provider key)
     G-->>T: grounded answer
-    T->>A: answer + citations + retrieval trace
-    A-->>F: answer w/ source links
+    T->>A: answer + citations + trace
+    A-->>F: answer
+    F->>A: GET citations (trace_id)
+    A->>P: chunk text + locator label + filename
+    A-->>F: sources-used panel data
 ```
 
 **Retrieval evolution (measured, not assumed):**
 
 1. **Ship order:** keyword baseline → static TOC layer → fusion (decision
-   008) → measured upgrades (model-routed TOC, embeddings + `pgvector`,
-   reranker).
+   008) → measured upgrades (model-routed TOC, `pgvector`, reranker).
 2. **Each step must beat the previous on the eval set** — recall@k per layer
    and fused. Fusion that cannot beat the best single layer is dropped;
    embeddings that do not measurably add are dropped. "Always-on" means
@@ -922,24 +1003,45 @@ flowchart LR
 
 ## 6. Model strategy
 
-Inference is **not self-hosted**. Models are called through a **hosted API provider
-that does not retain data** (e.g. OpenRouter / Groq / similar). This keeps costs
-low (a provider-served DeepSeek v4 flash is cheaper than self-hosting) and pushes
-the privacy requirement onto a *contract*: the provider must not retain prompts or
-responses. Verify this for whichever provider is chosen.
+Inference is split across **two seams**, both in `common/provider.py`.
+Every prompt comes from the versioned prompt registry
+(`configs/prompts.toml` via `common/prompt_registry.py`) — prompt text
+never lives in code, and uploaded course material is fenced between
+`UNTRUSTED_COURSE_MATERIAL` markers (input marking, the prompt-injection
+mitigation; the fence markers themselves are neutralized inside content so
+an upload cannot close its own fence).
 
-**Single seam:** every model call in the backend goes through
-`common/provider.py` — task + prompt in, text out, gated and billed inside.
-Providers are an implementation detail behind that one function; swapping
-providers never touches ingestion/tutor code. No SDK objects, keys, or HTTP
-clients leak past this module.
+Inference is split across **two seams**, both in `common/provider.py`:
 
-| Task | Model class | In MVP? | Note |
+1. **`generate` — hosted chat APIs.** Generative tasks go through a hosted
+   OpenAI-style API provider that does not retain data (contract, not
+   implementation: verify the retention policy for whichever provider is
+   chosen — that check is the go-live gate for generation). This keeps costs
+   low (a provider-served DeepSeek v4 flash is cheaper than self-hosting) and
+   pushes the privacy requirement onto a *contract*: the provider must not
+   retain prompts or responses. The seam is fully wired (tier verification,
+   pool gating, ledger with real token counts) and **fails closed** until the
+   operator's key lands. Xiaomi MiMo 2.6 Flash is the current lean: an
+   OpenAI-style API slots in with config only, and its native multimodality
+   would later serve the OCR stage (and image descriptions) from the same
+   key.
+2. **`embed` / `embed_query` / `embed_chunks` — self-hosted, in-process**
+   (`sentence-transformers` + IBM granite-embedding-english-r2). No key, no
+   spend gate, no tier: course text never leaves the machine, so the
+   no-retention check does not apply to embeddings by construction. Model
+   choice is a pencil mark (`configs/embeddings.toml`); rows are keyed by
+   model name, so a swap is pull + re-ingest.
+
+**Single seam rule:** every model call in the backend goes through
+`common/provider.py` — no SDK objects, keys, or HTTP clients leak past
+this module. No call site supplies token counts, pools, or tiers.
+
+| Task | Model | In MVP? | Note |
 |---|---|---|---|
-| Generative answer / extraction / classification | DeepSeek v4 flash | **Yes** | generative model |
-| Table-of-contents writer/updater | **small, stable** model | **Yes** | keeps TOC descriptions consistent over time |
-| Embeddings (retrieval) | separate embedding model | Yes (decision 008) | ingestion-time embedding (§4a: chunk_embeddings table live, dot-product seam live, dormancy until provider); kept only if fusion measurably helps; no-retention check applies |
-| OCR (scanned/image slides) | OCR/vision model | Only if scans exist | math-in-PNG is hard; avoid if text-layer; scanned PDFs currently fail loudly instead |
+| Generative answer / extraction / classification | DeepSeek v4 flash (hosted) | **Yes, seam live; fails closed until key** | generative model, OpenAI-style API contract |
+| Table-of-contents writer/updater | **small, stable** model | **Yes, seam live** | keeps TOC descriptions consistent over time |
+| Embeddings (retrieval) | granite-embedding-english-r2 (self-hosted) | **Yes — LIVE** | in-process, unbilled, no data leaves; dimension enforced loudly; kept only if fusion measurably helps |
+| OCR (scanned/image slides) | multimodal model (hosted) | Yes — wired, fails closed until provider | the `ocr` ingestion stage rasterizes image-only PDFs (pypdfium2, capped at `[ocr] max_pages`) and sends pages to the multimodal model through the provider seam, billed to the ingestion pool; no text layer → this stage, not a hard failure |
 | Reranker | separate reranker | No | later, if retrieval precision suffers |
 
 **"ML earns its role":** add models/rerankers/fine-tuning only for a
@@ -999,21 +1101,27 @@ row to `generation_ledger` (user, course, task, model, tokens).
 - **Model routing:** the same config maps each generation task
   (`KNOWN_GENERATION_TASKS` — `tutor_answer`, `toc_update`,
   `probe_generation`, `probe_evaluation`, `course_knowledge_extraction`,
-  `artifact_generation`) to a model per tier — free gets the cheap generative
-  model, paid gets the newer one, the small stable TOC-writer is shared. The
-  loader rejects a config that omits a task for any tier.
-- **Charging:** ingestion model calls (`toc_update`, `course_knowledge_extraction`) are
+  `artifact_generation`, `ocr`) to a model per tier — free gets the cheap
+  generative model, paid gets the newer one, the small stable TOC-writer is
+  shared. The loader rejects a config that omits a task for any tier.
+- **Charging:** ingestion model calls (`toc_update`, `course_knowledge_extraction`, `ocr`) are
   charged to the uploading owner's ingestion pool. The provider seam is the
   single model-call path: it resolves + verifies the tier from the account,
   gates the caller's pool, calls, then records the ledger row with the call's
   real token counts — no call site supplies token counts or pools. Payment
   processing is out of scope; subscriptions are operator-managed until a
-  billing flow exists.
+  billing flow exists. The embedding seam is NOT in this ledger: it is
+  self-hosted, in-process, and unbilled.
 - Decision record: `docs/decisions/004_tiers_and_spend_control.md`.
 
 ---
 
 ## 7. Student model & tutor flow
+
+> Status: designed, not yet implemented (Milestones 3–4). The storage
+> schema exists (attempts, mastery, recommendations); the probe loop and
+> recommendation engine are future work. The tutor flow that IS live is
+> §4's ask → retrieve → cite (single-turn, Fork D scope).
 
 ```mermaid
 flowchart TB
@@ -1066,10 +1174,11 @@ flowchart TB
         STORE["object/file storage (raw)"]
     end
 
-    subgraph AI["Model provider API (no data retention)"]
-        GEN["generative model (deepseek v4 flash)"]
-        TOC["small stable TOC-writer model"]
-        OCR["OCR model (only if scans)"]
+    subgraph AI["Model providers"]
+        GEN["generative model (deepseek v4 flash) —<br/>hosted API, no data retention"]
+        TOC["small stable TOC-writer model — hosted"]
+        OCR["OCR model (only if scans) — hosted"]
+        EMB["embedding model —<br/>self-hosted in-process"]
     end
 
     U1 --> FE
@@ -1081,12 +1190,14 @@ flowchart TB
     BE --> GEN
     BE --> TOC
     BE --> OCR
+    BE --> EMB
 ```
 
 Small scale → no microservices, no k8s. A single web process + Postgres + object
-storage. Inference goes out to a **hosted model API** (no data retention) rather
-than a self-hosted model — this keeps cost low and avoids running local inference
-servers.
+storage. Generation goes out to a **hosted model API** (no data retention) —
+that keeps cost low and avoids running inference servers for the generative
+tasks. Embeddings are the exception: a 149M encoder runs in-process on CPU
+(milliseconds per chunk), so embeddings need no provider at all.
 
 ---
 
@@ -1103,9 +1214,14 @@ servers.
 - **Validation:** Pydantic schemas at every boundary
   (`src/backend/common/schemas/`, one module per storage layer).
 - **Auth:** public user responses are separate from internal credential records.
-  Email is normalized, registration enforces bcrypt-safe password bounds, JWTs
-  validate issuer/audience/required claims, pending-deletion accounts cannot log
-  in, and production rejects the development signing secret.
+  Email is normalized, registration enforces bcrypt-safe password bounds
+  (12–24 chars; 72-byte bcrypt truncation guard), JWTs validate
+  issuer/audience/required claims AND the password stamp
+  (`users.password_changed_at` in microseconds — a password change
+  invalidates every pre-change session), pending-deletion accounts cannot log
+  in, login attempts are throttled (`common/login_throttle.py`,
+  `configs/auth.toml`), and production rejects the development signing
+  secret.
 - **Course access:** the three course shapes (`private` / `invite_only` /
   `public`) are the closed set — decision
   `docs/decisions/006_three_course_shapes.md`. Policy lives in both
@@ -1122,28 +1238,33 @@ servers.
   registration; the operator flags codes as premium-granting. Redemption is
   transactional (row lock + active-subscription check) and flows through the
   standard subscription machinery so tier stays single-sourced in `users.tier`.
-- **Evals:** every subsystem has a regression path under `src/backend/evals/`.
-  No feature ships without a way to measure regressions.
+- **Evals:** every subsystem has a regression path under `src/backend/evals/`
+  (answer harness live: `evals/answer.py` + `data/eval/answer/cases.json`,
+  four mechanical scorers, prompt-version-stamped logs; retrieval harness in
+  `retrieval/evals.py`). No feature ships without a way to measure
+  regressions.
 - **Logging/traces:** retrieval traces + eval logs under `runs/` (gitignored).
 - **No secrets:** never log/commit keys, tokens, or classmates' work.
 - **Quality gate:** `pytest`, `ruff check .`, `mypy src` must all pass before
-  work is declared done.
+  work is declared done. Frontend: `npm run check` + `npm run build` from
+  `src/frontend/`.
 
 ---
 
 ## 10. Open decisions (record changes in `docs/decisions/`; log in `docs/notes.md`)
 
 - Exact hosting target (VPS vs Railway/Render/Fly/Supabase) — affects local dev mirror.
-- **Choose a model API provider that does not retain data** (OpenRouter / Groq /
-  similar); verify their data-retention policy before committing.
-- Whether OCR is in scope depends on whether pilot slides are scanned/image-heavy.
-- Embedding model choice (part of the provider pick) — needs a no-retention
-  embedding endpoint. The full embedding architecture (storage, ingestion
-  stage, query seam, guards) is specified in §4a; the only missing piece is
-  the provider itself, plus the pgvector swap (mechanical, later).
+- **Choose the hosted chat provider** (OpenAI-style API contract is settled;
+  Xiaomi MiMo 2.6 Flash is the current lean — also covers the OCR stage's
+  multimodal need); verify their data-retention policy before committing. This
+  is the LAST blocker for the model stages and the tutor's real generation.
 - Whether model-routed TOC matching (vs static) earns its per-query model
   call — measured against the static TOC layer.
-- Login throttling and token revocation policy before external deployment.
+- Token revocation policy before external deployment (login throttling is
+  implemented — `configs/auth.toml`, `common/login_throttle.py`; revocation
+  is the remaining half).
+- The pgvector swap (mechanical migration; float8[] + cardinality guard works
+  at current scale).
 
 ---
 

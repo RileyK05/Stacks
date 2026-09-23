@@ -11,9 +11,9 @@
     role="presentation"
     onclick={(e) => e.target === e.currentTarget && settle(false)}
   >
-    <div class="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl" role="alertdialog" aria-modal="true">
-      <h2 class="text-base font-semibold text-slate-900">{prompt.title}</h2>
-      <p class="mt-2 text-sm text-slate-600">{prompt.message}</p>
+    <div class="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl dark:bg-slate-900" role="alertdialog" aria-modal="true">
+      <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">{prompt.title}</h2>
+      <p class="mt-2 text-sm text-slate-600 dark:text-slate-300">{prompt.message}</p>
       <div class="mt-5 flex justify-end gap-2">
         <Button variant="secondary" onclick={() => settle(false)}>Cancel</Button>
         <Button variant={prompt.danger ? 'danger' : 'primary'} onclick={() => settle(true)}>

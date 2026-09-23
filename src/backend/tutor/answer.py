@@ -18,11 +18,16 @@ from uuid import UUID
 
 from psycopg import Connection
 from src.backend.common import provider
-from src.backend.common.prompt_registry import load_prompt
+from src.backend.common.prompt_registry import grounded_prompt, load_prompt
 from src.backend.common.schemas.base import UserTier
 from src.backend.retrieval import funnel, trace
 from src.backend.retrieval.config import RetrievalPolicy
 from src.backend.retrieval.funnel import Candidate
+from src.backend.tutor.workspace import (
+    WorkspaceDocument,
+    WorkspaceQuiz,
+    extract_workspace_items,
+)
 
 
 class NothingRelevantFoundError(RuntimeError):
@@ -31,8 +36,10 @@ class NothingRelevantFoundError(RuntimeError):
 
 
 class Answer:
-    """The grounded answer bundle: text, per-chunk citations, and the
-    trace the answer must be auditable against."""
+    """The grounded answer bundle: the raw generated text, the chat body
+    with workspace blocks lifted out, the workspace items that passed the
+    citation gate (and why any were withheld), per-chunk citations, and
+    the trace the answer must be auditable against."""
 
     def __init__(
         self,
@@ -45,6 +52,12 @@ class Answer:
         self.chunk_ids = chunk_ids
         self.trace_id = trace_id
         self.layer_contribution = layer_contribution
+        extracted = extract_workspace_items(text, len(chunk_ids))
+        self.body = extracted.body
+        self.workspace_items: tuple[WorkspaceQuiz | WorkspaceDocument, ...] = (
+            extracted.items
+        )
+        self.withheld = extracted.withheld
 
 
 def answer_question(
@@ -101,7 +114,9 @@ def build_prompt(question: str, candidates: tuple[Candidate, ...]) -> str:
     010) and carries the citation contract (Fork C working direction) +
     the three-zone steer (decision 009): every factual claim cites the
     locator it rests on; the model may only use the provided material;
-    homework-fill requests steer to reasoning + practice."""
+    homework-fill requests steer to reasoning + practice. Course chunks
+    are untrusted uploaded text, so the material and the question are
+    fenced as data (input marking, the prompt-injection gate)."""
     blocks = [
         f"[{index + 1}] chunk {candidate.chunk_id}"
         f"\n{candidate.text}"
@@ -109,8 +124,5 @@ def build_prompt(question: str, candidates: tuple[Candidate, ...]) -> str:
     ]
     evidence = "\n\n".join(blocks)
     instruction = load_prompt("tutor_answer")
-    return (
-        f"{instruction}\n\n"
-        f"Question: {question}\n\n"
-        f"Course material:\n{evidence}"
-    )
+    material = f"Question: {question}\n\nCourse material:\n{evidence}"
+    return grounded_prompt(instruction, material)

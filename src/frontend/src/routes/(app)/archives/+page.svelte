@@ -65,7 +65,7 @@
   }
 </script>
 
-<h1 class="mb-6 text-2xl font-bold text-slate-900">Archives</h1>
+<h1 class="mb-6 text-2xl font-bold text-slate-900 dark:text-slate-100">Archives</h1>
 
 {#if error}
   <ErrorBanner {error} />
@@ -76,7 +76,7 @@
     {#if actionError}<ErrorBanner error={actionError} />{/if}
 
     <section>
-      <h2 class="mb-3 text-base font-semibold text-slate-900">Archived courses</h2>
+      <h2 class="mb-3 text-base font-semibold text-slate-900 dark:text-slate-100">Archived courses</h2>
       {#if archives.length === 0}
         <EmptyState
           title="Nothing archived"
@@ -86,7 +86,7 @@
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {#each archives as archive (archive.course_id)}
             <Card>
-              <p class="font-medium text-slate-900">{archive.name}</p>
+              <p class="font-medium text-slate-900 dark:text-slate-100">{archive.name}</p>
               <p class="mt-1 text-sm text-slate-500">
                 archived {formatDate(archive.archived_at)} · expires
                 {formatDate(archive.expires_at)}
@@ -109,7 +109,7 @@
     </section>
 
     <section>
-      <h2 class="mb-3 text-base font-semibold text-slate-900">Course memories</h2>
+      <h2 class="mb-3 text-base font-semibold text-slate-900 dark:text-slate-100">Course memories</h2>
       {#if memories.length === 0}
         <EmptyState
           title="No memories yet"
@@ -119,7 +119,7 @@
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {#each memories as memory (memory.memory_id)}
             <Card>
-              <p class="font-medium text-slate-900">{memory.name}</p>
+              <p class="font-medium text-slate-900 dark:text-slate-100">{memory.name}</p>
               <p class="mt-1 line-clamp-3 text-sm text-slate-500">{memory.summary}</p>
             </Card>
           {/each}

@@ -10,10 +10,12 @@
   let { title, children, actions }: Props = $props();
 </script>
 
-<div class="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200/80 transition-shadow hover:shadow-md">
-  <div class="mb-4 flex items-center justify-between">
-    {#if title}<h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">{title}</h2>{/if}
-    {#if actions}{@render actions()}{/if}
-  </div>
+<div class="rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200/80 transition-shadow hover:shadow-md dark:bg-slate-900 dark:ring-slate-700/80">
+  {#if title || actions}
+    <div class="mb-4 flex items-center justify-between">
+      {#if title}<h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500">{title}</h2>{/if}
+      {#if actions}{@render actions()}{/if}
+    </div>
+  {/if}
   {@render children()}
 </div>

@@ -120,6 +120,7 @@ def test_full_pipeline_deterministic_stages_and_honest_failure(
         ).fetchall()
         assert [row["stage"] for row in stage_rows] == [
             "extract_text",
+            "ocr",
             "build_locators",
             "build_chunks",
             "embed_chunks",
@@ -222,7 +223,7 @@ def test_budget_gate_and_ledger_with_stubbed_provider(
         course.course_id, user.user_id, "text/plain", TEXT_BODY.encode()
     )
 
-    def fake_call(task, model, prompt):
+    def fake_call(task, model, prompt, *, images=None):
         return (f"stub output for {task}", 150, 30)
 
     monkeypatch.setattr(
@@ -281,7 +282,7 @@ def test_budget_exhaustion_fails_ingestion_before_call(
             spend_kind=SpendKind.INGESTION,
         )
 
-    def explode(task, model, prompt):
+    def explode(task, model, prompt, *, images=None):
         raise AssertionError("provider must not be called with a drained pool")
 
     monkeypatch.setattr(provider_module, "_call_provider", explode)
@@ -322,3 +323,109 @@ def test_ingestion_history_written_with_original_queued_at(
         assert row["queued_at"] == queued_at, (
             "history must carry the ORIGINAL enqueue time"
         )
+
+
+def test_ocr_scanned_pdf_is_billed_and_indexed(
+    monkeypatch, source_pair
+) -> None:
+    """An image-only PDF with no text layer routes through the OCR stage:
+    pages rasterize, the multimodal task bills the ingestion pool, and the
+    source indexes with OCR text + page locators (citations still align)."""
+    import io
+
+    from pypdf import PdfWriter
+
+    user, course = source_pair
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_blank_page(width=200, height=200)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    source_id = _make_source(
+        course.course_id, user.user_id, "application/pdf", buffer.getvalue()
+    )
+
+    def fake_call(task, model, prompt, *, images=None):
+        if task == "ocr":
+            assert images and len(images) == 2, "both rendered pages reach the model"
+            return ("page one transcription\n\n---\n\npage two transcription", 400, 80)
+        return (f"stub output for {task}", 150, 30)
+
+    monkeypatch.setattr(
+        "src.backend.common.provider._call_provider", fake_call
+    )
+
+    with connection() as conn:
+        run_id = run_ingestion(conn, source_id, user.user_id, user.tier)
+        conn.commit()
+
+    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        run = runs.get_run(conn, run_id)
+        assert run is not None and run.status == IngestionStatus.SUCCEEDED
+        source_row = cur.execute(
+            "SELECT status FROM sources WHERE source_id = %s", (source_id,)
+        ).fetchone()
+        assert source_row["status"] == "indexed"
+        stages = cur.execute(
+            "SELECT stage, status FROM ingestion_stage_runs"
+            " WHERE run_id = %s ORDER BY position",
+            (run_id,),
+        ).fetchall()
+        statuses = {row["stage"]: row["status"] for row in stages}
+        assert statuses["ocr"] == "succeeded"
+        all_text = cur.execute(
+            "SELECT string_agg(text, ' ') AS all_text FROM chunks"
+            " WHERE source_id = %s",
+            (source_id,),
+        ).fetchone()["all_text"]
+        assert "page one transcription" in all_text
+        labels = {
+            row["label"]
+            for row in cur.execute(
+                "SELECT label FROM locators WHERE source_id = %s", (source_id,)
+            ).fetchall()
+        }
+        assert {"page 1", "page 2"} <= labels, "OCR pages keep page locators"
+        ledger = cur.execute(
+            "SELECT task, spend_kind FROM generation_ledger"
+            " WHERE user_id = %s AND task = 'ocr'",
+            (user.user_id,),
+        ).fetchall()
+        assert ledger, "the OCR call must be billed"
+        assert ledger[0]["spend_kind"] == "ingestion"
+
+
+def test_ocr_unavailable_fails_loudly_without_indexing(source_pair) -> None:
+    """A scanned PDF on a provider-less deployment must fail the OCR stage
+    with an actionable error and leave the source 'failed' — never a
+    falsely-indexed, empty knowledge base."""
+    import io
+
+    from pypdf import PdfWriter
+
+    user, course = source_pair
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    source_id = _make_source(
+        course.course_id, user.user_id, "application/pdf", buffer.getvalue()
+    )
+
+    with pytest.raises(IngestionPipelineError), connection() as conn:
+        run_ingestion(conn, source_id, user.user_id, user.tier)
+
+    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        run = runs.latest_run_for_source(conn, source_id)
+        assert run is not None and run.status == IngestionStatus.FAILED
+        source_row = cur.execute(
+            "SELECT status FROM sources WHERE source_id = %s", (source_id,)
+        ).fetchone()
+        assert source_row["status"] == "failed"
+        ocr_stage = cur.execute(
+            "SELECT status, error_message FROM ingestion_stage_runs"
+            " WHERE run_id = %s AND stage = 'ocr'",
+            (run.run_id,),
+        ).fetchone()
+        assert ocr_stage["status"] == "failed"
+        assert "provider" in (ocr_stage["error_message"] or "")

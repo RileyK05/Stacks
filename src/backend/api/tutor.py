@@ -28,6 +28,7 @@ from src.backend.common.queries import get
 from src.backend.common.schemas.identity import UserAccount
 from src.backend.retrieval.config import load_retrieval_policy
 from src.backend.tutor import answer as tutor_answer
+from src.backend.tutor.workspace import WorkspaceItem
 
 router = APIRouter(prefix="/courses", tags=["tutor"])
 
@@ -39,9 +40,16 @@ class AskRequest(BaseModel):
 
 
 class AnswerView(BaseModel):
+    """`text` is the chat body: the answer with its ```workspace blocks
+    lifted out. Blocks that passed the citation gate arrive as
+    `workspace`; blocks that failed are named in `withheld` so the reader
+    sees that something was generated and why it is not shown."""
+
     text: str
     chunk_ids: list[str]
     trace_id: str
+    workspace: list[WorkspaceItem] = Field(default_factory=list)
+    withheld: list[str] = Field(default_factory=list)
 
 
 class CitationView(BaseModel):
@@ -113,9 +121,11 @@ def ask(
             f"weekly {user.tier.value} budget exhausted; resets weekly",
         ) from err
     return AnswerView(
-        text=result.text,
+        text=result.body,
         chunk_ids=[str(cid) for cid in result.chunk_ids],
         trace_id=str(result.trace_id),
+        workspace=list(result.workspace_items),
+        withheld=list(result.withheld),
     )
 
 

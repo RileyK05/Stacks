@@ -9,6 +9,39 @@ from src.backend.common.schemas.base import KNOWN_GENERATION_TASKS
 
 DEFAULT_PROMPTS_PATH = PROJECT_ROOT / "configs" / "prompts.toml"
 
+# Input marking (the prompt-injection go-live gate): uploaded course text
+# is untrusted. It is fenced between these markers and every prompt using
+# it states that the fenced block is data, never instructions. A fence is
+# not a security boundary on its own — no text convention is — but it is
+# the documented, inspectable mitigation: the model is told exactly where
+# untrusted content starts and ends, and reviewers can see the same.
+UNTRUSTED_BEGIN = "<<<UNTRUSTED_COURSE_MATERIAL begin>>>"
+UNTRUSTED_END = "<<<UNTRUSTED_COURSE_MATERIAL end>>>"
+
+
+def fence_untrusted(text: str) -> str:
+    """Wrap untrusted uploaded text in the data fence.
+
+    Any occurrence of the fence markers in the content itself is
+    neutralized first: otherwise an upload could embed the end marker and
+    close the fence early, making the text after it read as instructions.
+    Neutralizing (not escaping) keeps the visible content honest — the
+    reader/model still sees the words, just not as a marker. This is a
+    documented mitigation, not a proof: fenced data can still try to
+    persuade, which is why the prompts also say the block is data.
+    """
+    safe = text.replace(UNTRUSTED_BEGIN, "[fence marker]").replace(
+        UNTRUSTED_END, "[fence marker]"
+    )
+    return f"{UNTRUSTED_BEGIN}\n{safe}\n{UNTRUSTED_END}"
+
+
+def grounded_prompt(instruction: str, material: str) -> str:
+    """Assemble a task prompt: trusted instruction first, then the course
+    material fenced as data. Every prompt that embeds uploaded text goes
+    through here so input marking is structural, not a per-call habit."""
+    return f"{instruction}\n\n{fence_untrusted(material)}"
+
 
 class PromptPolicy(BaseModel):
     """Every system/instruction prompt, versioned in configs/prompts.toml.

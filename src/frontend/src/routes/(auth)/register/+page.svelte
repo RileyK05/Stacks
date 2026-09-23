@@ -43,6 +43,6 @@
     <Button type="submit" {loading}>Register</Button>
   </form>
   <p class="mt-4 text-center text-sm">
-    Already have an account? <a href="/login" class="text-indigo-600 hover:underline">Sign in</a>
+    Already have an account? <a href="/login" class="text-indigo-600 hover:underline dark:text-indigo-300">Sign in</a>
   </p>
 </Card>

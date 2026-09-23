@@ -25,13 +25,13 @@
 
 <div class="flex flex-col gap-1">
   {#if label}
-    <label for={selectId} class="text-sm font-medium text-slate-700">{label}</label>
+    <label for={selectId} class="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</label>
   {/if}
   <select
     id={selectId}
     bind:value
     {disabled}
-    class="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+    class="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900"
   >
     {#each options as option (option.value)}
       <option value={option.value}>{option.label}</option>

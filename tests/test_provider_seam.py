@@ -18,7 +18,7 @@ def _user():
 def test_ingestion_task_bills_ingestion_pool(monkeypatch) -> None:
     account = _user()
 
-    def fake_call(task, model, prompt):
+    def fake_call(task, model, prompt, *, images=None):
         return ("structured toc", 100, 20)
 
     monkeypatch.setattr(provider, "_call_provider", fake_call)
@@ -41,7 +41,7 @@ def test_ingestion_task_bills_ingestion_pool(monkeypatch) -> None:
 def test_interactive_task_bills_generation_pool(monkeypatch) -> None:
     account = _user()
 
-    def fake_call(task, model, prompt):
+    def fake_call(task, model, prompt, *, images=None):
         return ("answer", 50, 10)
 
     monkeypatch.setattr(provider, "_call_provider", fake_call)
@@ -72,7 +72,7 @@ def test_paid_tier_carries_no_overhead(monkeypatch) -> None:
     paid = users_repo.get_by_id(account.user_id)
     assert paid is not None and paid.tier == UserTier.PAID
 
-    def fake_call(task, model, prompt):
+    def fake_call(task, model, prompt, *, images=None):
         return ("answer", 100, 20)
 
     monkeypatch.setattr(provider, "_call_provider", fake_call)
@@ -106,7 +106,7 @@ def test_drained_pool_blocks_before_provider_call(monkeypatch) -> None:
         spend_kind=SpendKind.GENERATION,
     )
 
-    def explode(task, model, prompt):
+    def explode(task, model, prompt, *, images=None):
         raise AssertionError("provider must not be called past the gate")
 
     monkeypatch.setattr(provider, "_call_provider", explode)
@@ -121,7 +121,7 @@ def test_drained_pool_blocks_before_provider_call(monkeypatch) -> None:
 def test_empty_provider_output_fails_closed(monkeypatch) -> None:
     account = _user()
 
-    def fake_call(task, model, prompt):
+    def fake_call(task, model, prompt, *, images=None):
         return ("", 100, 20)
 
     monkeypatch.setattr(provider, "_call_provider", fake_call)

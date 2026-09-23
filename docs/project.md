@@ -115,13 +115,15 @@ allows and it saves ≥10% (`stored_encoding`: `identity` / `gzip`). Each source
 gets **locators**: a free-typed per-format table of contents (slide 7, page 3,
 timestamp 12:30, cell range A1:D20 — each format keeps its natural unit).
 Retrieval units are **token-bounded chunks** sized to fit the model's context
-window, each pointing back to the locator it spans. Sources carry `file_hash`
+window, each pointing back to the locators it spans; a chunk is stored ONCE
+with its locator set in a join table (`chunk_locators`, migration 031) so
+retrieval hits never scale with locator grain. Sources carry `file_hash`
 for dedup. Ingestion is an ordered, versioned pipeline: text extraction →
-locators → chunks → cascading TOC update → course-knowledge extraction. A
-stage runs only after its dependency succeeds, retries according to
-versioned configuration, and stops the pipeline with an inspectable error
-when its
-attempts are exhausted.
+OCR (only for image-only PDFs; rasterization-capped) → locators → chunks →
+chunk embeddings (self-hosted) → cascading TOC update → course-knowledge
+extraction. A stage runs only after its dependency succeeds, retries according
+to versioned configuration, and stops the pipeline with an inspectable error
+when its attempts are exhausted.
 
 ### 3. Course knowledge (shared per course — not memory; decision 007)
 
@@ -131,11 +133,11 @@ in-course or external — Calc 2 can depend on Calc 1), memory objects
 **table of contents**: a model-written, per-course, versioned index describing
 what's in the course and where.
 
-**Retrieval is TOC-guided, not embedding-based.** One model's embeddings don't
-align with another's; the TOC avoids that failure mode entirely and stays
-inspectable. A small, stable TOC-writer model keeps descriptions consistent over
-time. Embeddings may be added later only if a versioned eval shows the TOC path
-failing.
+**Retrieval is hybrid four-seam (decision 008), not single-path.** Keyword,
+TOC routing, dependency walk, and embeddings generate candidates; fusion
+normalizes and allocates the final cited set. Each seam activates as its data
+arrives; every seam must beat the funnel without it on the eval set, and
+fusion must beat the best single seam, or it is dropped.
 
 ### 4. Student model
 
@@ -168,7 +170,7 @@ Build a single-course MVP for a small set of users.
 ### MVP user stories
 
 1. I can create an account and upload PDFs, Markdown notes, and text for one course.
-2. I can ask a question and receive an answer with citations to the uploaded material.
+2. I can ask a question and receive an answer with citations to the uploaded material — and see the cited passages ("sources used") without leaving the answer.
 3. I can view a concept page containing a course-specific definition, prerequisite links, examples, and source evidence.
 4. I can request a short closed-notes diagnostic constrained to selected study periods/topics.
 5. I can answer the diagnostic, state my confidence beforehand, and receive feedback.
@@ -190,36 +192,52 @@ The MVP is useful if, for one real course:
 
 - **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem.
 - **Database:** Postgres via raw SQL (no ORM). Versioned, append-only migrations
-  (`common/migrations/00X_*.sql`, currently 001–017) applied by a runner
+  (`common/migrations/00X_*.sql`, currently 001–032) applied by a runner
   (`common/migrate.py`). Extracted text + metadata are the source of truth;
   giant raw originals are trimmed after a confirmed parse. Uploads live under
   `STORAGE_ROOT` on disk, named by server-generated IDs, accounted in the DB.
-- **Inference:** hosted model APIs (no data retention), multiple models per
-  task routed by tier from `configs/tiers.toml`: free tier gets the cheap
-  generative model (DeepSeek v4 flash), paid gets the newer one, a small
-  stable model writes the TOC, OCR only if scanned materials actually appear.
+- **Inference:** two seams, both in `common/provider.py`. Generation goes to
+  hosted model APIs (no data retention) routed by tier from `configs/tiers.toml`:
+  free tier gets the cheap generative model (DeepSeek v4 flash), paid gets the
+  newer one, a small stable model writes the TOC, OCR uses the multimodal model
+  (wired, rasterization-capped). **Embeddings are self-hosted and in-process**
+  (`sentence-transformers` + IBM granite-embedding-english-r2): no API, no key,
+  no spend gate, and course text never leaves the machine — the no-retention
+  vendor check does not apply to embeddings by construction. Model choice is a
+  pencil mark: `chunk_embeddings` rows are keyed by model name, so a swap is
+  re-ingest, not a rewrite.
 - **Frontend:** separate codebase (`src/frontend/`), talks to backend only via API.
 - **Auth:** email + password (bcrypt, 12+ chars), JWT with issuer/audience
-  validation; per-user isolation throughout.
+  validation and password-change session invalidation; login throttling
+  (`common/login_throttle.py`); per-user isolation throughout.
 - **Config:** tunables versioned in `configs/` (`ingestion.toml`,
-  `tutor.toml`, `tiers.toml`, `lifecycle.toml`); credentials in `.env`
+  `tutor.toml`, `tiers.toml`, `lifecycle.toml`, `retrieval.toml`,
+  `embeddings.toml`, `auth.toml`, `prompts.toml`); credentials in `.env`
   (gitignored, `STORAGE_ROOT` for upload files).
 
 ## Evaluation plan
 
-Evaluation is the center of the project, not an afterthought.
+Evaluation is the center of the project, not an afterthought. The
+mechanical harness is live (decision 010): retrieval
+(`retrieval/evals.py` + `data/eval/retrieval/cases.json`) and the answer
+harness (`evals/answer.py` + `data/eval/answer/cases.json` — four case
+kinds, mechanical scorers, prompt-version-stamped logs under `runs/`).
 
 ### 1. Retrieval evaluation
 
 Create 30–50 course questions with known supporting passages. Measure recall@k,
 citation precision, and source preference (instructor material when it should be
-used).
+used). *Status: harness live, seeded with synthetic cases; real material is the
+next step (needs real uploads).*
 
 ### 2. Answer evaluation
 
-For a small held-out set, manually score factual correctness against source
+For a small held-out set, score factual correctness against source
 material, citation correctness, course-notation fidelity, appropriate
-uncertainty, and usefulness.
+uncertainty, and usefulness. *Status: the mechanical half is live —
+citation validity, refusal honesty, steer behavior per decision 009's
+three zones. LLM-judged qualities (notation fidelity, usefulness) land
+with the real provider + a judge model.*
 
 ### 3. Probe evaluation
 
@@ -270,12 +288,13 @@ for course concepts, a reranker, a probe generator, an error classifier.
   weekly budgets + generation ledger, support/premium claim codes, and the
   two-phase course archive (90-day grace → purge, owner's course-memory
   node survives).
-- [ ] **Milestone 1: Source-grounded retrieval** — ingestion wiring into the
-  pipeline (parse → locators → chunks → TOC), TOC-guided retrieval, cited
-  answers, retrieval traces. *Status: deterministic stages done (text →
-  locators → chunks, run ledger, queue claims, budget-gated provider seam
-  failing closed until a provider is chosen); worker loop + API handoff +
-  retrieval + tutor remain.*
+- [x] **Milestone 1: Source-grounded retrieval** — ingestion wiring into the
+  pipeline (parse → locators → chunks → embeddings → TOC/knowledge stages
+  through the provider seam), hybrid four-seam retrieval with fusion +
+  traces (decision 008), the worker loop, the tutor endpoint (ask with
+  strict refusal), and the citations endpoint backing the UI's
+  "sources used" panel. *Remaining: the hosted chat provider itself
+  (model stages + generation fail closed until it lands).*
 - [ ] **Milestone 2: User + course memory** — the memory tree of decision
   007: elevate tutor profiles into the user-memory root (behavioral,
   cross-course), evolve the owner's course-memory node from a content
@@ -286,14 +305,21 @@ for course concepts, a reranker, a probe generator, an error classifier.
 - [ ] **Milestone 4: Adaptive recommendations** — transparent "what to study
   next," weekly review view.
 - [ ] **Milestone 5: Generated artifacts** — flashcards, practice tests,
-  slideshows as course objects with artifact origin records.
+  slideshows as course objects with artifact origin records; the
+  three-zones assistance policy (decision 009) governs them.
 - [ ] **Milestone 6: Fine-tuning experiment** — only on a documented baseline
   failure, against a frozen eval set.
 
 ## Open questions
 
-- Which model provider (OpenRouter / Groq / similar)? Verify no-retention policy before committing.
+- Chat model provider (OpenAI-style API contract is settled; Xiaomi MiMo and
+  similar OpenAI-compatible hosts are the lean). Verify no-retention policy
+  before committing — that check gates generation go-live (embeddings are
+  already self-hosted and exempt).
 - How will mathematical notation and diagrams be represented and cited?
+  (Extraction is currently text-only; image-only PDFs route to the OCR stage
+  once a multimodal provider lands — a natively multimodal flash model is the
+  natural fit.)
 - How much manual review of course-knowledge objects is acceptable?
 - How should a student override an incorrect concept link or mastery inference?
 - What does "mastery" mean for a proof course versus a programming/data course?

@@ -59,34 +59,34 @@
   }
 </script>
 
-<h1 class="mb-6 text-2xl font-bold text-slate-900">Account</h1>
+<h1 class="mb-6 text-2xl font-bold text-slate-900 dark:text-slate-100">Account</h1>
 
 {#if user}
   <div class="flex flex-col gap-6">
     <Card title="Profile">
       <dl class="grid gap-2 text-sm sm:grid-cols-2">
         <div>
-          <dt class="text-slate-500">Name</dt>
-          <dd class="font-medium text-slate-900">{user.name}</dd>
+          <dt class="text-slate-500 dark:text-slate-400">Name</dt>
+          <dd class="font-medium text-slate-900 dark:text-slate-100">{user.name}</dd>
         </div>
         <div>
-          <dt class="text-slate-500">Email</dt>
-          <dd class="font-medium text-slate-900">
+          <dt class="text-slate-500 dark:text-slate-400">Email</dt>
+          <dd class="font-medium text-slate-900 dark:text-slate-100">
             {user.email ?? '—'}
             {#if user.email_verified}
-              <span class="ml-1 text-green-700">(verified)</span>
+              <span class="ml-1 text-green-700 dark:text-green-300">(verified)</span>
             {:else}
-              <span class="ml-1 text-amber-600">(not verified)</span>
+              <span class="ml-1 text-amber-600 dark:text-amber-300">(not verified)</span>
             {/if}
           </dd>
         </div>
         <div>
-          <dt class="text-slate-500">Tier</dt>
-          <dd class="font-medium text-slate-900">{user.tier}</dd>
+          <dt class="text-slate-500 dark:text-slate-400">Tier</dt>
+          <dd class="font-medium text-slate-900 dark:text-slate-100">{user.tier}</dd>
         </div>
         <div>
-          <dt class="text-slate-500">Member since</dt>
-          <dd class="font-medium text-slate-900">
+          <dt class="text-slate-500 dark:text-slate-400">Member since</dt>
+          <dd class="font-medium text-slate-900 dark:text-slate-100">
             {user.created_at ? new Date(user.created_at).toLocaleDateString() : '—'}
           </dd>
         </div>
@@ -116,7 +116,7 @@
     </Card>
 
     <Card title="Verify email">
-      <p class="mb-3 text-sm text-slate-500">
+      <p class="mb-3 text-sm text-slate-500 dark:text-slate-400">
         Uploading sources and creating courses require a verified email address.
       </p>
       <div class="flex flex-col gap-3">
@@ -139,7 +139,7 @@
     </Card>
 
     <Card title="Delete account">
-      <p class="text-sm text-slate-500">
+      <p class="text-sm text-slate-500 dark:text-slate-400">
         Account deletion is not yet exposed in this interface. When it is, it will
         enter a 7-day grace period before anything is destroyed, and your course
         memories will survive as the keepsake record described in the project

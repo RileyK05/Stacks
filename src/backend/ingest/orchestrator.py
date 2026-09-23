@@ -10,10 +10,11 @@ stage is delete-your-rows-first idempotent, so re-execution is safe, just
 not free. The run ledger records every attempt, so "re-ran and succeeded"
 and "ran once" are distinguishable by attempt history.
 
-Prompt text is inlined into model prompts without escaping (provider
-stub); a hostile upload is a prompt-injection vector into shared course
-state. Acceptable for dev; the provider seam must add input marking
-before real user data flows (golden rule 4 go-live gate).
+Prompt text is inlined into model prompts with uploaded material fenced
+inside the UNTRUSTED_COURSE_MATERIAL markers (`prompt_registry`), and the
+prompts state that fenced block is data — input marking, the
+prompt-injection go-live gate. The fence is a documented mitigation, not
+a security boundary; uploaded text can still attempt persuasion.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from src.backend.common import provider
 from src.backend.common.embeddings_config import load_embedding_policy
-from src.backend.common.prompt_registry import load_prompt
+from src.backend.common.prompt_registry import grounded_prompt, load_prompt
 from src.backend.common.queries import get
 from src.backend.common.schemas.base import (
     IngestionStage,
@@ -44,7 +45,29 @@ _FILE = "ingestion"
 MODEL_TASKS: dict[IngestionStage, str] = {
     IngestionStage.UPDATE_TOC: "toc_update",
     IngestionStage.EXTRACT_KNOWLEDGE: "course_knowledge_extraction",
+    IngestionStage.OCR: "ocr",
 }
+
+_OCR_PAGE_BOUNDARY = "\n\n---\n\n"
+
+
+def _split_ocr_pages(text: str, page_count: int) -> list[str]:
+    """Split the OCR model's output back into per-page texts so page
+    locators align the way text-layer PDFs do (citations must land on the
+    page they came from, golden rule 1). The prompt asks for the sentinel
+    separator between pages; when the model does not comply we cannot
+    invent page alignment, so the whole text becomes page 1's span and the
+    remaining pages are empty — honest degradation, never a miscitation.
+    """
+    parts = text.split(_OCR_PAGE_BOUNDARY)
+    if len(parts) == page_count:
+        return parts
+    if len(parts) == 1:
+        return [text] + [""] * (page_count - 1)
+    # Model emitted some but not all separators: keep what it gave, pad the
+    # rest, so the count always matches the rendered pages.
+    parts = parts[:page_count]
+    return parts + [""] * (page_count - len(parts))
 
 
 class UnknownSourceError(RuntimeError):
@@ -98,6 +121,8 @@ class IngestionHandlers:
         *,
         chunk_max_tokens: int,
         prompt_window_chars: int,
+        ocr_max_pages: int,
+        ocr_scale: float,
     ) -> None:
         self.conn = conn
         self.source = source
@@ -105,12 +130,16 @@ class IngestionHandlers:
         self.tier = tier
         self.chunk_max_tokens = chunk_max_tokens
         self.prompt_window_chars = prompt_window_chars
+        self.ocr_max_pages = ocr_max_pages
+        self.ocr_scale = ocr_scale
         self.extracted: extract.ExtractedSource | None = None
         self.spans: tuple[chunking.ChunkSpan, ...] = ()
+        self.needs_ocr = False
 
     def handlers(self) -> dict[IngestionStage, StageHandler]:
         return {
             IngestionStage.EXTRACT_TEXT: self.extract_text,
+            IngestionStage.OCR: self.ocr,
             IngestionStage.BUILD_LOCATORS: self.build_locators,
             IngestionStage.BUILD_CHUNKS: self.build_chunks,
             IngestionStage.EMBED_CHUNKS: self.embed_chunks,
@@ -119,12 +148,49 @@ class IngestionHandlers:
         }
 
     def extract_text(self) -> None:
-        self.extracted = extract.extract(
+        try:
+            self.extracted = extract.extract(
+                self.source.course_id,
+                self.source.source_id,
+                self.source.mime_type,
+                stored_encoding=self.source.stored_encoding,
+            )
+        except extract.ScannedPdfNeedsOcrError:
+            # No text layer: defer to the ocr stage rather than failing
+            # extraction. The stage succeeds with a marker so the pipeline
+            # reaches OCR; the loud failure lives at the ocr stage (where
+            # an unavailable provider is an actionable error).
+            self.needs_ocr = True
+            self.extracted = None
+
+    def ocr(self) -> None:
+        """Recognize text for a source that had no text layer. A no-op for
+        every source that already extracted (the common case); this stage
+        exists so the scanned path is explicit, billed, and inspectable
+        rather than hidden inside extract_text."""
+        if not self.needs_ocr:
+            return
+        images = extract.rasterize_pages(
             self.source.course_id,
             self.source.source_id,
-            self.source.mime_type,
-            stored_encoding=self.source.stored_encoding,
+            self.source.stored_encoding,
+            max_pages=self.ocr_max_pages,
+            scale=self.ocr_scale,
         )
+        if not images:
+            raise provider.EmptyModelError("ocr: no pages rendered")
+        result = provider.generate(
+            MODEL_TASKS[IngestionStage.OCR],
+            load_prompt("ocr"),
+            self.owner_user_id,
+            self.tier,
+            course_id=self.source.course_id,
+            images=images,
+        )
+        page_texts = _split_ocr_pages(result.text, len(images))
+        if not any(page_text.strip() for page_text in page_texts):
+            raise provider.EmptyModelError("ocr: model returned no text")
+        self.extracted = extract.ocr_extracted_source(page_texts)
 
     def build_locators(self) -> None:
         assert self.extracted is not None
@@ -256,7 +322,7 @@ class IngestionHandlers:
     def _prompt(self, instruction: str) -> str:
         assert self.extracted is not None
         window = self.extracted.text[: self.prompt_window_chars]
-        return f"{instruction}\n\n{window}"
+        return grounded_prompt(instruction, window)
 
     def _require_rows(self, what: str, result: provider.GenerationResult) -> None:
         """A model stage that returns nothing would write no rows while
@@ -288,6 +354,8 @@ def run_ingestion(
         tier,
         chunk_max_tokens=ingestion_config.chunk_max_tokens,
         prompt_window_chars=ingestion_config.prompt_window_chars,
+        ocr_max_pages=ingestion_config.ocr.max_pages,
+        ocr_scale=ingestion_config.ocr.scale,
     )
     stage_versions = [
         (stage_config.name, stage_config.handler_version)

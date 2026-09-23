@@ -2,15 +2,43 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from psycopg.errors import UniqueViolation
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.backend.api.deps import bearer, current_user  # noqa: F401
-from src.backend.common import auth, codes, email_repo, premium_codes_repo, users_repo
+from src.backend.common import (
+    auth,
+    codes,
+    email_repo,
+    login_throttle,
+    premium_codes_repo,
+    users_repo,
+)
+from src.backend.common.auth_config import load_login_throttle_policy
 from src.backend.common.db import connection
 from src.backend.common.schemas.identity import User, UserAccount
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+UNKNOWN_CLIENT_IP = "unknown"
+
+
+def _client_ip(request: Request) -> str:
+    """The source IP used as the throttle key. `request.client` is the
+    socket peer; when a reverse proxy fronts the app that peer is the
+    proxy, so per-IP throttling would lock out everyone at once. Only when
+    the operator opts in (configs/auth.toml `trust_forwarded_for`) is the
+    left-most X-Forwarded-For entry treated as the client — that header is
+    trivially spoofable if the app is directly reachable, which is why it
+    is off by default."""
+    if load_login_throttle_policy().trust_forwarded_for:
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            first = forwarded.split(",")[0].strip()
+            if first:
+                return first
+    return request.client.host if request.client else UNKNOWN_CLIENT_IP
+
 
 
 class RegisterRequest(BaseModel):
@@ -113,16 +141,30 @@ def redeem_support_code(
 
 
 @router.post("/login")
-def login(payload: LoginRequest) -> dict[str, str]:
+def login(payload: LoginRequest, request: Request) -> dict[str, str]:
+    ip = _client_ip(request)
+    lock = login_throttle.check_locked(payload.email, ip)
+    if lock.locked:
+        # 429 with the remaining seconds: the client is told to back off,
+        # but not whether the address exists or the password was close.
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "too many failed login attempts; try again later",
+            headers={"Retry-After": str(lock.retry_after_seconds)},
+        )
+    policy = load_login_throttle_policy()
     user = users_repo.get_by_email(payload.email)
     if user is None or user.password_hash is None:
         auth.verify_password(payload.password, auth.DUMMY_PASSWORD_HASH)
+        login_throttle.record_failure(payload.email, ip, policy)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
     password_hash = user.password_hash.get_secret_value()
     if not auth.verify_password(payload.password, password_hash):
+        login_throttle.record_failure(payload.email, ip, policy)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
     if user.delete_requested_at is not None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "account pending deletion")
+    login_throttle.clear_email(payload.email)
     token = auth.create_access_token(user.user_id, user.password_changed_at)
     return {"access_token": token, "token_type": "bearer"}
 

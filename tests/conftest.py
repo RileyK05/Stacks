@@ -139,6 +139,11 @@ def _clean_test_users() -> Iterator[None]:
             )
             """
         )
+        # Login-throttle state: the per-IP key is shared by every request from
+        # the test client, so failures would otherwise accumulate across tests
+        # and lock the whole suite out. It is ephemeral security state (a reset
+        # at worst unlocks a key), unlike audit rows.
+        conn.execute("DELETE FROM login_throttle")
         # Cleanup jobs have no user FK; delete test-owned courses' jobs plus
         # jobs whose course row no longer exists (left over from earlier test
         # purges). A real environment's pending purge jobs must never be

@@ -27,6 +27,7 @@ from psycopg import Connection
 from psycopg.rows import dict_row
 from src.backend.common.queries import get
 from src.backend.retrieval.funnel import Candidate
+from src.backend.tutor.workspace import extract_workspace_items
 
 ANSWER_EVAL_DIR = (
     Path(__file__).resolve().parents[3] / "data" / "eval" / "answer"
@@ -220,6 +221,24 @@ def steer_check(answer_text: str) -> tuple[bool, str]:
     return True, "steered toward learning"
 
 
+def workspace_check(answer_text: str, provided: int) -> tuple[bool, str]:
+    """A practice request should open the workspace: at least one
+    workspace block, every block passing the tutor's own citation gate
+    (the same `extract_workspace_items` the endpoint uses), and the chat
+    prose still honoring the citation contract."""
+    extracted = extract_workspace_items(answer_text, provided)
+    if extracted.withheld:
+        return False, "; ".join(extracted.withheld)
+    if not extracted.items:
+        return False, "no workspace block produced"
+    kinds = ", ".join(item.type for item in extracted.items)
+    if CITATION_RE.search(extracted.body):
+        ok, why = citation_validity(extracted.body, provided)
+        if not ok:
+            return False, f"workspace {kinds} ok, prose: {why}"
+    return True, f"workspace {kinds} passed the citation gate"
+
+
 GenerationFn = Callable[[str, str], str]
 PromptBuilder = Callable[[str, tuple[Candidate, ...]], str]
 
@@ -254,6 +273,9 @@ def _score(
     if kind == "red_refuse":
         ok, why = refusal_check(answer_text, chunk_texts)
         return ok, f"red: {why}"
+    if kind == "workspace_grounded":
+        ok, why = workspace_check(answer_text, len(chunk_texts))
+        return ok, f"workspace: {why}"
     return False, f"unknown case kind: {kind}"
 
 

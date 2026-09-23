@@ -20,7 +20,7 @@
 
   const styles = {
     primary: 'bg-indigo-600 text-white hover:bg-indigo-500 disabled:bg-indigo-300',
-    secondary: 'bg-white text-slate-700 ring-1 ring-slate-300 hover:bg-slate-50',
+    secondary: 'bg-white text-slate-700 ring-1 ring-slate-300 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700 dark:hover:bg-slate-800/60',
     danger: 'bg-red-600 text-white hover:bg-red-500 disabled:bg-red-300'
   };
 </script>

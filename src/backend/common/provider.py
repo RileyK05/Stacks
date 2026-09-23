@@ -80,10 +80,12 @@ def generate(
     tier: UserTier,
     *,
     course_id: UUID | None = None,
+    images: Sequence[bytes] | None = None,
 ) -> GenerationResult:
     """One gated, routed, billed model call. `tier` is verified against
     the account inside; the pool is derived from the task, never passed
-    in."""
+    in. `images` carries PNG page renders for the multimodal OCR task; it
+    is None for every text task."""
     if task not in KNOWN_GENERATION_TASKS:
         raise ValueError(f"unknown generation task: {task}")
     spend_kind = (
@@ -98,7 +100,9 @@ def generate(
         spend_kind=spend_kind,
     )
     model = policy.model_for(task)
-    raw_text, input_tokens, output_tokens = _call_provider(task, model, prompt)
+    raw_text, input_tokens, output_tokens = _call_provider(
+        task, model, prompt, images=images
+    )
     if not raw_text.strip():
         raise EmptyModelError(task)
     result = GenerationResult(
@@ -123,12 +127,17 @@ def generate(
 
 
 def _call_provider(
-    task: str, model: str, prompt: str
+    task: str,
+    model: str,
+    prompt: str,
+    *,
+    images: Sequence[bytes] | None = None,
 ) -> tuple[str, int, int]:
     """The provider HTTP call. Intentionally unimplemented until the
     operator picks a provider and the no-retention policy is verified.
     Returns (text, input_tokens, output_tokens) — token counts come from
-    the provider's usage response, never estimated by the caller."""
+    the provider's usage response, never estimated by the caller. `images`
+    is present only for the multimodal OCR task."""
     raise ProviderUnavailableError(
         f"no provider client configured yet (task={task}, model={model})"
     )

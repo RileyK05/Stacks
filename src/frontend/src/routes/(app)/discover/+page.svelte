@@ -86,7 +86,7 @@
   }
 </script>
 
-<h1 class="mb-6 text-2xl font-bold text-slate-900">Discover</h1>
+<h1 class="mb-6 text-2xl font-bold text-slate-900 dark:text-slate-100">Discover</h1>
 
 {#if error}
   <ErrorBanner {error} />
@@ -112,11 +112,11 @@
 
     <section>
       <div class="mb-3 flex items-center justify-between">
-        <h2 class="text-base font-semibold text-slate-900">Public courses</h2>
+        <h2 class="text-base font-semibold text-slate-900 dark:text-slate-100">Public courses</h2>
         <input
           bind:value={search}
           placeholder="Filter by name…"
-          class="rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+          class="rounded-md border border-slate-300 px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder:text-slate-500"
         />
       </div>
       {#if publicCourses.length === 0}
@@ -127,13 +127,13 @@
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {#each visibleCourses as course (course.course_id)}
             <Card>
-              <p class="font-medium text-slate-900">{course.name}</p>
+              <p class="font-medium text-slate-900 dark:text-slate-100">{course.name}</p>
               <p class="mt-1 text-sm text-slate-500">
                 {course.source_count} source{course.source_count === 1 ? '' : 's'}
               </p>
               <div class="mt-3">
                 {#if enrolledIds.has(course.course_id)}
-                  <a href={`/courses/${course.course_id}`} class="text-sm text-indigo-600 hover:underline">
+                  <a href={`/courses/${course.course_id}`} class="text-sm text-indigo-600 hover:underline dark:text-indigo-300">
                     Open course
                   </a>
                 {:else}

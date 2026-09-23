@@ -42,7 +42,7 @@
     <Button type="submit" {loading}>Sign in</Button>
   </form>
   <div class="mt-4 flex justify-between text-sm">
-    <a href="/password-reset" class="text-indigo-600 hover:underline">Forgot password?</a>
-    <a href="/register" class="text-indigo-600 hover:underline">Create account</a>
+    <a href="/password-reset" class="text-indigo-600 hover:underline dark:text-indigo-300">Forgot password?</a>
+    <a href="/register" class="text-indigo-600 hover:underline dark:text-indigo-300">Create account</a>
   </div>
 </Card>

@@ -89,6 +89,20 @@ class EmptyExtractionError(RuntimeError):
         )
 
 
+class ScannedPdfNeedsOcrError(EmptyExtractionError):
+    """A PDF with no text layer at all. Distinct from a genuinely empty
+    file so the pipeline can route it to the OCR stage instead of failing
+    extraction outright. Subclasses EmptyExtractionError so a caller that
+    only knows "no text" still treats it as such."""
+
+    def __init__(self, source_id: UUID) -> None:
+        self.source_id = source_id
+        RuntimeError.__init__(
+            self,
+            f"source {source_id} has no text layer; it needs OCR",
+        )
+
+
 def read_decoded(
     course_id: UUID,
     source_id: UUID,
@@ -272,7 +286,10 @@ def extract(
             course_id, source_id, stored_encoding, raw_pdf_bytes
         )
         if not any(page_text.strip() for page_text in page_texts):
-            raise EmptyExtractionError(source_id)
+            # No text layer: this is the OCR case, not an empty file. The
+            # pipeline routes it to the ocr stage; if OCR is unavailable
+            # the stage fails loudly there with an actionable message.
+            raise ScannedPdfNeedsOcrError(source_id)
         return ExtractedSource(
             text=_join_pages(page_texts),
             locators=_pdf_locators(page_texts),
@@ -312,3 +329,56 @@ def _pdf_page_texts(
         )
         reader = pypdf.PdfReader(io.BytesIO(raw))
     return [page.extract_text() or "" for page in reader.pages]
+
+
+def rasterize_pages(
+    course_id: UUID,
+    source_id: UUID,
+    stored_encoding: str | None,
+    *,
+    max_pages: int,
+    scale: float,
+) -> list[bytes]:
+    """Render a PDF's pages to PNG bytes for the multimodal OCR model.
+
+    Bounded by construction: at most `max_pages` are rendered (a 500-page
+    scan must not fan out into 500 model calls), and the source is read
+    back through the same capped seam every other read uses. pypdfium2 is
+    used (Apache/BSD licensed, no system binary) rather than a renderer
+    that would be AGPL or need an external install.
+    """
+    import pypdfium2 as pdfium
+
+    raw = storage.read_stored(
+        course_id,
+        source_id,
+        stored_encoding,
+        max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+    )
+    pdf = pdfium.PdfDocument(io.BytesIO(raw))
+    try:
+        page_count = min(len(pdf), max_pages)
+        renders: list[bytes] = []
+        for index in range(page_count):
+            page = pdf[index]
+            try:
+                bitmap = page.render(scale=scale)
+                image = bitmap.to_pil()
+                buffer = io.BytesIO()
+                image.save(buffer, format="PNG")
+                renders.append(buffer.getvalue())
+            finally:
+                page.close()
+        return renders
+    finally:
+        pdf.close()
+
+
+def ocr_extracted_source(page_texts: list[str]) -> ExtractedSource:
+    """Build an ExtractedSource from per-page OCR output, using the exact
+    same page join and locator builder as a text-layer PDF so OCR
+    citations align identically."""
+    return ExtractedSource(
+        text=_join_pages(page_texts),
+        locators=_pdf_locators(page_texts),
+    )

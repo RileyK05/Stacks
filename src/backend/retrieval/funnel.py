@@ -12,12 +12,13 @@ Seams:
 
 Fusion: each seam's ranks are min-max normalized INTO 0..1 (the unit
 accident — ts_rank ~0.06 vs dependency position 8 — made cross-seam
-comparison meaningless before this). A source's relevance is its best
-chunk's normalized score from any seam; the final_k slots are split
-across sources proportionally (largest remainder) with a one-slot floor
-per contributing source, availability clamping, and backfill. Every
-surviving chunk carries its locator id; the layer contribution is
-returned for the trace.
+comparison meaningless before this). Every seam ranks "higher is
+better", so normalization preserves direction for all of them. A
+source's relevance is its best chunk's normalized score from any seam;
+the final_k slots are split across sources proportionally (largest
+remainder) with a one-slot floor per contributing source, availability
+clamping, and backfill. Every surviving chunk carries its locator id;
+the layer contribution is returned for the trace.
 """
 
 from __future__ import annotations
@@ -240,13 +241,20 @@ def embedding_seam(
     return out
 
 
-def _normalize(seam: dict[UUID, Candidate], layer: str) -> None:
+def _normalize(seam: dict[UUID, Candidate]) -> None:
     """Min-max a seam's ranks into 0.0..1.0 IN PLACE, seam-locally. This
     is what makes cross-seam comparison legal (the #4 lesson: ts_rank
-    ~0.06 and dependency position 8 were incomparable units). Embedding
-    dots need no shift (already "higher is closer to the query"); for the
-    rest higher rank meant earlier arrival, so the sign flips here. A
-    seam of one candidate (or all-equal ranks) normalizes to a
+    ~0.06 and dependency position 8 were incomparable units).
+
+    Every seam's seam-local rank is already "higher is better": keyword
+    is ts_rank, embedding is the dot product, and toc/dependency use
+    arrival position as `-position` (best chunk at position 0). The
+    normalization therefore keeps the direction for ALL seams. (An
+    earlier version flipped keyword/dependency, which inverted their
+    evidence: the best keyword chunk normalized to 0.0 and sank below the
+    worst. Fixed 2026-09-22.)
+
+    A seam of one candidate (or all-equal ranks) normalizes to a
     mid-strength 0.5 — it IS weak information, not zero."""
     if not seam:
         return
@@ -257,12 +265,8 @@ def _normalize(seam: dict[UUID, Candidate], layer: str) -> None:
             _mutate_rank(candidate, 0.5)
         return
     span = high - low
-    if layer == EMBEDDING:
-        for candidate in seam.values():
-            _mutate_rank(candidate, (candidate.rank - low) / span)
-    else:
-        for candidate in seam.values():
-            _mutate_rank(candidate, (high - candidate.rank) / span)
+    for candidate in seam.values():
+        _mutate_rank(candidate, (candidate.rank - low) / span)
 
 
 def _mutate_rank(candidate: Candidate, new_rank: float) -> None:
@@ -297,10 +301,10 @@ def fuse(
     after allocated slots (semantic expansion must not displace
     grounded hits). A single-source course fills naturally — no source
     can starve another when there is no competition."""
-    _normalize(keyword, KEYWORD)
-    _normalize(toc, TOC)
-    _normalize(dependency, DEPENDENCY)
-    _normalize(embeddings, EMBEDDING)
+    _normalize(keyword)
+    _normalize(toc)
+    _normalize(dependency)
+    _normalize(embeddings)
 
     merged: dict[UUID, Candidate] = {}
     for seam in (keyword, toc, dependency, embeddings):

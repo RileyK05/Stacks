@@ -71,7 +71,7 @@
   }
 </script>
 
-<h1 class="mb-6 text-2xl font-bold text-slate-900">My courses</h1>
+<h1 class="mb-6 text-2xl font-bold text-slate-900 dark:text-slate-100">My courses</h1>
 
 {#if error}
   <ErrorBanner {error} />
@@ -91,7 +91,7 @@
     </Card>
 
     <section>
-      <h2 class="mb-3 text-base font-semibold text-slate-900">Owned</h2>
+      <h2 class="mb-3 text-base font-semibold text-slate-900 dark:text-slate-100">Owned</h2>
       {#if owned.length === 0}
         <EmptyState message="No courses yet — create one above." />
       {:else}
@@ -99,9 +99,9 @@
           {#each owned as course (course.course_id)}
             <a
               href={`/courses/${course.course_id}`}
-              class="group block rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200/80 transition-all hover:-translate-y-0.5 hover:shadow-md hover:ring-indigo-200"
+              class="group block rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200/80 transition-all hover:-translate-y-0.5 hover:shadow-md hover:ring-indigo-200 dark:bg-slate-900 dark:ring-slate-700/80 dark:hover:ring-indigo-700"
             >
-              <p class="font-medium text-slate-900 group-hover:text-indigo-700">
+              <p class="font-medium text-slate-900 group-hover:text-indigo-700 dark:text-slate-100 dark:group-hover:text-indigo-300">
                 {course.name}
               </p>
               <p class="mt-1 text-sm text-slate-500">
@@ -116,7 +116,7 @@
     </section>
 
     <section>
-      <h2 class="mb-3 text-base font-semibold text-slate-900">Enrolled</h2>
+      <h2 class="mb-3 text-base font-semibold text-slate-900 dark:text-slate-100">Enrolled</h2>
       {#if enrolled.length === 0}
         <EmptyState
           title="Not enrolled anywhere"
@@ -127,9 +127,9 @@
           {#each enrolled as course (course.course_id)}
             <a
               href={`/courses/${course.course_id}`}
-              class="group block rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200/80 transition-all hover:-translate-y-0.5 hover:shadow-md hover:ring-indigo-200"
+              class="group block rounded-xl bg-white p-5 shadow-sm ring-1 ring-slate-200/80 transition-all hover:-translate-y-0.5 hover:shadow-md hover:ring-indigo-200 dark:bg-slate-900 dark:ring-slate-700/80 dark:hover:ring-indigo-700"
             >
-              <p class="font-medium text-slate-900 group-hover:text-indigo-700">
+              <p class="font-medium text-slate-900 group-hover:text-indigo-700 dark:text-slate-100 dark:group-hover:text-indigo-300">
                 {course.name}
               </p>
               <p class="mt-1 text-sm text-slate-500">

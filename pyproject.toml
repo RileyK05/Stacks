@@ -16,6 +16,8 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
     "pypdf>=5.0",
+    "pypdfium2>=4.0",
+    "Pillow>=10.0",
 ]
 
 [project.optional-dependencies]
@@ -47,3 +49,9 @@ python_version = "3.12"
 strict = true
 explicit_package_bases = true
 mypy_path = "."
+
+[[tool.mypy.overrides]]
+# pypdfium2 ships no type stubs; the OCR rasterizer is the only caller and
+# is covered by tests, so the untyped boundary is accepted here.
+module = "pypdfium2.*"
+ignore_missing_imports = true

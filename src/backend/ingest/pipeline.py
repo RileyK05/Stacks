@@ -8,6 +8,7 @@ from src.backend.common.schemas.base import IngestionStage, IngestionStatus
 
 PIPELINE_STAGES = (
     IngestionStage.EXTRACT_TEXT,
+    IngestionStage.OCR,
     IngestionStage.BUILD_LOCATORS,
     IngestionStage.BUILD_CHUNKS,
     IngestionStage.EMBED_CHUNKS,

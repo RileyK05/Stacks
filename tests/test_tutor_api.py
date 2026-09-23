@@ -156,7 +156,11 @@ def test_ask_happy_path_stubbed_provider(client: TestClient, monkeypatch) -> Non
     monkeypatch.setattr(
         provider,
         "_call_provider",
-        lambda task, model, prompt: ("linearity preserves structure [1].", 40, 12),
+        lambda task, model, prompt, *, images=None: (
+            "linearity preserves structure [1].",
+            40,
+            12,
+        ),
     )
     response = client.post(
         f"/courses/{course_id}/ask",
@@ -168,6 +172,8 @@ def test_ask_happy_path_stubbed_provider(client: TestClient, monkeypatch) -> Non
     assert "[1]" in payload["text"]
     assert len(payload["chunk_ids"]) == 1
     assert payload["trace_id"]
+    assert payload["workspace"] == []
+    assert payload["withheld"] == []
 
     with connection() as conn, conn.cursor() as cur:
         cur.execute(
@@ -181,6 +187,44 @@ def test_ask_happy_path_stubbed_provider(client: TestClient, monkeypatch) -> Non
         assert trace_chunk_ids == payload["chunk_ids"], (
             "the trace and the answer must cite the same evidence"
         )
+
+
+def test_ask_lifts_cited_workspace_items_and_withholds_uncited(
+    client: TestClient, monkeypatch
+) -> None:
+    """Workspace blocks leave the chat body; a cited quiz is returned
+    structured, an uncited document is withheld with its reason
+    (decision 009 hard gate at the endpoint)."""
+    token, _, body = _register(client)
+    course_id = _verified_course(client, token)
+    _seed_chunks(course_id, body["user_id"])
+    answer = (
+        "Linearity preserves structure [1].\n\n"
+        "```workspace\n"
+        '{"type": "quiz", "questions": [{"prompt": "Preserved?", "options":'
+        ' ["Sums", "Nothing"], "answer": 0, "sources": [1]}]}\n'
+        "```\n"
+        "```workspace\n"
+        '{"type": "document", "content": "Uncited notes", "sources": [5]}\n'
+        "```"
+    )
+    monkeypatch.setattr(
+        provider,
+        "_call_provider",
+        lambda task, model, prompt, *, images=None: (answer, 40, 12),
+    )
+    response = client.post(
+        f"/courses/{course_id}/ask",
+        json={"question": "what is linearity"},
+        headers=_headers(token),
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["text"] == "Linearity preserves structure [1]."
+    assert [item["type"] for item in payload["workspace"]] == ["quiz"]
+    assert payload["workspace"][0]["questions"][0]["sources"] == [1]
+    assert len(payload["withheld"]) == 1
+    assert "document cites [5]" in payload["withheld"][0]
 
 
 def test_ask_unauthenticated_rejected(client: TestClient) -> None:
@@ -213,7 +257,11 @@ def test_ask_learner_enrollment_granted(client: TestClient, monkeypatch) -> None
     monkeypatch.setattr(
         provider,
         "_call_provider",
-        lambda task, model, prompt: ("linearity preserves structure [1].", 40, 12),
+        lambda task, model, prompt, *, images=None: (
+            "linearity preserves structure [1].",
+            40,
+            12,
+        ),
     )
     response = client.post(
         f"/courses/{course_id}/ask",
@@ -235,7 +283,11 @@ def test_trace_citations_happy_path(client: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(
         provider,
         "_call_provider",
-        lambda task, model, prompt: ("linearity preserves structure [1].", 40, 12),
+        lambda task, model, prompt, *, images=None: (
+            "linearity preserves structure [1].",
+            40,
+            12,
+        ),
     )
     asked = client.post(
         f"/courses/{course_id}/ask",
@@ -269,7 +321,11 @@ def test_trace_citations_rejects_foreign_trace(client: TestClient, monkeypatch) 
     monkeypatch.setattr(
         provider,
         "_call_provider",
-        lambda task, model, prompt: ("linearity preserves structure [1].", 40, 12),
+        lambda task, model, prompt, *, images=None: (
+            "linearity preserves structure [1].",
+            40,
+            12,
+        ),
     )
     asked = client.post(
         f"/courses/{course_id}/ask",
@@ -294,7 +350,11 @@ def test_trace_citations_requires_enrollment(client: TestClient, monkeypatch) ->
     monkeypatch.setattr(
         provider,
         "_call_provider",
-        lambda task, model, prompt: ("linearity preserves structure [1].", 40, 12),
+        lambda task, model, prompt, *, images=None: (
+            "linearity preserves structure [1].",
+            40,
+            12,
+        ),
     )
     asked = client.post(
         f"/courses/{owner_course}/ask",

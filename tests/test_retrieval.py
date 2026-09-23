@@ -417,6 +417,51 @@ def test_fuse_embedding_orders_final_set(course_pair) -> None:
     assert [str(candidate.chunk_id) for candidate in fused][0] == str(high)
 
 
+def test_fuse_keyword_orders_strongest_evidence_first(course_pair) -> None:
+    """Regression (2026-09-22): keyword ranks were normalized with a sign
+    flip, so the HIGHEST ts_rank chunk normalized to 0.0 and sank below
+    the weakest. Every seam ranks higher-is-better; the strongest keyword
+    evidence must come out on top."""
+    _user, course = course_pair
+    strong = _add_chunk(
+        course_pair, "linearity linearity linearity linearity term rich"
+    )
+    weak = _add_chunk(course_pair, "a passing linearity mention")
+    policy = _policy(final_k=10)
+    with connection() as conn:
+        keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
+        fused = funnel.fuse(keyword, {}, {}, {}, policy=policy)
+    ranks = {str(candidate.chunk_id): candidate.rank for candidate in fused}
+    assert ranks[str(strong)] > ranks[str(weak)], (
+        "highest ts_rank must normalize highest, not lowest"
+    )
+    assert str(fused[0].chunk_id) == str(strong)
+
+
+def test_fuse_dependency_orders_nearest_first(course_pair) -> None:
+    """The dependency seam's rank is arrival position negated (best at 0,
+    higher is better). Normalization must keep that direction."""
+    from src.backend.retrieval.funnel import Candidate as _Candidate
+
+    best = uuid4()
+    mid = uuid4()
+    worst = uuid4()
+    dep = frozenset({"dependency"})
+
+    def _c(chunk_id, idx, text, rank):
+        return _Candidate(chunk_id, uuid4(), uuid4(), idx, text, dep, rank)
+
+    seam = {
+        best: _c(best, 0, "best", 0.0),
+        mid: _c(mid, 1, "mid", -1.0),
+        worst: _c(worst, 2, "worst", -2.0),
+    }
+    policy = _policy(final_k=10)
+    fused = funnel.fuse({}, {}, seam, {}, policy=policy)
+    order = [str(candidate.chunk_id) for candidate in fused]
+    assert order == [str(best), str(mid), str(worst)]
+
+
 def test_fuse_embedding_only_quota(course_pair) -> None:
     _user, course = course_pair
     keyword_hit = _add_chunk(course_pair, "linearity exact term")

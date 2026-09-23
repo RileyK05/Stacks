@@ -18,10 +18,10 @@
   );
   let styles = $derived(
     tone === 'refusal'
-      ? 'bg-amber-50 text-amber-900 ring-amber-200'
+      ? 'bg-amber-50 text-amber-900 ring-amber-200 dark:bg-amber-950/50 dark:text-amber-200 dark:ring-amber-900'
       : tone === 'busy'
-        ? 'bg-sky-50 text-sky-900 ring-sky-200'
-        : 'bg-red-50 text-red-800 ring-red-200'
+        ? 'bg-sky-50 text-sky-900 ring-sky-200 dark:bg-sky-950/50 dark:text-sky-200 dark:ring-sky-900'
+        : 'bg-red-50 text-red-800 ring-red-200 dark:bg-red-950/50 dark:text-red-200 dark:ring-red-900'
   );
   let icon = $derived(
     tone === 'refusal' ? '›' : tone === 'busy' ? '↻' : '!'
@@ -31,7 +31,7 @@
 <div class={`rounded-lg p-4 text-sm ring-1 ${styles}`}>
   <div class="flex items-start gap-3">
     <span
-      class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/70 text-xs font-bold"
+      class="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/70 text-xs font-bold dark:bg-slate-900/70"
       aria-hidden="true">{icon}</span
     >
     <div class="min-w-0">

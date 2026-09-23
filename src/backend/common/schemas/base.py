@@ -158,6 +158,7 @@ class IngestionStatus(StrEnum):
 
 class IngestionStage(StrEnum):
     EXTRACT_TEXT = "extract_text"
+    OCR = "ocr"
     BUILD_LOCATORS = "build_locators"
     BUILD_CHUNKS = "build_chunks"
     EMBED_CHUNKS = "embed_chunks"
@@ -187,6 +188,7 @@ KNOWN_GENERATION_TASKS = frozenset(
         "toc_update",
         "course_knowledge_extraction",
         "artifact_generation",
+        "ocr",
     }
 )
 
@@ -197,5 +199,6 @@ INGESTION_TASKS = frozenset(
     {
         "toc_update",
         "course_knowledge_extraction",
+        "ocr",
     }
 )

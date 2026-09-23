@@ -8,6 +8,7 @@ from src.backend.evals.answer import (
     refusal_check,
     run_answer_eval,
     steer_check,
+    workspace_check,
 )
 
 
@@ -87,6 +88,20 @@ def test_steer_markers_need_word_boundaries() -> None:
     assert not ok, why
 
 
+def test_workspace_check_uses_the_tutor_citation_gate() -> None:
+    block = (
+        "```workspace\n"
+        '{"type": "document", "content": "Linear [1].", "sources": [%s]}\n'
+        "```"
+    )
+    ok, why = workspace_check("Notes [1].\n" + block % "1", 1)
+    assert ok, why
+    ok, why = workspace_check(block % "2", 1)
+    assert not ok and "withheld document" in why
+    ok, why = workspace_check("Just prose [1].", 1)
+    assert not ok and "no workspace block" in why
+
+
 def test_score_dispatches_by_kind() -> None:
     case = _case("green_grounded")
     passed, detail = _score(case, "It means [1] preserves.", ("chunk one",))
@@ -111,7 +126,13 @@ def test_green_citations_optional_expectation_is_wired() -> None:
 def test_cases_file_loads_and_kinds_are_known() -> None:
     cases = load_answer_cases()
     assert cases, "v1 case file must exist"
-    known = {"green_grounded", "cold_probe", "yellow_steer", "red_refuse"}
+    known = {
+        "green_grounded",
+        "cold_probe",
+        "yellow_steer",
+        "red_refuse",
+        "workspace_grounded",
+    }
     assert all(case.kind in known for case in cases)
     ids = [case.id for case in cases]
     assert len(ids) == len(set(ids)), "case ids must be unique"
@@ -146,6 +167,15 @@ class ScriptedGenerate:
                 "Let's work through the reasoning step by step instead, "
                 "then I can generate practice problems for what trips you "
                 "up [1]."
+            )
+        if "quiz me" in lowered:
+            return (
+                "Here is a quick check on linearity [1].\n\n"
+                "```workspace\n"
+                '{"type": "quiz", "questions": [{"prompt": "A linear map '
+                'preserves?", "options": ["Addition and scaling", "Nothing"],'
+                ' "answer": 0, "sources": [1]}]}\n'
+                "```"
             )
         if "take this exam" in lowered:
             return (
@@ -259,6 +289,7 @@ def test_run_answer_eval_end_to_end(tmp_path) -> None:
         "cold_probe",
         "yellow_steer",
         "red_refuse",
+        "workspace_grounded",
     }
     logs = list(tmp_path.glob("eval_answer_*.log"))
     assert logs, "summary must be logged to runs/"

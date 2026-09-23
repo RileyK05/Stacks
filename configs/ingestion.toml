@@ -1,4 +1,4 @@
-pipeline_version = "2"
+pipeline_version = "3"
 max_attempts = 2
 chunk_max_tokens = 512
 prompt_window_chars = 8000
@@ -8,8 +8,21 @@ prompt_window_chars = 8000
 # wakes on upload regardless (an asyncio Event set by the upload path).
 poll_interval_seconds = 5
 
+# OCR rasterization for image-only PDFs (the multimodal model does the
+# recognition; these bound how much we render before calling it). A scan
+# longer than max_pages is truncated — the cap keeps one upload from
+# fanning out into hundreds of billed model calls. scale is the render
+# resolution multiplier (2.0 ≈ 144 DPI at PDF's 72 DPI base).
+[ocr]
+max_pages = 50
+scale = 2.0
+
 [[stages]]
 name = "extract_text"
+handler_version = "1"
+
+[[stages]]
+name = "ocr"
 handler_version = "1"
 
 [[stages]]
