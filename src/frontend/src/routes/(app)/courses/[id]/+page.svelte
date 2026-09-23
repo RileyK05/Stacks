@@ -15,7 +15,7 @@
   import WorkspacePanel from '$lib/components/WorkspacePanel.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
   import { toast } from '$lib/stores/toast.svelte';
-  import { itemTitle, openSession, type WorkspaceSession } from '$lib/stores/workspace.svelte';
+  import { itemTitle, openSession, WorkspaceCanvas, type WorkspaceSession } from '$lib/stores/workspace.svelte';
   import { formatBytes } from '$lib/utils/format';
 
   type CourseView =
@@ -65,11 +65,9 @@
   let turns = $state<Turn[]>([]);
   let sessionRef = $state<HTMLElement | null>(null);
   let workspaceRef = $state<HTMLElement | null>(null);
-  /** Turn index currently shown in the workspace panel; null = closed. */
-  let workspaceTurn = $state<number | null>(null);
-  let workspaceOpen = $derived(
-    workspaceTurn !== null && (turns[workspaceTurn]?.workspace.length ?? 0) > 0
-  );
+  /** Right-hand workspace canvas: tabs accumulate across turns. */
+  const canvas = new WorkspaceCanvas();
+  let workspaceOpen = $derived(canvas.open);
 
   let sourceType = $state<SourceType>('notes');
   let uploading = $state(false);
@@ -182,7 +180,7 @@
       turns[index].answer = data.text;
       turns[index].workspace = (data.workspace ?? []).map(openSession);
       turns[index].withheld = data.withheld ?? [];
-      if (turns[index].workspace.length > 0) workspaceTurn = index;
+      canvas.openFromTurn(index, turns[index].workspace);
       turns[index].traceId = data.trace_id;
       // Fetch the evidence behind the answer immediately (golden rule
       // 1: every answer shows its sources, right under itself).
@@ -206,7 +204,7 @@
 
   function clearSession() {
     turns = [];
-    workspaceTurn = null;
+    canvas.clear();
   }
 
   const starterPrompts = [
@@ -216,7 +214,7 @@
   ];
 
   async function openWorkspace(index: number) {
-    workspaceTurn = index;
+    canvas.openFromTurn(index, turns[index].workspace);
     await tick();
     // Side-by-side on wide screens (already visible); stacked below the
     // chat on narrow ones, where the reader has to be taken to it.
@@ -442,12 +440,12 @@
                           type="button"
                           onclick={() => openWorkspace(index)}
                           class={`flex items-center gap-2 self-start rounded-lg px-3 py-2 text-xs font-medium ring-1 transition-colors ${
-                            workspaceTurn === index
+                            canvas.active?.turnIndex === index
                               ? 'bg-indigo-600 text-white ring-indigo-600'
                               : 'bg-white text-indigo-700 ring-indigo-200 hover:bg-indigo-50 dark:bg-slate-900 dark:text-indigo-300 dark:ring-indigo-800 dark:hover:bg-indigo-950/50'
                           }`}
                         >
-                          {workspaceTurn === index ? 'Showing in workspace' : 'Open in workspace →'}
+                          {canvas.active?.turnIndex === index ? 'Showing in workspace' : 'Open in workspace →'}
                           <span class="opacity-80">
                             {turn.workspace.map((session) => itemTitle(session)).join(' · ')}
                           </span>
@@ -545,16 +543,15 @@
           {/if}
         </div>
 
-        {#if workspaceOpen && workspaceTurn !== null}
+        {#if workspaceOpen}
           <div
             bind:this={workspaceRef}
             class="min-w-0 scroll-mt-6 lg:sticky lg:top-6 lg:h-[calc(100vh-3rem)]"
           >
             <WorkspacePanel
-              sessions={turns[workspaceTurn].workspace}
-              sources={turns[workspaceTurn].citations}
-              origin={`Q${workspaceTurn + 1}`}
-              onclose={() => (workspaceTurn = null)}
+              {canvas}
+              sourcesFor={(turnIndex) => turns[turnIndex]?.citations ?? []}
+              onclose={() => canvas.hide()}
               onfollowup={askFollowUp}
             />
           </div>

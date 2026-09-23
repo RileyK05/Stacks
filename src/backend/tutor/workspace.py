@@ -1,7 +1,8 @@
 """Workspace items: interactive blocks a tutor answer can carry.
 
 The tutor may embed fenced ```workspace JSON blocks in an answer (a
-multiple-choice quiz, an editable study document). They are lifted out
+multiple-choice quiz, an editable study document, a rendered HTML
+visualization). They are lifted out
 of the chat text and rendered in the workspace pane beside the chat.
 
 Decision 009's hard gate lives here, in code rather than in the prompt:
@@ -57,11 +58,18 @@ class WorkspaceDocument(BaseModel):
     sources: list[int] = Field(min_length=1)
 
 
+class WorkspaceHtml(BaseModel):
+    type: Literal["html"]
+    title: str | None = None
+    html: str = Field(min_length=1)
+    sources: list[int] = Field(min_length=1)
+
+
 WorkspaceItem = Annotated[
-    WorkspaceQuiz | WorkspaceDocument, Field(discriminator="type")
+    WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml, Field(discriminator="type")
 ]
 
-_ITEM_ADAPTER: TypeAdapter[WorkspaceQuiz | WorkspaceDocument] = TypeAdapter(
+_ITEM_ADAPTER: TypeAdapter[WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml] = TypeAdapter(
     WorkspaceItem
 )
 
@@ -72,7 +80,7 @@ class ExtractedAnswer:
     human-readable reason for every block that was withheld."""
 
     body: str
-    items: tuple[WorkspaceQuiz | WorkspaceDocument, ...]
+    items: tuple[WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml, ...]
     withheld: tuple[str, ...]
 
 
@@ -83,7 +91,7 @@ def extract_workspace_items(text: str, material_count: int) -> ExtractedAnswer:
     citation [n] is valid only for 1 <= n <= material_count. Every block
     is removed from the body whether it passes or not: a withheld quiz
     must not leak its answer key into the chat as raw JSON."""
-    items: list[WorkspaceQuiz | WorkspaceDocument] = []
+    items: list[WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml] = []
     withheld: list[str] = []
 
     def lift(match: re.Match[str]) -> str:
@@ -101,7 +109,7 @@ def extract_workspace_items(text: str, material_count: int) -> ExtractedAnswer:
 
 def _parse_block(
     raw: str, material_count: int
-) -> tuple[WorkspaceQuiz | WorkspaceDocument | None, str]:
+) -> tuple[WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml | None, str]:
     try:
         item = _ITEM_ADAPTER.validate_python(json.loads(raw))
     except json.JSONDecodeError:
@@ -117,11 +125,14 @@ def _parse_block(
 
 
 def _citation_problem(
-    item: WorkspaceQuiz | WorkspaceDocument, material_count: int
+    item: WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml, material_count: int
 ) -> str | None:
     if isinstance(item, WorkspaceDocument):
         cited = [*item.sources, *_inline_citations(item.content)]
         return _out_of_range(cited, material_count, "document")
+    if isinstance(item, WorkspaceHtml):
+        cited = [*item.sources, *_inline_citations(item.html)]
+        return _out_of_range(cited, material_count, "html")
     for number, question in enumerate(item.questions, start=1):
         cited = [
             *question.sources,

@@ -11,6 +11,7 @@ import json
 
 from src.backend.tutor.workspace import (
     WorkspaceDocument,
+    WorkspaceHtml,
     WorkspaceQuiz,
     extract_workspace_items,
 )
@@ -55,6 +56,35 @@ def test_valid_document_is_lifted() -> None:
     assert extracted.withheld == ()
     assert isinstance(extracted.items[0], WorkspaceDocument)
     assert extracted.body == ""
+
+
+def test_valid_html_is_lifted() -> None:
+    item = {
+        "type": "html",
+        "title": "Comparison table",
+        "html": "<table><tr><td>a [1]</td></tr></table>",
+        "sources": [1],
+    }
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.withheld == ()
+    assert isinstance(extracted.items[0], WorkspaceHtml)
+    assert extracted.items[0].html == item["html"]
+    assert extracted.body == ""
+
+
+def test_uncited_html_is_withheld() -> None:
+    item = {"type": "html", "html": "<p>Claim.</p>", "sources": [2]}
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.items == ()
+    assert "html cites [2]" in extracted.withheld[0]
+    assert "<p>Claim.</p>" not in extracted.body
+
+
+def test_html_inline_citation_out_of_range_is_withheld() -> None:
+    item = {"type": "html", "html": "<p>See [5].</p>", "sources": [1]}
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.items == ()
+    assert "[5]" in extracted.withheld[0]
 
 
 def test_uncited_question_is_withheld_not_rendered() -> None:

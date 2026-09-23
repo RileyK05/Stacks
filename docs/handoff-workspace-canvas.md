@@ -2,6 +2,30 @@
 
 Written: 2026-09-22. For the next agent picking this up. Read this fully before editing.
 
+## Progress log
+
+- **2026-09-22 (update 1):** Tabbed canvas is DONE. `WorkspaceCanvas`
+  (in `workspace.svelte.ts`) accumulates tabs across turns; `WorkspacePanel`
+  renders a scrollable tab bar (title + origin + close); new answers append
+  tabs without evicting old ones; per-turn button and panel close updated on
+  the course page. Verified: `npm run check` clean, `npm run build` ok,
+  backend pytest 348 passed (before this change; frontend-only). Dark-mode
+  `dark:` sweep confirmed complete across components and route pages.
+- **2026-09-22 (update 2):** HTML visualization workspace type is DONE
+  (user chose sanitized inline HTML over sandboxed iframe).
+  `WorkspaceHtml {type:"html", title?, html, sources}` in
+  `src/backend/tutor/workspace.py` (same decision-009 citation gate),
+  prompt example added in `configs/prompts.toml` (version bumped 3→4),
+  4 new gate tests in `tests/test_tutor_workspace.py`, API types
+  regenerated. Frontend: `HtmlSession`, `WorkspaceHtmlView.svelte`
+  (DOMPurify-sanitized, SVG/CSS charts work, scripts never run), panel
+  branch added. Verified: workspace tests 14 passed, `npm run check`
+  clean, `npm run build` ok, sanitizeHtml smoke passed (table/SVG pass,
+  script/onerror stripped).
+- **Remaining:** live answer-eval re-run after the prompt change (v3→v4;
+  costs provider calls — not done), visual dark-mode QA with the dev
+  stack up, end-to-end browser sanity (quiz grades, doc edits, html tab).
+
 ## The user's vision (their words, paraphrased)
 
 ChatGPT-style split canvas on the course Ask page:
@@ -53,18 +77,10 @@ Leave them alone; run backend tests rather than assuming they pass.
 1. **`npm run build`** in `src/frontend` — confirm the production build passes
    (only `check` has been run since the workspace refactor landed). Also run
    `pytest` from the repo root (`.venv`) to see where the backend stands.
-2. **Tabbed workspace (the main feature ask).** Refactor the right pane from
-   one-turn-at-a-time into a persistent canvas with a tab bar:
-   - Keep `workspaceTurn` chat-behavior, but when new items arrive, **append**
-     to a canvas-level list of open items instead of replacing the view; each
-     item gets a tab (title from the backend item; the user's screenshot shows
-     truncated titles + a dropdown when tabs overflow).
-   - Tabs: active state, close per tab, "+"/dropdown overflow if cheap.
-   - Empty state when no tabs (already have the `EmptyState` copy pattern;
-     the chat placeholder text at +page.svelte ~line 406 hints at the UX).
-   - Decide with the user whether quiz progress (`QuizSession`) survives tab
-     switches — the class was built for that, keep instances in a map keyed by
-     item, don't recreate per render.
+2. ~~Tabbed workspace~~ — **done** (see progress log). If revisiting: quiz
+   progress survives tab switches because `QuizSession` instances are held by
+   the page's turns and referenced (not recreated) by tabs; `DocumentSession`
+   drafts likewise.
 3. **HTML visualization item type** (user explicitly wants "HTML processing"
    in the canvas — their example was a chart). Two sub-decisions to put to the
    user before building:

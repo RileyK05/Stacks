@@ -2,7 +2,8 @@ import type { components } from '$lib/api/schema';
 
 export type WorkspaceQuiz = components['schemas']['WorkspaceQuiz'];
 export type WorkspaceDocument = components['schemas']['WorkspaceDocument'];
-export type WorkspaceItem = WorkspaceQuiz | WorkspaceDocument;
+export type WorkspaceHtml = components['schemas']['WorkspaceHtml'];
+export type WorkspaceItem = WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml;
 
 /**
  * Live state for one quiz in the workspace. The item itself is the
@@ -79,13 +80,108 @@ export class DocumentSession {
   }
 }
 
-export type WorkspaceSession = QuizSession | DocumentSession;
+export type WorkspaceSession = QuizSession | DocumentSession | HtmlSession;
+
+/** Rendered HTML carries no live state — the session just holds the item. */
+export class HtmlSession {
+  readonly kind = 'html';
+  readonly htmlItem: WorkspaceHtml;
+
+  constructor(htmlItem: WorkspaceHtml) {
+    this.htmlItem = htmlItem;
+  }
+}
 
 export function openSession(item: WorkspaceItem): WorkspaceSession {
-  return item.type === 'quiz' ? new QuizSession(item) : new DocumentSession(item);
+  if (item.type === 'quiz') return new QuizSession(item);
+  if (item.type === 'document') return new DocumentSession(item);
+  return new HtmlSession(item);
 }
 
 export function itemTitle(session: WorkspaceSession): string {
-  const item = session.kind === 'quiz' ? session.quiz : session.document;
-  return item.title ?? (session.kind === 'quiz' ? 'Practice quiz' : 'Study document');
+  const item =
+    session.kind === 'quiz'
+      ? session.quiz
+      : session.kind === 'document'
+        ? session.document
+        : session.htmlItem;
+  return (
+    item.title ??
+    (session.kind === 'quiz'
+      ? 'Practice quiz'
+      : session.kind === 'document'
+        ? 'Study document'
+        : 'Visualization')
+  );
+}
+
+export interface CanvasTab {
+  /** Stable key: which turn produced the item, and its position there. */
+  id: string;
+  /** Which chat turn produced the item, e.g. "Q3". */
+  origin: string;
+  title: string;
+  turnIndex: number;
+  session: WorkspaceSession;
+}
+
+/**
+ * The right-hand workspace canvas. Tabs accumulate across turns — asking for
+ * a study guide does not evict the quiz from earlier in the conversation —
+ * and stay open until the student closes them or clears the chat session.
+ */
+export class WorkspaceCanvas {
+  tabs = $state<CanvasTab[]>([]);
+  activeId = $state<string | null>(null);
+  /** Panel dismissed (tabs kept); the next artifact or "Open in workspace" revives it. */
+  hidden = $state(false);
+
+  get open(): boolean {
+    return !this.hidden && this.tabs.length > 0;
+  }
+
+  get active(): CanvasTab | null {
+    return this.tabs.find((tab) => tab.id === this.activeId) ?? null;
+  }
+
+  hasTabForTurn(turnIndex: number): boolean {
+    return this.tabs.some((tab) => tab.turnIndex === turnIndex);
+  }
+
+  openFromTurn(turnIndex: number, sessions: WorkspaceSession[]): void {
+    if (sessions.length === 0) return;
+    const origin = `Q${turnIndex + 1}`;
+    let firstNew: string | null = null;
+    sessions.forEach((session, itemIndex) => {
+      const id = `${origin}:${itemIndex}`;
+      if (this.tabs.some((tab) => tab.id === id)) return;
+      this.tabs.push({ id, origin, title: itemTitle(session), turnIndex, session });
+      firstNew ??= id;
+    });
+    this.activeId = firstNew ?? this.tabs.find((tab) => tab.turnIndex === turnIndex)?.id ?? this.activeId;
+    this.hidden = false;
+  }
+
+  activate(id: string): void {
+    this.activeId = id;
+  }
+
+  close(id: string): void {
+    const index = this.tabs.findIndex((tab) => tab.id === id);
+    if (index === -1) return;
+    this.tabs.splice(index, 1);
+    if (this.activeId === id) {
+      this.activeId = this.tabs[Math.min(index, this.tabs.length - 1)]?.id ?? null;
+    }
+  }
+
+  hide(): void {
+    this.hidden = true;
+  }
+
+  clear(): void {
+    this.tabs = [];
+    this.activeId = null;
+    this.hidden = false;
+  }
 }

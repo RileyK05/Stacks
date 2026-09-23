@@ -1,5 +1,5 @@
 [version]
-prompts_config_version = "3"
+prompts_config_version = "4"
 
 [prompt.tutor_answer]
 # The citation contract is the enforcement surface for decision 008
@@ -29,6 +29,10 @@ your prose. It opens beside the chat. Use exactly this fence and JSON:
 
 ```workspace
 {"type": "document", "title": "...", "content": "Markdown body citing [1]...", "sources": [1]}
+```
+
+```workspace
+{"type": "html", "title": "...", "html": "<table>…</table> or an SVG chart", "sources": [1]}
 ```
 
 "answer" is the 0-based index of the correct option. Every question and
