@@ -41,6 +41,16 @@ resolved get moved to `docs/decisions/`.
 
 ## Closed
 
+**Closed 2026-09-22 — workspace generation harness (decision 011).** The
+tutor workspace pane (quiz/document/html, already gated per decision 009)
+was extended to a six-type generation harness: code (highlighted, never
+executed), sheet (editable grid, CSV export), and slides (markdown deck,
+arrow-key navigation) joined the existing three, all riding the one
+` ```workspace ` fenced-JSON mechanism in `src/backend/tutor/workspace.py`.
+Prompt version 3→5 teaches the new blocks; live answer-eval re-run after
+the prompt change is still pending (operator-triggered, delta recorded
+under `runs/`). Resolved by `docs/decisions/011_workspace_generation_harness.md`.
+
 **Closed by the 2026-09-10 operator rulings (from the adversarial
 edge-case pass):**
 

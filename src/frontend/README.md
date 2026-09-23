@@ -58,9 +58,10 @@ src/lib/stores/      runes stores: auth, theme, toast, confirm, debug, workspace
 src/lib/components/  Button, Card, TextInput, Select, Spinner, Skeleton, ErrorBanner,
                      EmptyState, RichText (markdown + LaTeX + sanitized HTML for
                      model output; pipeline in $lib/utils/render.ts), Quiz +
-                     EditableDocument + WorkspaceHtmlView + SourceChips +
-                     WorkspacePanel (the tabbed chat-side workspace, see
-                     below), Toaster, ConfirmHost
+                     EditableDocument + WorkspaceHtmlView + CodeView +
+                     SheetView + SlidesView + SourceChips + WorkspacePanel
+                     (the tabbed chat-side workspace, see below), Toaster,
+                     ConfirmHost
 src/routes/
   (auth)/            login, register, password-reset (chromeless layout)
   (app)/             guarded shell: my courses, discover, archives, account
@@ -102,15 +103,22 @@ response carries the chat body as `text`, validated items as `workspace`
 `withheld` — shown inline in the chat, never silently dropped.
 
 The frontend only renders: `$lib/stores/workspace.svelte.ts` wraps each item
-in a session (`QuizSession` holds answers/grading, `DocumentSession` holds
-the draft; html items carry no state) and `WorkspaceCanvas` keeps them as
+in a session (`QuizSession` holds answers/grading, `DocumentSession`/
+`SheetSession`/`SlidesSession` hold editable drafts; html and code items
+carry no state) and `WorkspaceCanvas` keeps them as
 tabs that accumulate across turns until closed. `Quiz.svelte`
 grades locally and offers "Ask about what I missed" (pre-fills the chat);
 `EditableDocument.svelte` has Preview/Edit, Revert, and Download .md;
 `WorkspaceHtmlView.svelte` renders model-authored HTML (tables, SVG charts)
-through the same DOMPurify config — scripts never execute.
+through the same DOMPurify config — scripts never execute;
+`CodeView.svelte` highlights with highlight.js (common languages) and
+copies, never runs; `SheetView.svelte` is an editable grid with
+add/remove row and Download .csv; `SlidesView.svelte` renders a
+`---`-separated markdown deck one slide at a time with arrow-key
+navigation plus a whole-deck source edit mode.
 `SourceChips` maps cited `[n]` to the answer's citation list. Nothing in the
-workspace is persisted — saving to `user_artifacts` is the Milestone 5 path.
+workspace is persisted — saving to `user_artifacts` is the Milestone 5 path
+(decision 011 documents the six-type contract).
 
 ## Debug panel
 

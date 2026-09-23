@@ -56,6 +56,30 @@
       "question": "Quiz me on linear transformations with a few multiple-choice questions.",
       "seed_chunk_labels": ["page 1"],
       "expectation": {"workspace_required": true}
+    },
+    {
+      "id": "workspace-code-linear",
+      "kind": "workspace_grounded",
+      "course_tag": "harness-course",
+      "question": "Show me a Python function that checks whether a transformation is linear, as a workspace item.",
+      "seed_chunk_labels": ["page 1"],
+      "expectation": {"workspace_required": true}
+    },
+    {
+      "id": "workspace-sheet-linear",
+      "kind": "workspace_grounded",
+      "course_tag": "harness-course",
+      "question": "Make me an editable workspace table comparing what linear and nonlinear transformations preserve.",
+      "seed_chunk_labels": ["page 1"],
+      "expectation": {"workspace_required": true}
+    },
+    {
+      "id": "workspace-slides-linear",
+      "kind": "workspace_grounded",
+      "course_tag": "harness-course",
+      "question": "Give me a short slide deck summarizing what linearity means, as a workspace item.",
+      "seed_chunk_labels": ["page 1"],
+      "expectation": {"workspace_required": true}
     }
   ]
 }

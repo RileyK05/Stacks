@@ -3,7 +3,10 @@ import type { components } from '$lib/api/schema';
 export type WorkspaceQuiz = components['schemas']['WorkspaceQuiz'];
 export type WorkspaceDocument = components['schemas']['WorkspaceDocument'];
 export type WorkspaceHtml = components['schemas']['WorkspaceHtml'];
-export type WorkspaceItem = WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml;
+export type WorkspaceCode = components['schemas']['WorkspaceCode'];
+export type WorkspaceSheet = components['schemas']['WorkspaceSheet'];
+export type WorkspaceSlides = components['schemas']['WorkspaceSlides'];
+export type WorkspaceItem = WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml | WorkspaceCode | WorkspaceSheet | WorkspaceSlides;
 
 /**
  * Live state for one quiz in the workspace. The item itself is the
@@ -80,8 +83,6 @@ export class DocumentSession {
   }
 }
 
-export type WorkspaceSession = QuizSession | DocumentSession | HtmlSession;
-
 /** Rendered HTML carries no live state — the session just holds the item. */
 export class HtmlSession {
   readonly kind = 'html';
@@ -92,11 +93,99 @@ export class HtmlSession {
   }
 }
 
-export function openSession(item: WorkspaceItem): WorkspaceSession {
-  if (item.type === 'quiz') return new QuizSession(item);
-  if (item.type === 'document') return new DocumentSession(item);
-  return new HtmlSession(item);
+/** Code listings are read-only views — the session just holds the item. */
+export class CodeSession {
+  readonly kind = 'code';
+  readonly item: WorkspaceCode;
+
+  constructor(item: WorkspaceCode) {
+    this.item = item;
+  }
 }
+
+/** Live state for one editable sheet: the original rows stay intact so the
+ * student can always revert to what the tutor (with citations) wrote. */
+export class SheetSession {
+  readonly kind = 'sheet';
+  readonly item: WorkspaceSheet;
+  draft = $state<string[][]>([]);
+
+  constructor(item: WorkspaceSheet) {
+    this.item = item;
+    this.draft = item.rows.map((row) => [...row]);
+  }
+
+  get edited(): boolean {
+    return this.draft.some((row, index) => row.join('') !== this.item.rows[index]?.join(''));
+  }
+
+  revert(): void {
+    this.draft = this.item.rows.map((row) => [...row]);
+  }
+
+  addRow(): void {
+    this.draft.push(this.item.columns.map(() => ''));
+  }
+
+  removeRow(index: number): void {
+    if (this.draft.length > 1) this.draft.splice(index, 1);
+  }
+}
+
+/** Live state for one slide deck: the deck is markdown split on --- lines;
+ * the draft keeps the student's edits so they survive tab switches. */
+export class SlidesSession {
+  readonly kind = 'slides';
+  readonly item: WorkspaceSlides;
+  draft = $state('');
+
+  constructor(item: WorkspaceSlides) {
+    this.item = item;
+    this.draft = item.deck;
+  }
+
+  get edited(): boolean {
+    return this.draft !== this.item.deck;
+  }
+
+  revert(): void {
+    this.draft = this.item.deck;
+  }
+}
+
+export type WorkspaceSession =
+  | QuizSession
+  | DocumentSession
+  | HtmlSession
+  | CodeSession
+  | SheetSession
+  | SlidesSession;
+
+export function openSession(item: WorkspaceItem): WorkspaceSession {
+  switch (item.type) {
+    case 'quiz':
+      return new QuizSession(item);
+    case 'document':
+      return new DocumentSession(item);
+    case 'html':
+      return new HtmlSession(item);
+    case 'code':
+      return new CodeSession(item);
+    case 'sheet':
+      return new SheetSession(item);
+    case 'slides':
+      return new SlidesSession(item);
+  }
+}
+
+const FALLBACK_TITLES: Record<WorkspaceSession['kind'], string> = {
+  quiz: 'Practice quiz',
+  document: 'Study document',
+  html: 'Visualization',
+  code: 'Code',
+  sheet: 'Spreadsheet',
+  slides: 'Slides'
+};
 
 export function itemTitle(session: WorkspaceSession): string {
   const item =
@@ -104,15 +193,10 @@ export function itemTitle(session: WorkspaceSession): string {
       ? session.quiz
       : session.kind === 'document'
         ? session.document
-        : session.htmlItem;
-  return (
-    item.title ??
-    (session.kind === 'quiz'
-      ? 'Practice quiz'
-      : session.kind === 'document'
-        ? 'Study document'
-        : 'Visualization')
-  );
+        : session.kind === 'html'
+          ? session.htmlItem
+          : session.item;
+  return item.title ?? FALLBACK_TITLES[session.kind];
 }
 
 export interface CanvasTab {

@@ -177,6 +177,34 @@ class ScriptedGenerate:
                 ' "answer": 0, "sources": [1]}]}\n'
                 "```"
             )
+        if "python function" in lowered:
+            return (
+                "Here is a helper grounded in the definition [1].\n\n"
+                "```workspace\n"
+                '{"type": "code", "language": "python", '
+                '"code": "def is_linear(f):\\n    '
+                'return preserves_addition(f) and preserves_scaling(f) [1]",'
+                ' "sources": [1]}\n'
+                "```"
+            )
+        if "editable workspace table" in lowered:
+            return (
+                "A comparison table from the material [1].\n\n"
+                "```workspace\n"
+                '{"type": "sheet", "columns": ["Kind", "Preserves"], '
+                '"rows": [["Linear", "Addition and scaling [1]"], '
+                '["Nonlinear", "Neither in general"]], "sources": [1]}\n'
+                "```"
+            )
+        if "slide deck" in lowered:
+            return (
+                "A short deck on linearity [1].\n\n"
+                "```workspace\n"
+                '{"type": "slides", "deck": "# Linearity\\n\\nPreserves '
+                'structure [1]\\n\\n---\\n\\n## The two operations\\n\\n'
+                'Addition and scaling [1]", "sources": [1]}\n'
+                "```"
+            )
         if "take this exam" in lowered:
             return (
                 "I must decline to fill in an answer sheet for submission."

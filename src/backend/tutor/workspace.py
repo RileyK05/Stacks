@@ -2,7 +2,8 @@
 
 The tutor may embed fenced ```workspace JSON blocks in an answer (a
 multiple-choice quiz, an editable study document, a rendered HTML
-visualization). They are lifted out
+visualization, a code listing, an editable sheet, a slide deck). They are
+lifted out
 of the chat text and rendered in the workspace pane beside the chat.
 
 Decision 009's hard gate lives here, in code rather than in the prompt:
@@ -65,13 +66,47 @@ class WorkspaceHtml(BaseModel):
     sources: list[int] = Field(min_length=1)
 
 
+class WorkspaceCode(BaseModel):
+    type: Literal["code"]
+    title: str | None = None
+    language: str | None = None
+    code: str = Field(min_length=1)
+    sources: list[int] = Field(min_length=1)
+
+
+class WorkspaceSheet(BaseModel):
+    type: Literal["sheet"]
+    title: str | None = None
+    columns: list[str] = Field(min_length=1, max_length=26)
+    rows: list[list[str]] = Field(min_length=1, max_length=500)
+    sources: list[int] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _rows_match_columns(self) -> WorkspaceSheet:
+        width = len(self.columns)
+        for number, row in enumerate(self.rows, start=1):
+            if len(row) != width:
+                raise ValueError(
+                    f"row {number} has {len(row)} cells but there are "
+                    f"{width} columns"
+                )
+        return self
+
+
+class WorkspaceSlides(BaseModel):
+    type: Literal["slides"]
+    title: str | None = None
+    deck: str = Field(min_length=1)
+    sources: list[int] = Field(min_length=1)
+
+
 WorkspaceItem = Annotated[
-    WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml, Field(discriminator="type")
+    WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml | WorkspaceCode | WorkspaceSheet
+    | WorkspaceSlides,
+    Field(discriminator="type"),
 ]
 
-_ITEM_ADAPTER: TypeAdapter[WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml] = TypeAdapter(
-    WorkspaceItem
-)
+_ITEM_ADAPTER: TypeAdapter[WorkspaceItem] = TypeAdapter(WorkspaceItem)
 
 
 @dataclass(frozen=True)
@@ -80,7 +115,7 @@ class ExtractedAnswer:
     human-readable reason for every block that was withheld."""
 
     body: str
-    items: tuple[WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml, ...]
+    items: tuple[WorkspaceItem, ...]
     withheld: tuple[str, ...]
 
 
@@ -91,7 +126,7 @@ def extract_workspace_items(text: str, material_count: int) -> ExtractedAnswer:
     citation [n] is valid only for 1 <= n <= material_count. Every block
     is removed from the body whether it passes or not: a withheld quiz
     must not leak its answer key into the chat as raw JSON."""
-    items: list[WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml] = []
+    items: list[WorkspaceItem] = []
     withheld: list[str] = []
 
     def lift(match: re.Match[str]) -> str:
@@ -107,9 +142,7 @@ def extract_workspace_items(text: str, material_count: int) -> ExtractedAnswer:
     return ExtractedAnswer(body=body, items=tuple(items), withheld=tuple(withheld))
 
 
-def _parse_block(
-    raw: str, material_count: int
-) -> tuple[WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml | None, str]:
+def _parse_block(raw: str, material_count: int) -> tuple[WorkspaceItem | None, str]:
     try:
         item = _ITEM_ADAPTER.validate_python(json.loads(raw))
     except json.JSONDecodeError:
@@ -124,15 +157,25 @@ def _parse_block(
     return item, ""
 
 
-def _citation_problem(
-    item: WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml, material_count: int
-) -> str | None:
+def _citation_problem(item: WorkspaceItem, material_count: int) -> str | None:
     if isinstance(item, WorkspaceDocument):
         cited = [*item.sources, *_inline_citations(item.content)]
         return _out_of_range(cited, material_count, "document")
     if isinstance(item, WorkspaceHtml):
         cited = [*item.sources, *_inline_citations(item.html)]
         return _out_of_range(cited, material_count, "html")
+    if isinstance(item, WorkspaceCode):
+        # Code cites only via its `sources` field: the code body is full
+        # of [0]-style subscripts (arr[0], args[2]) that are Python
+        # indexing, never citations — scanning it invents out-of-range
+        # citations and withholds perfectly honest blocks.
+        return _out_of_range([*item.sources], material_count, "code")
+    if isinstance(item, WorkspaceSlides):
+        cited = [*item.sources, *_inline_citations(item.deck)]
+        return _out_of_range(cited, material_count, "slides")
+    if isinstance(item, WorkspaceSheet):
+        cited = [*item.sources]
+        return _out_of_range(cited, material_count, "sheet")
     for number, question in enumerate(item.questions, start=1):
         cited = [
             *question.sources,

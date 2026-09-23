@@ -10,9 +10,12 @@ from __future__ import annotations
 import json
 
 from src.backend.tutor.workspace import (
+    WorkspaceCode,
     WorkspaceDocument,
     WorkspaceHtml,
     WorkspaceQuiz,
+    WorkspaceSheet,
+    WorkspaceSlides,
     extract_workspace_items,
 )
 
@@ -85,6 +88,99 @@ def test_html_inline_citation_out_of_range_is_withheld() -> None:
     extracted = extract_workspace_items(_block(item), material_count=1)
     assert extracted.items == ()
     assert "[5]" in extracted.withheld[0]
+
+
+def test_valid_code_is_lifted() -> None:
+    item = {
+        "type": "code",
+        "title": "Linear map",
+        "language": "python",
+        "code": "def f(x):\n    return 2 * x  # see [1]",
+        "sources": [1],
+    }
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.withheld == ()
+    assert isinstance(extracted.items[0], WorkspaceCode)
+    assert extracted.items[0].language == "python"
+    assert extracted.body == ""
+
+
+def test_uncited_code_is_withheld() -> None:
+    item = {"type": "code", "code": "print(1)", "sources": [4]}
+    extracted = extract_workspace_items(_block(item), material_count=2)
+    assert extracted.items == ()
+    assert "code cites [4]" in extracted.withheld[0]
+
+
+def test_code_subscripts_are_not_citations() -> None:
+    """Python indexing (v[0], args[2]) inside a code block must never be
+    read as an inline [n] citation — live-run catch: an honest linearity
+    checker was withheld because shift(v) returned v[0] + 1.0. Code
+    cites only via its `sources` field."""
+    item = {
+        "type": "code",
+        "language": "python",
+        "code": "def shift(v):\n    return [v[0] + 1.0, v[1] + 1.0, v[2] + 1.0]",
+        "sources": [1],
+    }
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.withheld == ()
+    assert isinstance(extracted.items[0], WorkspaceCode)
+
+
+def test_valid_sheet_is_lifted() -> None:
+    item = {
+        "type": "sheet",
+        "title": "Terms",
+        "columns": ["Term", "Definition"],
+        "rows": [["Linear map", "Preserves addition [1]"]],
+        "sources": [1],
+    }
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.withheld == ()
+    sheet = extracted.items[0]
+    assert isinstance(sheet, WorkspaceSheet)
+    assert sheet.rows == [["Linear map", "Preserves addition [1]"]]
+
+
+def test_sheet_row_width_must_match_columns() -> None:
+    item = {
+        "type": "sheet",
+        "columns": ["Term", "Definition"],
+        "rows": [["only one cell"]],
+        "sources": [1],
+    }
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.items == ()
+    assert "malformed" in extracted.withheld[0]
+
+
+def test_uncited_sheet_is_withheld() -> None:
+    item = {"type": "sheet", "columns": ["A"], "rows": [["b"]], "sources": []}
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.items == ()
+    assert len(extracted.withheld) == 1
+
+
+def test_valid_slides_are_lifted() -> None:
+    item = {
+        "type": "slides",
+        "title": "Lecture recap",
+        "deck": "# Recap\n\n---\n\n## Key idea [1]\n\nPreserves structure.",
+        "sources": [1],
+    }
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.withheld == ()
+    slides = extracted.items[0]
+    assert isinstance(slides, WorkspaceSlides)
+    assert "---" in slides.deck
+
+
+def test_slides_inline_citation_out_of_range_is_withheld() -> None:
+    item = {"type": "slides", "deck": "## Slide\n\nClaim [8].", "sources": [1]}
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.items == ()
+    assert "[8]" in extracted.withheld[0]
 
 
 def test_uncited_question_is_withheld_not_rendered() -> None:

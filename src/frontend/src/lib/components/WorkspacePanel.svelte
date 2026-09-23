@@ -1,8 +1,11 @@
 <script lang="ts">
   import { type WorkspaceCanvas } from '$lib/stores/workspace.svelte';
+  import CodeView from './CodeView.svelte';
   import EditableDocument from './EditableDocument.svelte';
   import EmptyState from './EmptyState.svelte';
   import Quiz from './Quiz.svelte';
+  import SheetView from './SheetView.svelte';
+  import SlidesView from './SlidesView.svelte';
   import SourceChips, { type SourceRef } from './SourceChips.svelte';
   import WorkspaceHtmlView from './WorkspaceHtmlView.svelte';
 
@@ -86,8 +89,14 @@
           <Quiz session={active.session} sources={sourcesFor(active.turnIndex)} {onfollowup} />
         {:else if active.session.kind === 'document'}
           <EditableDocument session={active.session} sources={sourcesFor(active.turnIndex)} />
-        {:else}
+        {:else if active.session.kind === 'html'}
           <WorkspaceHtmlView item={active.session.htmlItem} sources={sourcesFor(active.turnIndex)} />
+        {:else if active.session.kind === 'code'}
+          <CodeView item={active.session.item} sources={sourcesFor(active.turnIndex)} />
+        {:else if active.session.kind === 'sheet'}
+          <SheetView session={active.session} sources={sourcesFor(active.turnIndex)} />
+        {:else}
+          <SlidesView session={active.session} sources={sourcesFor(active.turnIndex)} />
         {/if}
       </div>
     {/if}

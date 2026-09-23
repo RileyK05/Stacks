@@ -24,8 +24,7 @@ from src.backend.retrieval import funnel, trace
 from src.backend.retrieval.config import RetrievalPolicy
 from src.backend.retrieval.funnel import Candidate
 from src.backend.tutor.workspace import (
-    WorkspaceDocument,
-    WorkspaceQuiz,
+    WorkspaceItem,
     extract_workspace_items,
 )
 
@@ -54,9 +53,7 @@ class Answer:
         self.layer_contribution = layer_contribution
         extracted = extract_workspace_items(text, len(chunk_ids))
         self.body = extracted.body
-        self.workspace_items: tuple[WorkspaceQuiz | WorkspaceDocument, ...] = (
-            extracted.items
-        )
+        self.workspace_items: tuple[WorkspaceItem, ...] = extracted.items
         self.withheld = extracted.withheld
 
 

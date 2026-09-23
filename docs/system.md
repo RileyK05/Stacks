@@ -210,6 +210,41 @@ flowchart LR
 model), and write you a clear answer — always pointing to the exact page it came
 from, and telling you what to practice next.
 
+### 1.6a The workspace harness (decision 011)
+
+The tutor can also **make things, not just say things**. Alongside the chat
+body, an answer may carry a workspace item — a multiple-choice quiz, an
+editable markdown document, a rendered HTML/SVG visualization, a code
+listing, an editable sheet, or a markdown slide deck. These open in a
+tabbed canvas pane beside the chat; tabs accumulate across turns and live
+only in the browser (nothing is persisted; saving is the Milestone 5
+`user_artifacts` path).
+
+The contract is owned by the backend, in code rather than in the prompt:
+
+1. The tutor prompt teaches fenced ` ```workspace ` JSON blocks (one per
+   answer; `configs/prompts.toml`).
+2. `src/backend/tutor/workspace.py` extracts each block, validates it
+   against the pydantic union, and applies decision 009's citation gate —
+   every item must cite the numbered material it rests on, inline `[n]`
+   included. Uncited or malformed blocks are **withheld**: removed from the
+   chat body (so a rejected quiz never leaks its answer key as raw JSON)
+   and replaced by a named reason shown inline in the chat.
+3. The `/ask` response carries the chat body as `text`, validated items as
+   `workspace`, and the withhold reasons as `withheld`.
+4. The frontend only renders validated payloads: `RichText` (markdown →
+   KaTeX math → DOMPurify-sanitized HTML) for text, per-type views for the
+   rest. Scripts never execute; code is highlighted, never run.
+
+```mermaid
+flowchart LR
+    A["answer text"] --> EXT["extract + validate +<br/>citation gate (009)"]
+    EXT --> BODY["chat body"]
+    EXT --> OK["workspace items"]
+    EXT --> NO["withheld + reason<br/>(shown in chat)"]
+    OK --> CANVAS["tabbed canvas<br/>(quiz / doc / html / code /<br/>sheet / slides)"]
+```
+
 ### 1.7 How the layers fit together
 
 ```mermaid
