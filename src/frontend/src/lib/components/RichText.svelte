@@ -12,6 +12,6 @@
   const html = $derived(renderRichText(text));
 </script>
 
-<div class="prose prose-sm max-w-none text-slate-800 dark:prose-invert dark:text-slate-200 {className}">
+<div class="prose prose-sm max-w-none text-fg-soft {className}">
   {@html html}
 </div>

@@ -2,28 +2,224 @@
 @plugin '@tailwindcss/typography';
 @custom-variant dark (&:where(.dark, .dark *));
 
-@theme {
+/*
+ * Design tokens. Components use the semantic utilities these generate
+ * (bg-surface, text-muted, border-line, bg-accent, text-danger-text, …)
+ * instead of raw palette colors, so light/dark is decided here once and
+ * new UI needs no `dark:` companions.
+ */
+:root {
+  --bg: oklch(0.975 0.006 85);
+  --surface: oklch(0.996 0.002 85);
+  --surface-2: oklch(0.957 0.007 85);
+  --surface-3: oklch(0.928 0.009 85);
+  --line: oklch(0.91 0.009 85);
+  --line-strong: oklch(0.845 0.011 85);
+
+  --fg: oklch(0.22 0.012 70);
+  --fg-soft: oklch(0.34 0.012 70);
+  --muted: oklch(0.5 0.012 70);
+  --subtle: oklch(0.63 0.01 70);
+
+  --accent: oklch(0.5 0.17 268);
+  --accent-hover: oklch(0.45 0.17 268);
+  --accent-text: oklch(0.47 0.16 268);
+  --accent-soft: oklch(0.945 0.028 268);
+  --accent-line: oklch(0.85 0.06 268);
+  --on-accent: oklch(0.99 0 0);
+
+  --success: oklch(0.58 0.13 155);
+  --success-soft: oklch(0.955 0.035 155);
+  --success-text: oklch(0.42 0.1 155);
+  --warning: oklch(0.74 0.15 70);
+  --warning-soft: oklch(0.96 0.045 85);
+  --warning-text: oklch(0.47 0.1 60);
+  --danger: oklch(0.56 0.19 27);
+  --danger-soft: oklch(0.957 0.025 27);
+  --danger-text: oklch(0.48 0.17 27);
+  --info: oklch(0.6 0.11 230);
+  --info-soft: oklch(0.955 0.022 230);
+  --info-text: oklch(0.44 0.09 230);
+
+  --shadow-color: 40 30 10;
+}
+
+.dark {
+  --bg: oklch(0.172 0.005 70);
+  --surface: oklch(0.207 0.006 70);
+  --surface-2: oklch(0.243 0.007 70);
+  --surface-3: oklch(0.285 0.008 70);
+  --line: oklch(0.285 0.007 70);
+  --line-strong: oklch(0.37 0.009 70);
+
+  --fg: oklch(0.945 0.007 85);
+  --fg-soft: oklch(0.85 0.007 85);
+  --muted: oklch(0.7 0.01 80);
+  --subtle: oklch(0.57 0.01 80);
+
+  --accent: oklch(0.56 0.16 270);
+  --accent-hover: oklch(0.61 0.15 270);
+  --accent-text: oklch(0.79 0.1 270);
+  --accent-soft: oklch(0.285 0.055 270);
+  --accent-line: oklch(0.43 0.09 270);
+  --on-accent: oklch(0.99 0 0);
+
+  --success: oklch(0.7 0.14 155);
+  --success-soft: oklch(0.27 0.04 155);
+  --success-text: oklch(0.82 0.11 155);
+  --warning: oklch(0.79 0.13 75);
+  --warning-soft: oklch(0.28 0.04 75);
+  --warning-text: oklch(0.86 0.1 80);
+  --danger: oklch(0.66 0.18 25);
+  --danger-soft: oklch(0.27 0.05 25);
+  --danger-text: oklch(0.81 0.1 25);
+  --info: oklch(0.71 0.1 230);
+  --info-soft: oklch(0.27 0.035 230);
+  --info-text: oklch(0.83 0.07 230);
+
+  --shadow-color: 0 0 0;
+}
+
+@theme inline {
   --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Fraunces', ui-serif, Georgia, serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-fg: var(--fg);
+  --color-fg-soft: var(--fg-soft);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-text: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-line: var(--accent-line);
+  --color-on-accent: var(--on-accent);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-success-text: var(--success-text);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-text: var(--warning-text);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-text: var(--danger-text);
+  --color-info: var(--info);
+  --color-info-soft: var(--info-soft);
+  --color-info-text: var(--info-text);
+
+  --shadow-card: 0 1px 2px rgb(var(--shadow-color) / 0.05), 0 1px 1px rgb(var(--shadow-color) / 0.03);
+  --shadow-lift: 0 2px 4px rgb(var(--shadow-color) / 0.04), 0 8px 24px -6px rgb(var(--shadow-color) / 0.12);
+  --shadow-pop: 0 4px 8px rgb(var(--shadow-color) / 0.06), 0 24px 48px -12px rgb(var(--shadow-color) / 0.28);
+
+  --animate-rise: rise 0.35s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
 html {
-  background-color: #f6f7fb;
-  color: var(--color-slate-900);
+  background-color: var(--bg);
+  color: var(--fg);
   color-scheme: light;
 }
 
 html.dark {
-  background-color: var(--color-slate-950);
-  color: var(--color-slate-100);
   color-scheme: dark;
 }
 
 body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
-/* Consistent focus ring across interactive elements */
-:focus-visible {
-  outline: 2px solid #6366f1;
-  outline-offset: 2px;
+::selection {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+/* Consistent focus ring across interactive elements. In the base layer so
+   fields with their own focus ring (focus:outline-none) can opt out. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Deterministic per-course color tile; set --hue inline (see $lib/utils/labels). */
+.monogram {
+  background: oklch(0.925 0.045 var(--hue));
+  color: oklch(0.42 0.12 var(--hue));
+}
+.dark .monogram {
+  background: oklch(0.33 0.065 var(--hue));
+  color: oklch(0.88 0.07 var(--hue));
+}
+
+/* Model-rendered prose follows the tokens instead of prose-invert. */
+.prose {
+  --tw-prose-body: var(--fg-soft);
+  --tw-prose-headings: var(--fg);
+  --tw-prose-lead: var(--muted);
+  --tw-prose-links: var(--accent-text);
+  --tw-prose-bold: var(--fg);
+  --tw-prose-counters: var(--subtle);
+  --tw-prose-bullets: var(--line-strong);
+  --tw-prose-hr: var(--line);
+  --tw-prose-quotes: var(--fg);
+  --tw-prose-quote-borders: var(--accent-line);
+  --tw-prose-captions: var(--muted);
+  --tw-prose-kbd: var(--fg);
+  --tw-prose-code: var(--fg);
+  --tw-prose-pre-code: oklch(0.9 0.005 85);
+  --tw-prose-pre-bg: oklch(0.2 0.006 70);
+  --tw-prose-th-borders: var(--line-strong);
+  --tw-prose-td-borders: var(--line);
+}
+.prose :where(code):not(:where(pre *)) {
+  border-radius: 0.3rem;
+  background: var(--surface-2);
+  padding: 0.1rem 0.3rem;
+  font-weight: 500;
+}
+.prose :where(code):not(:where(pre *))::before,
+.prose :where(code):not(:where(pre *))::after {
+  content: none;
+}
+.prose :where(h1, h2, h3) {
+  font-family: 'Fraunces', ui-serif, Georgia, serif;
+  font-weight: 550;
+  letter-spacing: -0.01em;
+}
+.prose .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
 }

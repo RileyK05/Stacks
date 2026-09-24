@@ -2,8 +2,8 @@
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
   import Button from '$lib/components/Button.svelte';
-  import Card from '$lib/components/Card.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
+  import Icon from '$lib/components/Icon.svelte';
   import TextInput from '$lib/components/TextInput.svelte';
 
   const resetToken = page.url.searchParams.get('token');
@@ -52,33 +52,44 @@
 </script>
 
 {#if resetToken}
-  <Card title="Choose a new password">
-    <form onsubmit={confirmReset} class="flex flex-col gap-4">
-      {#if error}<ErrorBanner {error} />{/if}
-      {#if notice}<p class="text-sm text-green-700 dark:text-green-300">{notice}</p>{/if}
-      <TextInput
-        label="New password"
-        type="password"
-        bind:value={newPassword}
-        required
-        autocomplete="new-password"
-      />
-      <Button type="submit" {loading}>Update password</Button>
-    </form>
-    <p class="mt-4 text-center text-sm">
-      <a href="/login" class="text-indigo-600 hover:underline dark:text-indigo-300">Back to sign in</a>
-    </p>
-  </Card>
+  <div class="mb-8">
+    <h1 class="font-display text-3xl font-medium tracking-tight text-fg">Choose a new password</h1>
+    <p class="mt-2 text-[15px] text-muted">Enter a new password for your account.</p>
+  </div>
+  <form onsubmit={confirmReset} class="flex flex-col gap-4">
+    {#if error}<ErrorBanner {error} />{/if}
+    {#if notice}
+      <p class="flex items-start gap-2 rounded-xl border border-success/30 bg-success-soft px-4 py-3 text-sm text-success-text">
+        <Icon name="check" class="mt-0.5 h-4 w-4" />{notice}
+      </p>
+    {/if}
+    <TextInput
+      label="New password"
+      type="password"
+      bind:value={newPassword}
+      required
+      autocomplete="new-password"
+    />
+    <Button type="submit" size="lg" {loading} class="mt-1 w-full">Update password</Button>
+  </form>
 {:else}
-  <Card title="Reset password">
-    <form onsubmit={requestReset} class="flex flex-col gap-4">
-      {#if error}<ErrorBanner {error} />{/if}
-      {#if notice}<p class="text-sm text-green-700 dark:text-green-300">{notice}</p>{/if}
-      <TextInput label="Email" type="email" bind:value={email} required autocomplete="email" />
-      <Button type="submit" {loading}>Send reset email</Button>
-    </form>
-    <p class="mt-4 text-center text-sm">
-      <a href="/login" class="text-indigo-600 hover:underline">Back to sign in</a>
-    </p>
-  </Card>
+  <div class="mb-8">
+    <h1 class="font-display text-3xl font-medium tracking-tight text-fg">Reset your password</h1>
+    <p class="mt-2 text-[15px] text-muted">Enter your email and we'll send you a reset link.</p>
+  </div>
+  <form onsubmit={requestReset} class="flex flex-col gap-4">
+    {#if error}<ErrorBanner {error} />{/if}
+    {#if notice}
+      <p class="flex items-start gap-2 rounded-xl border border-success/30 bg-success-soft px-4 py-3 text-sm text-success-text">
+        <Icon name="check" class="mt-0.5 h-4 w-4" />{notice}
+      </p>
+    {/if}
+    <TextInput label="Email" type="email" bind:value={email} required autocomplete="email" />
+    <Button type="submit" size="lg" {loading} class="mt-1 w-full">Send reset email</Button>
+  </form>
 {/if}
+<p class="mt-8 text-center text-sm text-muted">
+  <a href="/login" class="inline-flex items-center gap-1 font-medium text-accent-text hover:underline">
+    <Icon name="chevron-left" class="h-4 w-4" /> Back to sign in
+  </a>
+</p>

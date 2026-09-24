@@ -4,19 +4,23 @@
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
   import type { paths } from '$lib/api/schema';
+  import Badge from '$lib/components/Badge.svelte';
   import Button from '$lib/components/Button.svelte';
   import Card from '$lib/components/Card.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
+  import Icon, { type IconName } from '$lib/components/Icon.svelte';
+  import Monogram from '$lib/components/Monogram.svelte';
   import RichText from '$lib/components/RichText.svelte';
   import Select from '$lib/components/Select.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
-  import TextInput from '$lib/components/TextInput.svelte';
   import WorkspacePanel from '$lib/components/WorkspacePanel.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import { itemTitle, openSession, WorkspaceCanvas, type WorkspaceSession } from '$lib/stores/workspace.svelte';
   import { formatBytes } from '$lib/utils/format';
+  import { humanize, plural, visibilityMeta } from '$lib/utils/labels';
 
   type CourseView =
     paths['/courses/{course_id}']['get']['responses'][200]['content']['application/json'];
@@ -87,7 +91,7 @@
     'video',
     'audio',
     'code'
-  ].map((value) => ({ value: value as SourceType, label: value.replace(/_/g, ' ') }));
+  ].map((value) => ({ value: value as SourceType, label: humanize(value) }));
 
   let isOwner = $derived(course?.role === 'owner');
   let joinCode = $derived(course?.join_code ?? null);
@@ -207,11 +211,28 @@
     canvas.clear();
   }
 
-  const starterPrompts = [
-    'Summarize the main ideas so far',
-    'Quiz me with a few multiple-choice questions',
-    'Make me an editable study guide'
+  const starterPrompts: { text: string; icon: IconName }[] = [
+    { text: 'Summarize the main ideas so far', icon: 'book' },
+    { text: 'Quiz me with a few multiple-choice questions', icon: 'list-checks' },
+    { text: 'Make me an editable study guide', icon: 'file-pen' }
   ];
+
+  const tabs: { id: typeof activeTab; label: string; icon: IconName }[] = [
+    { id: 'ask', label: 'Ask', icon: 'sparkles' },
+    { id: 'sources', label: 'Sources', icon: 'file-text' },
+    { id: 'members', label: 'Members', icon: 'users' }
+  ];
+
+  const upcoming: { label: string; icon: IconName }[] = [
+    { label: 'Probe', icon: 'target' },
+    { label: 'Progress', icon: 'trending-up' },
+    { label: 'Artifacts', icon: 'package' }
+  ];
+
+  function onFilePicked() {
+    const file = fileInput?.files?.[0];
+    if (file) void uploadFile(file);
+  }
 
   async function openWorkspace(index: number) {
     canvas.openFromTurn(index, turns[index].workspace);
@@ -340,213 +361,283 @@
 {#if error}
   <ErrorBanner {error} />
 {:else if loading || !course}
-  <div class="flex flex-col gap-4">
-    <Skeleton class="h-8 w-64" />
-    <Skeleton class="h-40 w-full" />
-    <Skeleton class="h-40 w-full" />
+  <div class="flex flex-col gap-6">
+    <div class="flex items-center gap-4">
+      <Skeleton class="h-14 w-14 rounded-2xl" />
+      <div class="flex flex-col gap-2"><Skeleton class="h-8 w-72" /><Skeleton class="h-4 w-48" /></div>
+    </div>
+    <Skeleton class="h-10 w-full" />
+    <Skeleton class="h-64 w-full rounded-2xl" />
   </div>
 {:else}
+  {@const visibility = visibilityMeta[course.visibility]}
   <div class="flex flex-col gap-6">
-    <div class="flex items-start justify-between">
-      <div>
-        <h1 class="text-2xl font-bold text-slate-900 dark:text-slate-100">{course.name}</h1>
-        <p class="mt-1 text-sm text-slate-500">
-          {course.visibility} · you are the {course.role} · {formatBytes(course.stored_bytes ?? 0)} stored
-        </p>
+    <header class="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
+      <div class="flex min-w-0 items-start gap-4">
+        <Monogram name={course.name} size="lg" class="hidden sm:flex" />
+        <div class="min-w-0">
+          <h1 class="font-display text-[1.75rem] font-medium leading-tight tracking-tight text-fg sm:text-[2rem]">
+            {course.name}
+          </h1>
+          <div class="mt-2.5 flex flex-wrap items-center gap-2">
+            <Badge tone={isOwner ? 'accent' : 'neutral'} icon={isOwner ? 'key' : 'user'}>
+              {isOwner ? 'Owner' : humanize(course.role)}
+            </Badge>
+            {#if visibility}
+              <Badge icon={visibility.icon}>{visibility.label}</Badge>
+            {/if}
+            <span class="text-[13px] text-subtle">
+              {plural(course.source_count, 'source')} · {formatBytes(course.stored_bytes ?? 0)} stored
+            </span>
+          </div>
+        </div>
       </div>
-      {#if course.role === 'learner'}
-        <Button variant="danger" onclick={leave}>Leave course</Button>
-      {/if}
-    </div>
+      <div class="flex shrink-0 flex-wrap items-center gap-1">
+        {#each upcoming as item (item.label)}
+          <a
+            href={`/courses/${courseId}/${item.label.toLowerCase()}`}
+            class="hidden items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-fg sm:inline-flex"
+          >
+            <Icon name={item.icon} class="h-4 w-4 text-subtle" />
+            {item.label}
+            <span class="rounded bg-surface-3 px-1 py-px text-[10px] font-semibold uppercase tracking-wide text-subtle">Soon</span>
+          </a>
+        {/each}
+        {#if course.role === 'learner'}
+          <Button variant="ghost" size="sm" onclick={leave} class="text-danger-text hover:bg-danger-soft hover:text-danger-text">
+            <Icon name="log-out" class="h-4 w-4" /> Leave
+          </Button>
+        {/if}
+      </div>
+    </header>
 
     {#if actionError}<ErrorBanner error={actionError} />{/if}
 
-    <div class="flex flex-wrap gap-2">
-      {#each [['Probe', 'M3'], ['Progress', 'M4'], ['Artifacts', 'M5']] as [label, milestone]}
-        <a
-          href={`/courses/${courseId}/${label.toLowerCase()}`}
-          class="inline-flex items-center gap-1.5 rounded-full bg-white px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200 transition-colors hover:text-indigo-700 hover:ring-indigo-200 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-700 dark:hover:text-indigo-300 dark:hover:ring-indigo-700"
-        >
-          {label}
-          <span class="rounded-full bg-slate-100 px-1.5 text-[10px] text-slate-400 dark:bg-slate-800">{milestone}</span>
-        </a>
-      {/each}
-    </div>
-
-    <div class="flex gap-1 border-b border-slate-200 dark:border-slate-700">
-      {#each [['ask', 'Ask'], ['sources', 'Sources'], ['members', 'Members']] as [tab, label]}
-        {#if tab === 'ask' || isOwner}
+    {#if isOwner}
+      <div class="flex gap-1 border-b border-line" role="tablist">
+        {#each tabs as { id: tab, label, icon } (tab)}
           <button
-            onclick={() => (activeTab = tab as 'ask' | 'sources' | 'members')}
-            class={`-mb-px border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+            type="button"
+            role="tab"
+            aria-selected={activeTab === tab}
+            onclick={() => (activeTab = tab)}
+            class={`-mb-px inline-flex items-center gap-2 border-b-2 px-3 py-2.5 text-sm font-medium transition-colors ${
               activeTab === tab
-                ? 'border-indigo-600 text-indigo-700 dark:border-indigo-400 dark:text-indigo-300'
-                : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
+                ? 'border-accent text-fg'
+                : 'border-transparent text-muted hover:border-line-strong hover:text-fg'
             }`}
           >
+            <Icon name={icon} class={`h-4 w-4 ${activeTab === tab ? 'text-accent-text' : 'text-subtle'}`} />
             {label}
-            {#if tab === 'sources' && anyPending}
-              <span class="ml-1 inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400 align-middle"></span>
+            {#if tab === 'sources'}
+              <span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-semibold text-muted">{sources.length}</span>
+              {#if anyPending}
+                <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" title="Indexing in progress"></span>
+              {/if}
+            {:else if tab === 'members'}
+              <span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-semibold text-muted">
+                {members.filter((member) => member.status === 'active').length}
+              </span>
             {/if}
           </button>
-        {/if}
-      {/each}
-    </div>
+        {/each}
+      </div>
+    {/if}
 
     {#if activeTab === 'ask'}
       <div class={`grid items-start gap-6 ${workspaceOpen ? 'lg:grid-cols-2' : ''}`}>
-        <div class="flex min-w-0 flex-col gap-6">
-          <Card>
-            {#if turns.length === 0}
-              <div class="flex flex-col gap-3 pb-2">
-                <p class="text-sm text-slate-600 dark:text-slate-300">
-                  Ask anything about this course. Answers cite the exact material they came from.
-                  Ask for a quiz or a study guide and it opens in the workspace beside the chat.
-                </p>
-                <div class="flex flex-wrap gap-2">
-                  {#each starterPrompts as starter (starter)}
-                    <button
-                      type="button"
-                      onclick={() => askFollowUp(starter)}
-                      class="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200 transition-colors hover:text-indigo-700 hover:ring-indigo-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700 dark:hover:text-indigo-300 dark:hover:ring-indigo-700"
-                    >
-                      {starter}
-                    </button>
-                  {/each}
-                </div>
-              </div>
-            {:else}
-              <div bind:this={sessionRef} class="flex flex-col gap-5">
-                {#each turns as turn, index (index)}
-                  <div class="flex flex-col gap-2">
-                    <div class="flex items-baseline gap-2">
-                      <span class="font-mono text-xs text-indigo-600 dark:text-indigo-300">Q{index + 1}</span>
-                      <p class="text-sm font-medium text-slate-900 dark:text-slate-100">{turn.question}</p>
-                    </div>
-
-                    {#if turn.error}
-                      <ErrorBanner error={turn.error} />
-                    {:else if turn.answer === null}
-                      <div class="flex items-center gap-2 text-xs text-slate-400"><Spinner /> Thinking…</div>
-                    {:else}
-                      {#if turn.answer}
-                        <div class="rounded-lg border border-indigo-100 bg-indigo-50/50 p-4 dark:border-indigo-900 dark:bg-indigo-950/40">
-                          <RichText text={turn.answer} />
-                        </div>
-                      {/if}
-
-                      {#if turn.workspace.length > 0}
-                        <button
-                          type="button"
-                          onclick={() => openWorkspace(index)}
-                          class={`flex items-center gap-2 self-start rounded-lg px-3 py-2 text-xs font-medium ring-1 transition-colors ${
-                            canvas.active?.turnIndex === index
-                              ? 'bg-indigo-600 text-white ring-indigo-600'
-                              : 'bg-white text-indigo-700 ring-indigo-200 hover:bg-indigo-50 dark:bg-slate-900 dark:text-indigo-300 dark:ring-indigo-800 dark:hover:bg-indigo-950/50'
-                          }`}
-                        >
-                          {canvas.active?.turnIndex === index ? 'Showing in workspace' : 'Open in workspace →'}
-                          <span class="opacity-80">
-                            {turn.workspace.map((session) => itemTitle(session)).join(' · ')}
-                          </span>
-                        </button>
-                      {/if}
-
-                      {#each turn.withheld as reason, reasonIndex (reasonIndex)}
-                        <p class="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-200 dark:bg-amber-950/40 dark:text-amber-200 dark:ring-amber-900">
-                          The tutor generated something that is not shown because it could not be tied to
-                          your course material: {reason}
-                        </p>
-                      {/each}
-
-                      <div class="rounded-lg bg-slate-50 p-3 ring-1 ring-slate-200 dark:bg-slate-800/60 dark:ring-slate-700">
-                        <button
-                          class="flex w-full items-center justify-between text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400"
-                          onclick={() => (turn.showSources = !turn.showSources)}
-                        >
-                          <span>
-                            Sources used
-                            {#if turn.citationsLoading}<Spinner />{/if}
-                          </span>
-                          <span>{turn.showSources ? '▾' : '▸'} {turn.citations.length}</span>
-                        </button>
-
-                        {#if turn.showSources && turn.citations.length > 0}
-                          <ul class="mt-2 flex flex-col gap-2">
-                            {#each turn.citations as citation, citeIndex (citation.chunk_id)}
-                              <li class="rounded-md bg-white p-3 ring-1 ring-slate-200 dark:bg-slate-900 dark:ring-slate-700">
-                                <div class="flex items-baseline justify-between gap-2">
-                                  <span class="font-mono text-xs text-indigo-600 dark:text-indigo-300">[{citeIndex + 1}]</span>
-                                  <span class="text-xs text-slate-500 dark:text-slate-400">
-                                    {citation.filename} · {citation.label}
-                                  </span>
-                                </div>
-                                {#if citation.description}
-                                  <p class="mt-1 text-xs italic text-slate-500 dark:text-slate-400">{citation.description}</p>
-                                {/if}
-                                <p class="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">{citation.text}</p>
-                              </li>
-                            {/each}
-                          </ul>
-                        {/if}
-
-                        {#if turn.traceId && !turn.citationsLoading}
-                          <p class="mt-2 font-mono text-[10px] text-slate-400">trace {turn.traceId}</p>
-                        {/if}
-                      </div>
-                    {/if}
-                  </div>
+        <div class={`flex min-w-0 flex-col ${workspaceOpen ? '' : 'mx-auto w-full max-w-3xl'}`}>
+          {#if turns.length === 0}
+            <div class="flex flex-col items-center rounded-2xl border border-line bg-surface px-6 py-10 text-center shadow-card sm:px-10 sm:py-14">
+              <span class="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-soft text-accent-text ring-1 ring-accent-line/50">
+                <Icon name="sparkles" class="h-6 w-6" />
+              </span>
+              <h2 class="mt-5 font-display text-2xl font-medium tracking-tight text-fg">
+                What do you want to learn?
+              </h2>
+              <p class="mt-2 max-w-md text-[15px] leading-relaxed text-muted">
+                Answers cite the exact material they came from. Ask for a quiz or a study guide
+                and it opens in the workspace beside the chat.
+              </p>
+              <div class="mt-8 grid w-full gap-2.5 sm:grid-cols-3">
+                {#each starterPrompts as starter (starter.text)}
+                  <button
+                    type="button"
+                    onclick={() => askFollowUp(starter.text)}
+                    class="group flex flex-col items-start gap-2.5 rounded-xl border border-line bg-bg/60 p-3.5 text-left text-[13px] font-medium leading-snug text-fg-soft transition-all hover:-translate-y-px hover:border-accent-line hover:bg-surface hover:shadow-card"
+                  >
+                    <Icon name={starter.icon} class="h-4 w-4 text-subtle transition-colors group-hover:text-accent-text" />
+                    {starter.text}
+                  </button>
                 {/each}
               </div>
-            {/if}
+            </div>
+          {:else}
+            <div class="mb-4 flex items-center justify-between text-xs text-subtle">
+              <span>{plural(turns.length, 'question')} this session (kept in this browser)</span>
+              <Button variant="ghost" size="sm" onclick={clearSession}>
+                <Icon name="rotate-ccw" class="h-3.5 w-3.5" /> Clear session
+              </Button>
+            </div>
+            <div bind:this={sessionRef} class="flex scroll-mb-40 flex-col gap-8">
+              {#each turns as turn, index (index)}
+                <article class="flex animate-rise flex-col gap-4">
+                  <div class="flex justify-end">
+                    <p class="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-tr-md bg-accent-soft px-4 py-2.5 text-[15px] leading-relaxed text-fg">
+                      {turn.question}
+                    </p>
+                  </div>
 
-            <form
-              onsubmit={ask}
-              class="mt-5 flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-700"
+                  <div class="flex gap-3">
+                    <span
+                      class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent text-on-accent shadow-card"
+                      aria-hidden="true"
+                    >
+                      <Icon name="sparkles" class="h-4 w-4" />
+                    </span>
+                    <div class="flex min-w-0 flex-1 flex-col gap-3">
+                      {#if turn.error}
+                        <ErrorBanner error={turn.error} />
+                      {:else if turn.answer === null}
+                        <div class="flex items-center gap-2.5 py-1 text-sm text-muted">
+                          <span class="flex gap-1" aria-hidden="true">
+                            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:-0.3s]"></span>
+                            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-accent [animation-delay:-0.15s]"></span>
+                            <span class="h-1.5 w-1.5 animate-bounce rounded-full bg-accent"></span>
+                          </span>
+                          Reading your course material…
+                        </div>
+                      {:else}
+                        {#if turn.answer}
+                          <RichText text={turn.answer} class="prose-p:leading-relaxed text-[15px]" />
+                        {/if}
+
+                        {#if turn.workspace.length > 0}
+                          {@const showing = canvas.active?.turnIndex === index && workspaceOpen}
+                          <button
+                            type="button"
+                            onclick={() => openWorkspace(index)}
+                            class={`flex items-center gap-3 self-start rounded-xl border px-3 py-2.5 text-left transition-all ${
+                              showing
+                                ? 'border-accent-line bg-accent-soft'
+                                : 'border-line bg-surface shadow-card hover:border-accent-line hover:shadow-lift'
+                            }`}
+                          >
+                            <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-soft text-accent-text">
+                              <Icon name="panel-right" class="h-4 w-4" />
+                            </span>
+                            <span class="min-w-0">
+                              <span class="block text-[13px] font-semibold text-fg">
+                                {showing ? 'Showing in workspace' : 'Open in workspace'}
+                              </span>
+                              <span class="block truncate text-xs text-muted">
+                                {turn.workspace.map((session) => itemTitle(session)).join(' · ')}
+                              </span>
+                            </span>
+                            {#if !showing}<Icon name="arrow-right" class="ml-1 h-4 w-4 text-subtle" />{/if}
+                          </button>
+                        {/if}
+
+                        {#each turn.withheld as reason, reasonIndex (reasonIndex)}
+                          <p class="flex gap-2 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2.5 text-xs leading-relaxed text-warning-text">
+                            <Icon name="alert-triangle" class="mt-px h-3.5 w-3.5" />
+                            <span>
+                              The tutor generated something that is not shown because it could not be tied to
+                              your course material: {reason}
+                            </span>
+                          </p>
+                        {/each}
+
+                        <div class="rounded-xl border border-line bg-surface">
+                          <button
+                            type="button"
+                            class="flex w-full items-center gap-2 px-3.5 py-2.5 text-[13px] font-medium text-muted transition-colors hover:text-fg"
+                            aria-expanded={turn.showSources}
+                            onclick={() => (turn.showSources = !turn.showSources)}
+                          >
+                            <Icon name="bookmark" class="h-4 w-4 text-subtle" />
+                            {#if turn.citationsLoading}
+                              Finding sources… <Spinner class="h-3.5 w-3.5" />
+                            {:else}
+                              Sources used
+                              <span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-semibold">{turn.citations.length}</span>
+                            {/if}
+                            <Icon
+                              name="chevron-down"
+                              class={`ml-auto h-4 w-4 text-subtle transition-transform ${turn.showSources ? 'rotate-180' : ''}`}
+                            />
+                          </button>
+
+                          {#if turn.showSources && turn.citations.length > 0}
+                            <ol class="divide-y divide-line border-t border-line">
+                              {#each turn.citations as citation, citeIndex (citation.chunk_id)}
+                                <li class="px-3.5 py-3">
+                                  <div class="flex min-w-0 items-center gap-2 text-xs">
+                                    <span class="flex h-5 min-w-5 items-center justify-center rounded-md bg-accent-soft px-1 font-mono text-[11px] font-medium text-accent-text">
+                                      {citeIndex + 1}
+                                    </span>
+                                    <span class="truncate font-medium text-fg-soft">{citation.filename}</span>
+                                    <span class="shrink-0 text-subtle">{citation.label}</span>
+                                  </div>
+                                  {#if citation.description}
+                                    <p class="mt-1.5 text-xs italic text-muted">{citation.description}</p>
+                                  {/if}
+                                  <p class="mt-2 border-l-2 border-line-strong pl-3 text-[13px] leading-relaxed text-muted">
+                                    {citation.text}
+                                  </p>
+                                </li>
+                              {/each}
+                            </ol>
+                          {/if}
+
+                          {#if turn.showSources && turn.traceId && !turn.citationsLoading}
+                            <p class="border-t border-line px-3.5 py-2 font-mono text-[10px] text-subtle">trace {turn.traceId}</p>
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+                </article>
+              {/each}
+            </div>
+          {/if}
+
+          <form
+            onsubmit={ask}
+            class="sticky bottom-0 z-10 mt-6 bg-gradient-to-t from-bg from-60% to-transparent pb-4 pt-4"
+          >
+            <label for="question" class="sr-only">Question</label>
+            <div
+              class="flex items-center gap-2 rounded-2xl border border-line-strong bg-surface p-1.5 pl-4 shadow-lift transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-3 focus-within:ring-accent/15"
             >
-              <TextInput
-                label="Question"
+              <input
+                id="question"
                 bind:value={question}
                 required
                 maxlength={QUESTION_MAX_LENGTH}
+                autocomplete="off"
                 placeholder="Ask something, or say: quiz me on …"
+                class="h-10 min-w-0 flex-1 bg-transparent text-[15px] text-fg placeholder:text-subtle focus:outline-none"
               />
-              <div class="flex items-center justify-between">
-                <p class="text-xs text-slate-400">
-                  {turns.length === 0
-                    ? 'Answers cite the exact course material they came from.'
-                    : `${turns.length} question${turns.length === 1 ? '' : 's'} this session (kept in this browser)`}
-                </p>
-                <div class="flex gap-2">
-                  {#if turns.length > 0}
-                    <Button variant="secondary" onclick={clearSession}>Clear session</Button>
-                  {/if}
-                  <Button type="submit" loading={asking}>Ask</Button>
-                </div>
-              </div>
-            </form>
-          </Card>
-
-          {#if isOwner && joinCode}
-            <Card title="Join code">
-              <div class="flex items-center gap-3">
-                <p class="font-mono text-lg tracking-wider text-slate-900 dark:text-slate-100">{joinCode}</p>
-                <Button variant="secondary" onclick={copyJoinCode}>Copy</Button>
-              </div>
-              <p class="mt-1 text-sm text-slate-500">
-                Anyone with this code can join while the course is not private.
-              </p>
-              <Button variant="secondary" onclick={rotateJoinCode} class="mt-3">
-                Rotate code
-              </Button>
-            </Card>
-          {/if}
+              <button
+                type="submit"
+                disabled={asking || !question.trim()}
+                aria-label="Ask"
+                class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent text-on-accent transition-all hover:bg-accent-hover disabled:bg-surface-3 disabled:text-subtle"
+              >
+                {#if asking}<Spinner />{:else}<Icon name="arrow-up" class="h-[18px] w-[18px]" strokeWidth={2.25} />{/if}
+              </button>
+            </div>
+            <p class="mt-2 px-1 text-center text-xs text-subtle">
+              Answers cite the exact course material they came from.
+            </p>
+          </form>
         </div>
 
         {#if workspaceOpen}
           <div
             bind:this={workspaceRef}
-            class="min-w-0 scroll-mt-6 lg:sticky lg:top-6 lg:h-[calc(100vh-3rem)]"
+            class="min-w-0 scroll-mt-20 lg:sticky lg:top-6 lg:h-[calc(100dvh-3rem)]"
           >
             <WorkspacePanel
               {canvas}
@@ -558,113 +649,164 @@
         {/if}
       </div>
     {:else if activeTab === 'sources' && isOwner}
-      <Card title="Sources">
-        <form
-          onsubmit={(e) => {
-            e.preventDefault();
-            const file = fileInput?.files?.[0];
-            if (file) void uploadFile(file);
-          }}
-          class="mb-4 flex flex-col gap-3"
-        >
-          <div
-            role="button"
-            tabindex="0"
-            class={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-4 py-8 text-center transition-colors ${
-              dragOver ? 'border-indigo-400 bg-indigo-50 dark:border-indigo-600 dark:bg-indigo-950/50' : 'border-slate-300 hover:border-slate-400 dark:border-slate-700 dark:hover:border-slate-500'
-            }`}
-            ondragover={(e) => {
-              e.preventDefault();
-              dragOver = true;
-            }}
-            ondragleave={() => (dragOver = false)}
-            ondrop={onDrop}
-            onclick={() => fileInput?.click()}
-            onkeydown={(e) => e.key === 'Enter' && fileInput?.click()}
-          >
-            <p class="text-sm font-medium text-slate-700 dark:text-slate-200">
-              {uploading ? 'Uploading…' : 'Drop a file here, or click to browse'}
-            </p>
-            <p class="text-xs text-slate-500">PDF, Markdown, or plain text</p>
-            <input bind:this={fileInput} type="file" class="hidden" />
+      <div class="flex flex-col gap-6">
+        <Card title="Add material" description="Upload a syllabus, slides, notes, problem sets — anything the tutor should answer from.">
+          <div class="flex flex-col gap-4 sm:flex-row sm:items-stretch">
+            <div class="sm:w-52">
+              <Select label="Source type" options={sourceTypeOptions} bind:value={sourceType} />
+            </div>
+            <div
+              role="button"
+              tabindex="0"
+              aria-label="Upload a file"
+              class={`flex flex-1 cursor-pointer items-center gap-4 rounded-xl border-2 border-dashed px-5 py-5 transition-colors ${
+                dragOver
+                  ? 'border-accent bg-accent-soft'
+                  : 'border-line-strong hover:border-accent-line hover:bg-surface-2/60'
+              }`}
+              ondragover={(e) => {
+                e.preventDefault();
+                dragOver = true;
+              }}
+              ondragleave={() => (dragOver = false)}
+              ondrop={onDrop}
+              onclick={() => !uploading && fileInput?.click()}
+              onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && !uploading && fileInput?.click()}
+            >
+              <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-muted ring-1 ring-line">
+                {#if uploading}<Spinner class="h-5 w-5" />{:else}<Icon name="upload-cloud" class="h-5 w-5" />{/if}
+              </span>
+              <div class="min-w-0">
+                <p class="text-sm font-medium text-fg">
+                  {#if uploading}
+                    Uploading…
+                  {:else}
+                    Drop a file here, or <span class="text-accent-text underline underline-offset-2">browse</span>
+                  {/if}
+                </p>
+                <p class="mt-0.5 text-xs text-subtle">PDF, Markdown, or plain text · indexed automatically</p>
+              </div>
+              <input bind:this={fileInput} type="file" class="hidden" onchange={onFilePicked} />
+            </div>
           </div>
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <Select label="Source type" options={sourceTypeOptions} bind:value={sourceType} />
-            <Button type="submit" loading={uploading}>Upload</Button>
-          </div>
-        </form>
-        {#if uploadError}<div class="mb-3"><ErrorBanner error={uploadError} /></div>{/if}
+          {#if uploadError}<div class="mt-4"><ErrorBanner error={uploadError} /></div>{/if}
+        </Card>
+
         {#if sources.length === 0}
-          <p class="text-sm text-slate-500">No sources uploaded yet.</p>
+          <EmptyState icon="file-text" title="No sources yet" message="Upload course material above and the tutor will start answering from it." />
         {:else}
-          <table class="w-full text-left text-sm">
-            <thead>
-              <tr class="border-b border-slate-200 text-slate-500 dark:border-slate-700 dark:text-slate-400">
-                <th class="py-2 pr-4 font-medium">File</th>
-                <th class="py-2 pr-4 font-medium">Type</th>
-                <th class="py-2 pr-4 font-medium">Status</th>
-                <th class="py-2 font-medium"></th>
-              </tr>
-            </thead>
-            <tbody>
+          <section class="overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
+            <div class="flex items-center justify-between border-b border-line px-5 py-3.5 sm:px-6">
+              <h2 class="text-[15px] font-semibold text-fg">Materials</h2>
+              <span class="text-[13px] text-subtle">{plural(sources.length, 'file')}</span>
+            </div>
+            <ul class="divide-y divide-line">
               {#each sources as source (source.source_id)}
-                <tr class="border-b border-slate-100 dark:border-slate-800">
-                  <td class="py-2 pr-4">
-                    {source.filename}
-                    <p class="text-xs text-slate-400">{formatBytes(source.size_bytes ?? 0)}</p>
-                  </td>
-                  <td class="py-2 pr-4 text-slate-500 dark:text-slate-400">{source.source_type}</td>
-                  <td class="py-2 pr-4">
-                    <span
-                      class={source.status === 'failed'
-                        ? 'text-red-600 dark:text-red-400'
-                        : source.status === 'indexed'
-                          ? 'text-green-700 dark:text-green-300'
-                          : 'text-slate-500'}
-                    >
-                      {source.status === 'uploaded' || source.status === 'scanned'
-                        ? 'indexing…'
-                        : source.status}
-                    </span>
+                {@const pending = source.status === 'uploaded' || source.status === 'scanned'}
+                <li class="flex items-center gap-4 px-5 py-3.5 sm:px-6">
+                  <span
+                    class={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ring-1 ${
+                      source.status === 'failed' ? 'bg-danger-soft text-danger-text ring-danger/20' : 'bg-surface-2 text-muted ring-line'
+                    }`}
+                  >
+                    <Icon name="file-text" class="h-[18px] w-[18px]" />
+                  </span>
+                  <div class="min-w-0 flex-1">
+                    <p class="truncate text-sm font-medium text-fg">{source.filename}</p>
+                    <p class="mt-0.5 text-xs text-subtle">
+                      {humanize(source.source_type)} · {formatBytes(source.size_bytes ?? 0)}
+                    </p>
                     {#if source.error_message}
-                      <p class="text-xs text-red-500">{source.error_message}</p>
+                      <p class="mt-1 text-xs text-danger-text">{source.error_message}</p>
                     {/if}
-                  </td>
-                  <td class="py-2 text-right">
+                  </div>
+                  <div class="flex shrink-0 items-center gap-2">
                     {#if source.status === 'failed'}
-                      <Button variant="secondary" onclick={() => requeue(source.source_id)}>
-                        Requeue
+                      <Button variant="secondary" size="sm" onclick={() => requeue(source.source_id)}>
+                        <Icon name="refresh" class="h-3.5 w-3.5" /> Retry
                       </Button>
                     {/if}
-                  </td>
-                </tr>
+                    {#if pending}
+                      <Badge tone="info"><Spinner class="h-3 w-3" /> Indexing</Badge>
+                    {:else if source.status === 'indexed'}
+                      <Badge tone="success" dot>Indexed</Badge>
+                    {:else if source.status === 'failed'}
+                      <Badge tone="danger" dot>Failed</Badge>
+                    {:else}
+                      <Badge>{humanize(source.status)}</Badge>
+                    {/if}
+                  </div>
+                </li>
               {/each}
-            </tbody>
-          </table>
+            </ul>
+          </section>
         {/if}
-      </Card>
+      </div>
     {:else if activeTab === 'members' && isOwner}
-      <Card title="Members">
+      <div class="flex flex-col gap-6">
+        {#if joinCode}
+          <Card title="Invite learners" description="Anyone with this code can join while the course is not private.">
+            <div class="flex flex-wrap items-center gap-3">
+              <code
+                class="rounded-xl border border-dashed border-line-strong bg-surface-2 px-4 py-2 font-mono text-lg font-medium tracking-[0.12em] text-fg"
+              >
+                {joinCode}
+              </code>
+              <Button variant="secondary" onclick={copyJoinCode}>
+                <Icon name="copy" class="h-4 w-4" /> Copy
+              </Button>
+              <Button variant="ghost" onclick={rotateJoinCode}>
+                <Icon name="refresh" class="h-4 w-4" /> Rotate
+              </Button>
+            </div>
+          </Card>
+        {/if}
+
         {#if members.length === 0}
-          <p class="text-sm text-slate-500">No members yet — share the join code to add learners.</p>
+          <EmptyState
+            icon="users"
+            title="No members yet"
+            message={joinCode
+              ? 'Share the join code above to add learners.'
+              : 'This course is private. Change its visibility to let learners join with a code.'}
+          />
         {:else}
-          <ul class="flex flex-col gap-2 text-sm">
-            {#each members as member (member.user_id)}
-              <li class="flex items-center justify-between border-b border-slate-100 py-2 dark:border-slate-800">
-                <span class="font-mono text-slate-700 dark:text-slate-200">{member.user_id}</span>
-                <span class="flex items-center gap-3">
-                  <span class="text-slate-500 dark:text-slate-400">{member.status}</span>
+          <section class="overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
+            <div class="flex items-center justify-between border-b border-line px-5 py-3.5 sm:px-6">
+              <h2 class="text-[15px] font-semibold text-fg">Members</h2>
+              <span class="text-[13px] text-subtle">{plural(members.length, 'member')}</span>
+            </div>
+            <ul class="divide-y divide-line">
+              {#each members as member (member.user_id)}
+                <li class="flex items-center gap-4 px-5 py-3 sm:px-6">
+                  <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-3 text-muted">
+                    <Icon name="user" class="h-4 w-4" />
+                  </span>
+                  <span class="min-w-0 flex-1 truncate font-mono text-[13px] text-fg-soft" title={member.user_id}>
+                    {member.user_id}
+                  </span>
+                  <Badge
+                    tone={member.status === 'active' ? 'success' : member.status === 'invited' ? 'info' : 'neutral'}
+                    dot
+                  >
+                    {humanize(member.status)}
+                  </Badge>
                   {#if member.status === 'active'}
-                    <Button variant="secondary" onclick={() => revoke(member.user_id)}>
-                      Revoke
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onclick={() => revoke(member.user_id)}
+                      class="hover:bg-danger-soft hover:text-danger-text"
+                    >
+                      <Icon name="user-minus" class="h-3.5 w-3.5" /> Revoke
                     </Button>
                   {/if}
-                </span>
-              </li>
-            {/each}
-          </ul>
+                </li>
+              {/each}
+            </ul>
+          </section>
         {/if}
-      </Card>
+      </div>
     {/if}
   </div>
 {/if}

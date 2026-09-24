@@ -2,10 +2,15 @@
   import { onMount } from 'svelte';
   import { api } from '$lib/api/client';
   import type { paths } from '$lib/api/schema';
+  import Badge from '$lib/components/Badge.svelte';
   import Button from '$lib/components/Button.svelte';
-  import Card from '$lib/components/Card.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
+  import Icon from '$lib/components/Icon.svelte';
+  import Monogram from '$lib/components/Monogram.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
+  import Skeleton from '$lib/components/Skeleton.svelte';
+  import { plural } from '$lib/utils/labels';
   import { toast } from '$lib/stores/toast.svelte';
 
   type ArchivedCourse =
@@ -61,67 +66,102 @@
   }
 
   function formatDate(iso: string | undefined): string {
-    return iso ? new Date(iso).toLocaleDateString() : '—';
+    return iso
+      ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : '—';
+  }
+
+  function daysLeft(iso: string): number {
+    return Math.ceil((new Date(iso).getTime() - Date.now()) / 86_400_000);
   }
 </script>
 
-<h1 class="mb-6 text-2xl font-bold text-slate-900 dark:text-slate-100">Archives</h1>
+<PageHeader
+  title="Archives"
+  description="Deleted courses stay recoverable for a while, and what you learned is kept as a memory."
+/>
 
 {#if error}
   <ErrorBanner {error} />
 {:else if loading}
-  <p class="text-sm text-slate-500">Loading…</p>
+  <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    {#each [0, 1, 2] as i (i)}<Skeleton class="h-44 rounded-2xl" />{/each}
+  </div>
 {:else}
-  <div class="flex flex-col gap-6">
+  <div class="flex flex-col gap-10">
     {#if actionError}<ErrorBanner error={actionError} />{/if}
 
     <section>
-      <h2 class="mb-3 text-base font-semibold text-slate-900 dark:text-slate-100">Archived courses</h2>
+      <div class="mb-4 flex items-baseline gap-2">
+        <h2 class="text-[15px] font-semibold text-fg">Archived courses</h2>
+        <span class="text-sm text-subtle">{archives.length}</span>
+      </div>
       {#if archives.length === 0}
         <EmptyState
+          icon="archive"
           title="Nothing archived"
           message="Deleted courses leave a compressed archive that expires after a retention window."
         />
       {:else}
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {#each archives as archive (archive.course_id)}
-            <Card>
-              <p class="font-medium text-slate-900 dark:text-slate-100">{archive.name}</p>
-              <p class="mt-1 text-sm text-slate-500">
-                archived {formatDate(archive.archived_at)} · expires
-                {formatDate(archive.expires_at)}
+            {@const remaining = daysLeft(archive.expires_at)}
+            <div class="flex flex-col rounded-2xl border border-line bg-surface p-5 shadow-card">
+              <div class="flex items-start justify-between gap-3">
+                <Monogram name={archive.name} class="opacity-70 grayscale-[40%]" />
+                <Badge tone={remaining <= 14 ? 'warning' : 'neutral'} icon="clock">
+                  {remaining > 0 ? `${plural(remaining, 'day')} left` : 'Expiring'}
+                </Badge>
+              </div>
+              <p class="mt-4 line-clamp-2 font-medium leading-snug text-fg">{archive.name}</p>
+              <p class="mt-1 text-xs text-muted">
+                {plural(archive.source_count, 'source')} · archived {formatDate(archive.archived_at)}
               </p>
-              <p class="mt-1 text-sm text-slate-500">
-                {archive.source_count} source{archive.source_count === 1 ? '' : 's'}
-              </p>
-              <Button
-                variant="secondary"
-                class="mt-3"
-                loading={copyingId === archive.course_id}
-                onclick={() => copy(archive.course_id)}
-              >
-                Copy back
-              </Button>
-            </Card>
+              <p class="mt-0.5 text-xs text-subtle">Expires {formatDate(archive.expires_at)}</p>
+              <div class="mt-auto pt-4">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  loading={copyingId === archive.course_id}
+                  onclick={() => copy(archive.course_id)}
+                >
+                  <Icon name="copy" class="h-3.5 w-3.5" /> Copy back
+                </Button>
+              </div>
+            </div>
           {/each}
         </div>
       {/if}
     </section>
 
     <section>
-      <h2 class="mb-3 text-base font-semibold text-slate-900 dark:text-slate-100">Course memories</h2>
+      <div class="mb-4 flex items-baseline gap-2">
+        <h2 class="text-[15px] font-semibold text-fg">Course memories</h2>
+        <span class="text-sm text-subtle">{memories.length}</span>
+      </div>
       {#if memories.length === 0}
         <EmptyState
+          icon="bookmark"
           title="No memories yet"
           message="Course memories are distilled when a course is deleted and never disappear with it."
         />
       {:else}
-        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div class="grid gap-4 sm:grid-cols-2">
           {#each memories as memory (memory.memory_id)}
-            <Card>
-              <p class="font-medium text-slate-900 dark:text-slate-100">{memory.name}</p>
-              <p class="mt-1 line-clamp-3 text-sm text-slate-500">{memory.summary}</p>
-            </Card>
+            <article class="flex flex-col rounded-2xl border border-line bg-surface p-5 shadow-card">
+              <div class="flex items-center gap-3">
+                <Monogram name={memory.name} size="sm" />
+                <p class="min-w-0 truncate font-medium text-fg">{memory.name}</p>
+              </div>
+              <p class="mt-3 line-clamp-4 text-sm leading-relaxed text-muted">{memory.summary}</p>
+              {#if memory.key_concepts && memory.key_concepts.length > 0}
+                <div class="mt-4 flex flex-wrap gap-1.5">
+                  {#each memory.key_concepts.slice(0, 6) as concept (concept)}
+                    <span class="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted ring-1 ring-inset ring-line">{concept}</span>
+                  {/each}
+                </div>
+              {/if}
+            </article>
           {/each}
         </div>
       {/if}

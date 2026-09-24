@@ -1,11 +1,13 @@
 <script lang="ts">
+  import { fade, fly } from 'svelte/transition';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import Button from '$lib/components/Button.svelte';
+  import Icon, { type IconName } from '$lib/components/Icon.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
   import { loadToken } from '$lib/auth/token';
   import { authReady, currentUser, logout } from '$lib/stores/auth.svelte';
   import { currentTheme, toggleTheme } from '$lib/stores/theme.svelte';
+  import { initials } from '$lib/utils/labels';
 
   let { children } = $props();
 
@@ -14,13 +16,21 @@
   // The course page hosts the chat + workspace split, which needs room
   // for two readable columns; every other page keeps the reading width.
   let wide = $derived(page.route.id === '/(app)/courses/[id]');
+  let drawerOpen = $state(false);
 
-  const navItems = [
-    { href: '/', label: 'My courses' },
-    { href: '/discover', label: 'Discover' },
-    { href: '/archives', label: 'Archives' },
-    { href: '/account', label: 'Account' }
+  const navItems: { href: string; label: string; icon: IconName }[] = [
+    { href: '/', label: 'My courses', icon: 'book' },
+    { href: '/discover', label: 'Discover', icon: 'compass' },
+    { href: '/archives', label: 'Archives', icon: 'archive' },
+    { href: '/account', label: 'Account', icon: 'user' }
   ];
+
+  function isActive(href: string): boolean {
+    const path = page.url.pathname;
+    // A course page lives under "My courses" in the nav.
+    if (href === '/') return path === '/' || path.startsWith('/courses/');
+    return path === href || path.startsWith(`${href}/`);
+  }
 
   $effect(() => {
     // Only redirect when there is genuinely no credential: a transient
@@ -30,77 +40,157 @@
       void goto(`/login?next=${encodeURIComponent(here)}`);
     }
   });
+
+  $effect(() => {
+    // Close the mobile drawer whenever the route changes.
+    void page.url.pathname;
+    drawerOpen = false;
+  });
 </script>
 
-{#if user}
-  <div class="flex min-h-screen">
-    <aside class="flex w-60 flex-col border-r border-slate-200 bg-white/80 backdrop-blur p-4 dark:border-slate-800 dark:bg-slate-900/80">
-      <a href="/" class="mb-8 flex items-center gap-2 px-2 pt-1">
-        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-600 text-sm font-bold text-white">
-          CA
-        </span>
-        <span class="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">Course Assistant</span>
-      </a>
-      <nav class="flex flex-col gap-1">
-        {#each navItems as item (item.href)}
+{#snippet brand()}
+  <a href="/" class="flex items-center gap-2.5">
+    <span
+      class="flex h-8 w-8 items-center justify-center rounded-[10px] bg-accent text-on-accent shadow-card"
+    >
+      <Icon name="book" class="h-[18px] w-[18px]" />
+    </span>
+    <span class="font-display text-[17px] font-semibold tracking-tight text-fg">Course Assistant</span>
+  </a>
+{/snippet}
+
+{#snippet sidebar()}
+  <div class="flex h-full flex-col px-3 py-5">
+    <div class="px-2">{@render brand()}</div>
+
+    <nav class="mt-8 flex flex-col gap-0.5" aria-label="Main">
+      {#each navItems as item (item.href)}
+        {@const active = isActive(item.href)}
+        <a
+          href={item.href}
+          aria-current={active ? 'page' : undefined}
+          class={`group flex items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors ${
+            active
+              ? 'bg-surface text-fg shadow-card ring-1 ring-line'
+              : 'text-muted hover:bg-surface-2 hover:text-fg'
+          }`}
+        >
+          <Icon
+            name={item.icon}
+            class={`h-[18px] w-[18px] ${active ? 'text-accent-text' : 'text-subtle group-hover:text-muted'}`}
+          />
+          {item.label}
+        </a>
+      {/each}
+    </nav>
+
+    {#if user}
+      <div class="mt-auto flex flex-col gap-3">
+        {#if !user.email_verified}
           <a
-            href={item.href}
-            class={`flex items-center rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
-              page.url.pathname === item.href
-                ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300'
-                : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100'
-            }`}
+            href="/account"
+            class="flex items-start gap-2.5 rounded-xl border border-warning/30 bg-warning-soft px-3 py-2.5 text-[13px] text-warning-text transition-colors hover:border-warning/60"
           >
-            {item.label}
+            <Icon name="mail" class="mt-0.5 h-4 w-4" />
+            <span>
+              <span class="block font-medium">Verify your email</span>
+              <span class="opacity-80">Needed to create courses and upload.</span>
+            </span>
           </a>
-        {/each}
-      </nav>
-      <div class="mt-auto flex flex-col gap-3 border-t border-slate-200 pt-4 dark:border-slate-800">
-        <div class="px-3">
-          <p class="text-sm font-medium text-slate-900 dark:text-slate-100">{user.name}</p>
-          <p class="truncate text-xs text-slate-500 dark:text-slate-400">{user.email ?? ''}</p>
+        {/if}
+
+        <div class="flex items-center gap-2.5 rounded-xl px-2 py-2">
           <span
-            class={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
-              user.tier === 'paid'
-                ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300'
-                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-            }`}
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-3 text-[13px] font-semibold text-fg-soft"
+            aria-hidden="true"
           >
-            {user.tier}
+            {initials(user.name)}
           </span>
-          {#if !user.email_verified}
-            <p class="mt-2 text-xs font-medium text-amber-600 dark:text-amber-300">email not verified</p>
-          {/if}
+          <div class="min-w-0 flex-1">
+            <p class="flex items-center gap-1.5 truncate text-sm font-medium text-fg">
+              <span class="truncate">{user.name}</span>
+              {#if user.tier === 'paid'}
+                <span class="rounded bg-accent-soft px-1 text-[10px] font-semibold uppercase tracking-wide text-accent-text">Pro</span>
+              {/if}
+            </p>
+            <p class="truncate text-xs text-subtle">{user.email ?? ''}</p>
+          </div>
         </div>
-        <Button variant="secondary" onclick={logout}>Sign out</Button>
+
+        <div class="flex gap-1 border-t border-line pt-3">
+          <button
+            type="button"
+            onclick={toggleTheme}
+            class="flex flex-1 items-center justify-center gap-2 rounded-lg px-2 py-1.5 text-[13px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-fg"
+            aria-label={currentTheme() === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            <Icon name={currentTheme() === 'dark' ? 'sun' : 'moon'} class="h-4 w-4" />
+            {currentTheme() === 'dark' ? 'Light' : 'Dark'}
+          </button>
+          <button
+            type="button"
+            onclick={logout}
+            class="flex flex-1 items-center justify-center gap-2 rounded-lg px-2 py-1.5 text-[13px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-fg"
+          >
+            <Icon name="log-out" class="h-4 w-4" />
+            Sign out
+          </button>
+        </div>
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
+{#if user}
+  <div class="min-h-dvh lg:grid lg:grid-cols-[252px_minmax(0,1fr)]">
+    <aside class="sticky top-0 hidden h-dvh border-r border-line bg-surface-2/40 lg:block">
+      {@render sidebar()}
+    </aside>
+
+    <header
+      class="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-line bg-bg/85 px-4 backdrop-blur-md lg:hidden"
+    >
+      {@render brand()}
+      <button
+        type="button"
+        onclick={() => (drawerOpen = true)}
+        class="-mr-1.5 rounded-lg p-2 text-muted transition-colors hover:bg-surface-2 hover:text-fg"
+        aria-label="Open menu"
+        aria-expanded={drawerOpen}
+      >
+        <Icon name="menu" class="h-5 w-5" />
+      </button>
+    </header>
+
+    {#if drawerOpen}
+      <div
+        class="fixed inset-0 z-40 bg-black/35 backdrop-blur-[2px] lg:hidden"
+        role="presentation"
+        transition:fade={{ duration: 150 }}
+        onclick={() => (drawerOpen = false)}
+      ></div>
+      <aside
+        class="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] border-r border-line bg-bg shadow-pop lg:hidden"
+        transition:fly={{ x: -288, duration: 220, opacity: 1 }}
+      >
         <button
           type="button"
-          onclick={toggleTheme}
-          class="flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 ring-1 ring-slate-200 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:ring-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-          aria-label={currentTheme() === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          onclick={() => (drawerOpen = false)}
+          class="absolute right-3 top-4 rounded-lg p-1.5 text-muted hover:bg-surface-2 hover:text-fg"
+          aria-label="Close menu"
         >
-          {#if currentTheme() === 'dark'}
-            <svg viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4" aria-hidden="true">
-              <path
-                fill-rule="evenodd"
-                d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z"
-                clip-rule="evenodd"
-              />
-            </svg>
-            Light mode
-          {:else}
-            <svg viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4" aria-hidden="true">
-              <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
-            </svg>
-            Dark mode
-          {/if}
+          <Icon name="x" class="h-5 w-5" />
         </button>
+        {@render sidebar()}
+      </aside>
+    {/if}
+
+    <main class="min-w-0">
+      <div class={`mx-auto px-4 pb-16 pt-6 sm:px-8 sm:pt-10 ${wide ? 'max-w-7xl' : 'max-w-5xl'}`}>
+        {@render children()}
       </div>
-    </aside>
-    <main class="flex-1 overflow-y-auto">
-      <div class={`mx-auto px-8 py-8 ${wide ? 'max-w-7xl' : 'max-w-4xl'}`}>{@render children()}</div>
     </main>
   </div>
 {:else}
-  <div class="flex min-h-screen items-center justify-center"><Spinner /></div>
+  <div class="flex min-h-dvh items-center justify-center text-subtle"><Spinner class="h-5 w-5" /></div>
 {/if}

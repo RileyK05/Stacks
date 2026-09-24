@@ -2,7 +2,6 @@
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
   import Button from '$lib/components/Button.svelte';
-  import Card from '$lib/components/Card.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
   import TextInput from '$lib/components/TextInput.svelte';
   import { login } from '$lib/stores/auth.svelte';
@@ -28,10 +27,15 @@
   }
 </script>
 
-<Card title="Sign in">
-  <form onsubmit={submit} class="flex flex-col gap-4">
-    {#if error}<ErrorBanner {error} />{/if}
-    <TextInput label="Email" type="email" bind:value={email} required autocomplete="email" />
+<div class="mb-8">
+  <h1 class="font-display text-3xl font-medium tracking-tight text-fg">Welcome back</h1>
+  <p class="mt-2 text-[15px] text-muted">Sign in to pick up where you left off.</p>
+</div>
+
+<form onsubmit={submit} class="flex flex-col gap-4">
+  {#if error}<ErrorBanner {error} />{/if}
+  <TextInput label="Email" type="email" bind:value={email} required autocomplete="email" placeholder="you@school.edu" />
+  <div class="flex flex-col gap-1.5">
     <TextInput
       label="Password"
       type="password"
@@ -39,10 +43,10 @@
       required
       autocomplete="current-password"
     />
-    <Button type="submit" {loading}>Sign in</Button>
-  </form>
-  <div class="mt-4 flex justify-between text-sm">
-    <a href="/password-reset" class="text-indigo-600 hover:underline dark:text-indigo-300">Forgot password?</a>
-    <a href="/register" class="text-indigo-600 hover:underline dark:text-indigo-300">Create account</a>
+    <a href="/password-reset" class="self-end text-[13px] font-medium text-muted hover:text-fg">Forgot password?</a>
   </div>
-</Card>
+  <Button type="submit" size="lg" {loading} class="mt-1 w-full">Sign in</Button>
+</form>
+<p class="mt-8 text-center text-sm text-muted">
+  New here? <a href="/register" class="font-medium text-accent-text hover:underline">Create an account</a>
+</p>

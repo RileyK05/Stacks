@@ -7,6 +7,8 @@
 </script>
 
 <script lang="ts">
+  import Icon from './Icon.svelte';
+
   interface Props {
     cited: number[];
     sources: SourceRef[];
@@ -18,15 +20,19 @@
 </script>
 
 <div class="flex flex-wrap items-center gap-1.5 text-xs">
-  <span class="text-slate-400">Based on</span>
+  <span class="inline-flex items-center gap-1 text-subtle">
+    <Icon name="bookmark" class="h-3.5 w-3.5" /> Based on
+  </span>
   {#each unique as n (n)}
     {@const source = sources[n - 1]}
     <span
-      class="rounded-full bg-slate-100 px-2 py-0.5 text-slate-600 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700"
+      class="inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface-2 py-0.5 pl-0.5 pr-2 text-muted"
       title={source ? `${source.filename} · ${source.label}` : undefined}
     >
-      <span class="font-mono text-indigo-600 dark:text-indigo-300">[{n}]</span>
-      {#if source}{source.filename} · {source.label}{/if}
+      <span class="flex h-4 min-w-4 items-center justify-center rounded-full bg-accent-soft px-1 font-mono text-[10px] font-medium text-accent-text">
+        {n}
+      </span>
+      {#if source}<span class="truncate">{source.filename} · {source.label}</span>{/if}
     </span>
   {/each}
 </div>

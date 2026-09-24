@@ -3,11 +3,13 @@
 
   interface Props extends HTMLInputAttributes {
     label?: string;
+    hint?: string;
     error?: string | null;
   }
 
   let {
     label,
+    hint,
     error = null,
     class: className = '',
     value = $bindable(''),
@@ -18,15 +20,19 @@
   let inputId = $derived(id ?? label?.toLowerCase().replace(/\s+/g, '-'));
 </script>
 
-<div class="flex flex-col gap-1">
+<div class="flex flex-col gap-1.5">
   {#if label}
-    <label for={inputId} class="text-sm font-medium text-slate-700 dark:text-slate-200">{label}</label>
+    <label for={inputId} class="text-[13px] font-medium text-fg-soft">{label}</label>
   {/if}
   <input
     {...rest}
     id={inputId}
     bind:value
-    class={`rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-900 dark:placeholder:text-slate-500 ${className}`}
+    class={`h-10 rounded-lg border border-line-strong bg-surface px-3 text-sm text-fg shadow-card transition-[border-color,box-shadow] placeholder:text-subtle hover:border-subtle focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent/15 disabled:opacity-60 ${className}`}
   />
-  {#if error}<p class="text-sm text-red-600 dark:text-red-400">{error}</p>{/if}
+  {#if error}
+    <p class="text-[13px] text-danger-text">{error}</p>
+  {:else if hint}
+    <p class="text-[13px] text-subtle">{hint}</p>
+  {/if}
 </div>

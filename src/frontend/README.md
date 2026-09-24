@@ -56,7 +56,7 @@ src/lib/api/         generated schema + typed client + ApiError
 src/lib/auth/token.ts   localStorage JWT seam (the only token touchpoint)
 src/lib/stores/      runes stores: auth, theme, toast, confirm, debug, workspace
 src/lib/components/  Button, Card, TextInput, Select, Spinner, Skeleton, ErrorBanner,
-                     EmptyState, RichText (markdown + LaTeX + sanitized HTML for
+                     EmptyState, Icon, Badge, Monogram, PageHeader, RichText (markdown + LaTeX + sanitized HTML for
                      model output; pipeline in $lib/utils/render.ts), Quiz +
                      EditableDocument + WorkspaceHtmlView + CodeView +
                      SheetView + SlidesView + SourceChips + WorkspacePanel
@@ -82,9 +82,21 @@ action prompts — both mounted once in the root layout.
 Dark/light mode is class-based: the `dark` class on `<html>` (Tailwind v4
 custom variant in `app.css`). `src/lib/stores/theme.svelte.ts` holds the
 state, persists the choice to localStorage (`theme`), and defaults to the OS
-preference. The toggle lives in the app sidebar. New UI must carry `dark:`
-companions for hardcoded light colors. `app.html` carries a tiny pre-paint
-script mirroring the store so dark-mode users never see a light flash.
+preference. The toggle lives in the app sidebar. `app.html` carries a tiny
+pre-paint script mirroring the store so dark-mode users never see a light
+flash.
+
+Colors are **semantic tokens** defined once in `app.css` (`:root` and
+`.dark`) and exposed as Tailwind utilities: `bg-bg`, `bg-surface`,
+`bg-surface-2/3`, `border-line`, `border-line-strong`, `text-fg`,
+`text-fg-soft`, `text-muted`, `text-subtle`, `bg-accent`, `text-accent-text`,
+`bg-accent-soft`, `text-on-accent`, and `success|warning|danger|info` with
+`-soft`/`-text` variants. Use these instead of raw palette colors (`slate-*`,
+`indigo-*`) so new UI needs no `dark:` companions. Fonts: Inter (UI),
+Fraunces (`font-display`, headings), JetBrains Mono (`font-mono`). Icons come
+from `Icon.svelte` (inlined Lucide paths; add new ones there), and shared
+pieces live in `PageHeader`, `Badge`, `Monogram` (per-course color tile), and
+`$lib/utils/labels.ts` (human labels for backend enums).
 
 ## Tutor answer rendering & the workspace
 

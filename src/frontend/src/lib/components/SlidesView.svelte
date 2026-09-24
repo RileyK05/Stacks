@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import type { SlidesSession } from '$lib/stores/workspace.svelte';
   import Button from './Button.svelte';
+  import Icon from './Icon.svelte';
   import RichText from './RichText.svelte';
   import SourceChips, { type SourceRef } from './SourceChips.svelte';
 
@@ -38,38 +39,34 @@
     window.addEventListener('keydown', onKeydown);
     return () => window.removeEventListener('keydown', onKeydown);
   });
+
+  const modes: [typeof mode, string][] = [
+    ['view', 'Slides'],
+    ['edit', 'Edit source']
+  ];
 </script>
 
-<div class="flex flex-col gap-3">
-  <div class="flex items-center gap-1 text-xs">
-    <button
-      type="button"
-      onclick={() => (mode = 'view')}
-      class={mode === 'view'
-        ? 'rounded-md bg-slate-100 px-2 py-1 font-medium text-slate-800 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700'
-        : 'rounded-md px-2 py-1 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}
-    >
-      Slides
-    </button>
-    <button
-      type="button"
-      onclick={() => (mode = 'edit')}
-      class={mode === 'edit'
-        ? 'rounded-md bg-slate-100 px-2 py-1 font-medium text-slate-800 ring-1 ring-slate-200 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700'
-        : 'rounded-md px-2 py-1 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'}
-    >
-      Edit source
-    </button>
+<div class="flex flex-col gap-4">
+  <div class="flex items-center gap-2">
+    <div class="inline-flex rounded-lg bg-surface-2 p-0.5 ring-1 ring-line">
+      {#each modes as [value, label] (value)}
+        <button
+          type="button"
+          onclick={() => (mode = value)}
+          class={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+            mode === value ? 'bg-surface text-fg shadow-card' : 'text-muted hover:text-fg'
+          }`}
+        >
+          {label}
+        </button>
+      {/each}
+    </div>
     {#if mode === 'edit' && session.edited}
-      <button
-        type="button"
-        onclick={() => session.revert()}
-        class="ml-2 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
-      >
-        Revert
-      </button>
+      <Button variant="ghost" size="sm" onclick={() => session.revert()}>
+        <Icon name="rotate-ccw" class="h-3.5 w-3.5" /> Revert
+      </Button>
     {/if}
-    <span class="ml-auto font-mono text-slate-400">
+    <span class="ml-auto font-mono text-xs tabular-nums text-subtle">
       {total === 0 ? 0 : clamped + 1} / {total}
     </span>
   </div>
@@ -80,21 +77,31 @@
       rows={16}
       spellcheck={false}
       aria-label="Slide deck markdown"
-      class="w-full resize-y rounded-lg border border-slate-300 bg-white p-3 font-mono text-sm leading-relaxed text-slate-800 focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+      class="w-full resize-y rounded-xl border border-line-strong bg-surface p-4 font-mono text-[13px] leading-relaxed text-fg transition-[border-color,box-shadow] focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent/15"
     ></textarea>
-    <p class="text-xs text-slate-400">
+    <p class="text-xs text-subtle">
       Markdown; a line with just --- starts a new slide. Edits stay in this browser session.
     </p>
   {:else if total > 0}
     <div
-      class="flex min-h-64 flex-col justify-center rounded-lg border border-slate-200 bg-white p-8 dark:border-slate-700 dark:bg-slate-950/40"
+      class="flex aspect-[4/3] max-h-[28rem] flex-col justify-center overflow-y-auto rounded-xl border border-line bg-bg/40 p-8 shadow-card sm:p-10"
     >
       <RichText text={slides[clamped]} class="[&>*:first-child]:mt-0" />
     </div>
-    <div class="flex items-center justify-between">
-      <Button variant="secondary" onclick={() => step(-1)} disabled={total < 2}>← Prev</Button>
-      <span class="text-xs text-slate-400">use ← → keys</span>
-      <Button variant="secondary" onclick={() => step(1)} disabled={total < 2}>Next →</Button>
+    <div class="flex items-center justify-between gap-3">
+      <Button variant="secondary" size="sm" onclick={() => step(-1)} disabled={total < 2} aria-label="Previous slide">
+        <Icon name="chevron-left" class="h-4 w-4" /> Prev
+      </Button>
+      <div class="flex items-center gap-1.5" aria-hidden="true">
+        {#each slides as _, slideIndex (slideIndex)}
+          <span
+            class={`h-1.5 rounded-full transition-all ${slideIndex === clamped ? 'w-4 bg-accent' : 'w-1.5 bg-line-strong'}`}
+          ></span>
+        {/each}
+      </div>
+      <Button variant="secondary" size="sm" onclick={() => step(1)} disabled={total < 2} aria-label="Next slide">
+        Next <Icon name="chevron-right" class="h-4 w-4" />
+      </Button>
     </div>
   {/if}
 

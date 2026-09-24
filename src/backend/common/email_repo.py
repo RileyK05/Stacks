@@ -5,7 +5,10 @@ leak reveals nothing usable) and single-use with an expiry. The plaintext
 exists in exactly one place: the email body written to `email_outbox`,
 which is an operator/worker seam — no delivery happens in-process. A
 future SMTP worker drains the outbox; tests read it through this repo.
-"""
+
+Development mirror: when APP_ENV=development, queued emails are printed
+to the server console (plain text, no client) so the verification token
+is reachable without SMTP. Production never echoes."""
 
 from __future__ import annotations
 
@@ -88,7 +91,31 @@ def issue_token(
                 "body": body_template.format(token=token),
             },
         )
+    echo_to_console(
+        to_email=to_email, subject=subject,
+        body=body_template.format(token=token),
+    )
     return token
+
+
+def echo_to_console(*, to_email: str, subject: str, body: str) -> None:
+    """Dev-mode mirror of the outbox: prints the full email (token
+    included) to the server console when running in development. This is
+    the no-SMTP dev loop; production never echoes. Writes to stdout
+    directly — uvicorn configures logging for its own loggers only, so a
+    module logger would be swallowed at default verbosity."""
+    from src.backend.common.config import get_settings
+
+    if get_settings().app_env != "development":
+        return
+    print(
+        f"\n=== outbox email (dev console mirror) ===\n"
+        f"to: {to_email}\n"
+        f"subject: {subject}\n"
+        f"{body}\n"
+        f"==========================================",
+        flush=True,
+    )
 
 
 def latest_outbox_email(user_id: UUID, kind: str) -> OutboxEmail | None:

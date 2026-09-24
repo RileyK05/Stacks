@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { DocumentSession } from '$lib/stores/workspace.svelte';
+  import Button from './Button.svelte';
+  import Icon from './Icon.svelte';
   import RichText from './RichText.svelte';
   import SourceChips, { type SourceRef } from './SourceChips.svelte';
 
@@ -28,38 +30,33 @@
   }
 </script>
 
-<div class="flex flex-col gap-3">
-  <div class="flex items-center gap-1 border-b border-slate-200 dark:border-slate-700">
-    {#each tabs as [value, label] (value)}
-      <button
-        type="button"
-        onclick={() => (mode = value)}
-        class={`-mb-px border-b-2 px-3 py-1.5 text-xs font-medium transition-colors ${
-          mode === value
-            ? 'border-indigo-600 text-indigo-700 dark:border-indigo-400 dark:text-indigo-300'
-            : 'border-transparent text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
-        }`}
-      >
-        {label}
-      </button>
-    {/each}
-    <div class="ml-auto flex items-center gap-3 pb-1 text-xs">
-      {#if session.edited}
+<div class="flex flex-col gap-4">
+  <div class="flex flex-wrap items-center gap-2">
+    <div class="inline-flex rounded-lg bg-surface-2 p-0.5 ring-1 ring-line">
+      {#each tabs as [value, label] (value)}
         <button
           type="button"
-          onclick={() => session.revert()}
-          class="text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
+          onclick={() => (mode = value)}
+          class={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+            mode === value ? 'bg-surface text-fg shadow-card' : 'text-muted hover:text-fg'
+          }`}
         >
-          Revert
+          {label}
         </button>
+      {/each}
+    </div>
+    {#if session.edited}
+      <span class="text-xs text-subtle">Edited</span>
+    {/if}
+    <div class="ml-auto flex items-center gap-1">
+      {#if session.edited}
+        <Button variant="ghost" size="sm" onclick={() => session.revert()}>
+          <Icon name="rotate-ccw" class="h-3.5 w-3.5" /> Revert
+        </Button>
       {/if}
-      <button
-        type="button"
-        onclick={download}
-        class="text-indigo-600 hover:text-indigo-500 dark:text-indigo-300 dark:hover:text-indigo-200"
-      >
-        Download .md
-      </button>
+      <Button variant="secondary" size="sm" onclick={download}>
+        <Icon name="download" class="h-3.5 w-3.5" /> .md
+      </Button>
     </div>
   </div>
 
@@ -68,13 +65,15 @@
       bind:value={session.draft}
       rows={16}
       spellcheck={false}
-      class="w-full resize-y rounded-lg border border-slate-300 bg-white p-3 font-mono text-sm leading-relaxed text-slate-800 focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+      class="w-full resize-y rounded-xl border border-line-strong bg-surface p-4 font-mono text-[13px] leading-relaxed text-fg transition-[border-color,box-shadow] focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent/15"
     ></textarea>
-    <p class="text-xs text-slate-400">
+    <p class="text-xs text-subtle">
       Edits stay in this browser session — nothing is saved to your course.
     </p>
   {:else}
-    <RichText text={session.draft} />
+    <div class="rounded-xl border border-line bg-bg/40 px-5 py-4">
+      <RichText text={session.draft} class="[&>*:first-child]:mt-0" />
+    </div>
   {/if}
 
   <SourceChips cited={session.document.sources} {sources} />

@@ -1,12 +1,13 @@
 <script lang="ts">
-  import { type WorkspaceCanvas } from '$lib/stores/workspace.svelte';
+  import { type WorkspaceCanvas, type WorkspaceSession } from '$lib/stores/workspace.svelte';
   import CodeView from './CodeView.svelte';
   import EditableDocument from './EditableDocument.svelte';
   import EmptyState from './EmptyState.svelte';
+  import Icon, { type IconName } from './Icon.svelte';
   import Quiz from './Quiz.svelte';
   import SheetView from './SheetView.svelte';
   import SlidesView from './SlidesView.svelte';
-  import SourceChips, { type SourceRef } from './SourceChips.svelte';
+  import { type SourceRef } from './SourceChips.svelte';
   import WorkspaceHtmlView from './WorkspaceHtmlView.svelte';
 
   interface Props {
@@ -20,28 +21,34 @@
   let { canvas, sourcesFor, onclose, onfollowup }: Props = $props();
 
   const active = $derived(canvas.active);
+
+  const kindIcons: Record<WorkspaceSession['kind'], IconName> = {
+    quiz: 'list-checks',
+    document: 'file-pen',
+    html: 'layers',
+    code: 'code',
+    sheet: 'table',
+    slides: 'presentation'
+  };
 </script>
 
 <section
   aria-label="Workspace"
-  class="flex h-full min-h-0 flex-col rounded-xl bg-white shadow-sm ring-1 ring-slate-200/80 dark:bg-slate-900 dark:ring-slate-700/80"
+  class="flex h-full min-h-0 flex-col overflow-hidden rounded-2xl border border-line bg-surface shadow-lift"
 >
-  <header class="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-700">
-    <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-      Workspace
-      {#if active}
-        <span class="ml-1 font-mono text-xs normal-case text-indigo-600 dark:text-indigo-300">
-          from {active.origin}
-        </span>
-      {/if}
-    </h2>
+  <header class="flex items-center gap-2 border-b border-line px-4 py-3">
+    <Icon name="panel-right" class="h-4 w-4 text-subtle" />
+    <h2 class="text-sm font-semibold text-fg">Workspace</h2>
+    {#if active}
+      <span class="rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-muted">from {active.origin}</span>
+    {/if}
     <button
       type="button"
       onclick={onclose}
       aria-label="Close workspace"
-      class="rounded-md px-2 py-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+      class="ml-auto rounded-lg p-1.5 text-subtle transition-colors hover:bg-surface-2 hover:text-fg"
     >
-      ✕
+      <Icon name="x" class="h-4 w-4" />
     </button>
   </header>
 
@@ -49,35 +56,40 @@
     <div
       role="tablist"
       aria-label="Open workspace items"
-      class="flex gap-1 overflow-x-auto border-b border-slate-200 px-3 pt-2 dark:border-slate-700"
+      class="flex gap-1 overflow-x-auto border-b border-line bg-surface-2/50 px-2 py-1.5"
     >
       {#each canvas.tabs as tab (tab.id)}
+        {@const selected = canvas.activeId === tab.id}
         <div
           role="presentation"
-          class={`group flex shrink-0 items-center gap-1 rounded-t-lg border-b-2 px-3 py-1.5 text-xs font-medium transition-colors ${
-            canvas.activeId === tab.id
-              ? 'border-indigo-600 bg-slate-50 text-slate-900 dark:border-indigo-400 dark:bg-slate-800/60 dark:text-slate-100'
-              : 'border-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-800 dark:text-slate-400 dark:hover:bg-slate-800/40 dark:hover:text-slate-200'
+          class={`group flex shrink-0 items-center gap-1.5 rounded-lg py-1 pl-2.5 pr-1 text-[13px] font-medium transition-colors ${
+            selected
+              ? 'bg-surface text-fg shadow-card ring-1 ring-line'
+              : 'text-muted hover:bg-surface/70 hover:text-fg'
           }`}
         >
+          <Icon
+            name={kindIcons[tab.session.kind]}
+            class={`h-3.5 w-3.5 ${selected ? 'text-accent-text' : 'text-subtle'}`}
+          />
           <button
             type="button"
             role="tab"
-            aria-selected={canvas.activeId === tab.id}
+            aria-selected={selected}
             onclick={() => canvas.activate(tab.id)}
             class="max-w-40 truncate"
             title={tab.title}
           >
             {tab.title}
           </button>
-          <span class="font-mono text-[10px] text-slate-400 dark:text-slate-500">{tab.origin}</span>
+          <span class="font-mono text-[10px] text-subtle">{tab.origin}</span>
           <button
             type="button"
             aria-label={`Close ${tab.title}`}
             onclick={() => canvas.close(tab.id)}
-            class="rounded px-1 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300"
+            class="rounded p-0.5 text-subtle opacity-60 transition-all hover:bg-surface-3 hover:text-fg group-hover:opacity-100"
           >
-            ✕
+            <Icon name="x" class="h-3.5 w-3.5" />
           </button>
         </div>
       {/each}
@@ -102,7 +114,7 @@
     {/if}
   {:else}
     <div class="p-5">
-      <EmptyState message="Quizzes and documents the tutor generates will open here as tabs." />
+      <EmptyState icon="panel-right" message="Quizzes and documents the tutor generates will open here as tabs." />
     </div>
   {/if}
 </section>
