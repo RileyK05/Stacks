@@ -1,81 +1,91 @@
 # Frontend
 
-SvelteKit + TypeScript SPA (Svelte 5 runes, Tailwind CSS v4). Talks to the
-backend **only** over its HTTP API. CSR-only (`ssr = false`,
-`adapter-static`) — auth is a JWT in `localStorage`, so there is no
-SSR/token complexity; the build output is a plain static bundle.
+The Stacks desktop app: a SvelteKit + TypeScript SPA (Svelte 5 runes,
+Tailwind CSS v4) inside a Tauri v2 shell (`src-tauri/`, Rust). The SPA
+talks to the backend **only** over its HTTP API. CSR-only (`ssr = false`,
+`adapter-static`), so the build is a plain static bundle that Tauri ships
+inside the app.
+
+## How the pieces connect
+
+The shell starts the Python backend (`src/backend/serve.py`) as a child
+process with a per-launch token, learns the port it bound, and waits for
+`/api/health`. The root layout calls `connectBackend()`
+(`src/lib/api/backend.ts`), which asks the shell for the address and token
+(`backend_info`); every request carries the token (`X-App-Token`). Until
+then `app.html` shows a start-up splash; if the backend never answers, the
+root layout shows why. Quitting the app closes the backend's stdin, which
+shuts it down.
 
 ## Setup
 
+Needs Node.js 22+, a Rust toolchain (rustup; on Windows also the MSVC
+build tools), and the repo's Python virtualenv (`.venv`) with the backend
+installed.
+
 ```bash
 npm install
-cp .env.example .env   # see "Configuration" below
 ```
 
 ## Commands
 
 ```bash
-npm run dev       # dev server (default http://localhost:5173)
+npm run desktop   # the app in dev: Vite + tauri dev, starts the backend from .venv
+npm run dev       # SPA in a browser only (run `uvicorn src.backend.main:app` beside it)
 npm run check     # svelte-check type/diagnostics — must pass
-npm run build     # static SPA into build/ (fallback 200.html)
-npm run preview   # serve the built bundle locally
-npm run gen:api    # regenerate src/lib/api/schema.d.ts from the backend
+npm run build     # static SPA into build/
+npm run gen:api   # regenerate src/lib/api/schema.d.ts from the backend
 ```
 
-## Configuration
+The installer is built from the repo root with
+`python -m scripts.build_desktop` (backend via PyInstaller, then
+`tauri build`). In `src-tauri/`, `cargo clippy` must be clean.
 
-- `.env` → `PUBLIC_API_BASE`. Empty (default) = same-origin: the Vite dev
-  proxy (dev) or a reverse proxy (prod) forwards API prefixes to the
-  backend. Set an absolute URL only when serving the SPA without a
-  proxying web server (requires CORS on the backend, which is currently
-  not configured).
-- `API_PROXY_TARGET` (shell env, not `.env`) overrides the dev proxy target
-  (`http://localhost:8000` by default).
+In the browser-only setup the Vite dev server proxies `/api` to
+`http://localhost:8000` (`API_PROXY_TARGET` overrides it) and no token is
+needed. The dev app (`npm run desktop`) uses the checkout's `data/`
+folder; an installed app uses the per-user app-data folder.
 
 ## API types: generated, never hand-written
 
 `src/lib/api/schema.d.ts` is generated from the backend's OpenAPI schema
-and committed. Regenerate after any backend route/schema change:
+(and gitignored). Regenerate after any backend route/schema change:
 
 ```bash
 # with the backend running (uvicorn src.backend.main:app --port 8000)
 npm run gen:api
+# or without one: python -m scripts.dump_openapi <file>, then
+# OPENAPI_FILE=<file> npm run gen:api
 ```
 
 The backend is the single source of truth for API shapes. Use the types via
 `paths` from `$lib/api/schema`, call endpoints via the typed client in
 `$lib/api/client` (`api.GET('/courses')`, `api.POST(...)`), and surface
 failures as `ApiError` (`$lib/api/errors`) — every thrown error from the
-client is an `ApiError`, including network failures. The client injects the
-Bearer token and bounces to `/login` on a rejected stored token.
+client is an `ApiError`, including network failures.
 
 ## Structure
 
 ```
-src/lib/api/         generated schema + typed client + ApiError
-src/lib/auth/token.ts   localStorage JWT seam (the only token touchpoint)
-src/lib/stores/      runes stores: auth, theme, toast, confirm, debug, workspace
+src-tauri/           the desktop shell (Rust): window, backend process, plugins
+src/lib/api/         backend connection, generated schema, typed client, ApiError
+src/lib/stores/      runes stores: theme, toast, confirm, debug, workspace
 src/lib/components/  Button, Card, TextInput, Select, Spinner, Skeleton, ErrorBanner,
                      EmptyState, Icon, Badge, Monogram, PageHeader, RichText (markdown + LaTeX + sanitized HTML for
                      model output; pipeline in $lib/utils/render.ts), Quiz +
                      EditableDocument + WorkspaceHtmlView + CodeView +
-                     SheetView + SlidesView + SourceChips + WorkspacePanel
-                     (the tabbed chat-side workspace, see below), Toaster,
-                     ConfirmHost
+                     SheetView + SlidesView + SourceChips + WorkspacePanel,
+                     LocalModelCard, Toaster, ConfirmHost
 src/routes/
-  (auth)/            login, register, password-reset (chromeless layout)
-  (app)/             guarded shell: my courses, discover, archives, account
-    courses/[id]/    course overview: tutor chat + workspace pane with
-                     expandable cited sources, owner: dropzone upload + live indexing
-                     state, join code, members; milestone stub links
-      probe/         Milestone 3 placeholder
-      progress/      Milestone 4 placeholder
-      artifacts/     Milestone 5 placeholder
+  (app)/             the app shell: my courses, trash, settings
+    courses/[id]/    a course: tutor chat + workspace pane with cited
+                     sources, uploads with live indexing state, export
 ```
 
 Global UI feedback: `toast()` (`$lib/stores/toast.svelte`) for success/error
 snackbars, `confirmDialog()` (`$lib/stores/confirm.svelte`) for destructive
-action prompts — both mounted once in the root layout.
+action prompts — both mounted once in the root layout. Links to other
+sites open in the user's browser, never inside the app window.
 
 ## Theme
 
@@ -92,8 +102,9 @@ Colors are **semantic tokens** defined once in `app.css` (`:root` and
 `text-fg-soft`, `text-muted`, `text-subtle`, `bg-accent`, `text-accent-text`,
 `bg-accent-soft`, `text-on-accent`, and `success|warning|danger|info` with
 `-soft`/`-text` variants. Use these instead of raw palette colors (`slate-*`,
-`indigo-*`) so new UI needs no `dark:` companions. Fonts: Inter (UI),
-Fraunces (`font-display`, headings), JetBrains Mono (`font-mono`). Icons come
+`indigo-*`) so new UI needs no `dark:` companions. Fonts ship with the app
+(Fontsource packages, imported in the root layout): Inter (UI), Fraunces
+(`font-display`, headings), JetBrains Mono (`font-mono`). Icons come
 from `Icon.svelte` (inlined Lucide paths; add new ones there), and shared
 pieces live in `PageHeader`, `Badge`, `Monogram` (per-course color tile), and
 `$lib/utils/labels.ts` (human labels for backend enums).
@@ -135,20 +146,10 @@ workspace is persisted — saving to `user_artifacts` is the Milestone 5 path
 ## Debug panel
 
 An operator-only debug drawer (API request log with timings/status/error
-kinds, plus auth/route state) is hidden from the UI on purpose. Toggle it
+kinds, plus backend/route state) is hidden from the UI on purpose. Toggle it
 with **Ctrl+Shift+.** (period); the setting persists in localStorage
 (`debug-panel`) and the log clears when the panel is disabled. There is no
 menu entry for it.
-
-## Deployment
-
-`npm run build` emits `build/` — a static SPA. Serve it from any static
-server that proxies `/auth`, `/courses`, `/course-archives`, and
-`/course-memories` to the uvicorn backend (same-origin keeps CORS a
-non-issue). `200.html` is the SPA fallback for client-side routes.
-`/courses/<id>` is both an API path and a page, so the proxy must send
-browser navigations (`Accept: text/html`) to the SPA, not the backend —
-`vite.config.ts` does exactly this in dev.
 
 Backend docs live in the repo's `docs/` (`AGENTS.md`, `project.md`,
 `system.md`, `decisions/`, `notes.md`).

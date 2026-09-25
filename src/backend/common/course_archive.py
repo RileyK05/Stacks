@@ -38,7 +38,7 @@ from src.backend.common.schemas.base import SourceType
 from src.backend.common.schemas.identity import Course
 from src.backend.ingest.extract import INGESTABLE_MIME_TYPES
 
-FORMAT_ID: Literal["course-assistant/course"] = "course-assistant/course"
+FORMAT_ID: Literal["stacks/course"] = "stacks/course"
 FORMAT_VERSION: Literal[1] = 1
 EXTENSION = ".course"
 MANIFEST_NAME = "manifest.json"
@@ -59,7 +59,7 @@ class ArchiveSource(BaseModel):
 
 
 class Manifest(BaseModel):
-    format: Literal["course-assistant/course"]
+    format: Literal["stacks/course"]
     format_version: Literal[1]
     name: str = Field(min_length=1, max_length=200)
     exported_at: str

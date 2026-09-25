@@ -1,19 +1,21 @@
-"""Build the desktop app (plan §11, Phase 6).
+"""Build the Stacks installer.
 
-    .venv/Scripts/python -m scripts.build_desktop
+    .venv/Scripts/python -m scripts.build_desktop [--skip-backend]
 
-1. builds the SPA (`npm run build` in src/frontend);
-2. bundles the backend, its configs and SQL, and the SPA into
-   `dist/CourseAssistant/` with PyInstaller (one folder, no console
-   window). Run `dist/CourseAssistant/CourseAssistant.exe` (Windows) or
-   the equivalent binary elsewhere.
+1. bundles the Python backend (src/backend/serve.py), its configs and SQL
+   into one folder with PyInstaller, placed at src/frontend/src-tauri/backend/;
+2. runs `tauri build`, which builds the SPA, compiles the shell, and packs
+   both plus the backend folder into an installer (NSIS on Windows) under
+   src/frontend/src-tauri/target/release/bundle/.
 
-Model files and the llama.cpp runtime are NOT bundled: they download on
-first use into the per-user data directory, checksummed.
+Needs the `desktop` extra (PyInstaller), Node.js, and a Rust toolchain.
+Model files and the llama.cpp runtime are NOT bundled: the user downloads
+them from Settings into their data folder, checksummed.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -22,51 +24,41 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FRONTEND = ROOT / "src" / "frontend"
-NAME = "CourseAssistant"
+SHELL = FRONTEND / "src-tauri"
+BACKEND_NAME = "stacks-backend"
+BUNDLE_CONFIG = SHELL / "tauri.bundle.conf.json"
 
 
-def build_frontend() -> Path:
-    npm = "npm.cmd" if sys.platform == "win32" else "npm"
-    subprocess.run([npm, "run", "build"], cwd=FRONTEND, check=True)
-    build = FRONTEND / "build"
-    if not (build / "200.html").is_file():
-        raise SystemExit("frontend build is missing 200.html")
-    return build
-
-
-def build_app(frontend_build: Path) -> Path:
-    sep = os.pathsep
+def build_backend() -> Path:
     common = ROOT / "src" / "backend" / "common"
     datas = [
         (ROOT / "configs", "configs"),
         (common / "migrations", "src/backend/common/migrations"),
         (common / "queries", "src/backend/common/queries"),
-        (frontend_build, "frontend"),
     ]
+    work = ROOT / "build" / "pyinstaller"
     command = [
         sys.executable,
         "-m",
         "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--windowed",
+        # A console program: the shell talks to it over stdin/stdout and
+        # starts it without a window (CREATE_NO_WINDOW).
+        "--console",
         "--name",
-        NAME,
+        BACKEND_NAME,
         "--distpath",
-        str(ROOT / "dist"),
+        str(work / "dist"),
         "--workpath",
-        str(ROOT / "build" / "pyinstaller"),
+        str(work),
         "--specpath",
         str(ROOT / "build"),
         "--paths",
         str(ROOT),
-        # uvicorn and pywebview pick implementations at runtime.
+        # uvicorn picks its implementations at runtime.
         "--collect-submodules",
         "uvicorn",
-        "--collect-submodules",
-        "webview",
-        "--collect-data",
-        "webview",
         # In-process encoders run on ONNX Runtime; the torch stack is only a
         # dev-time parity reference and must never be bundled.
         "--collect-all",
@@ -81,17 +73,62 @@ def build_app(frontend_build: Path) -> Path:
         "transformers",
     ]
     for source, target in datas:
-        command += ["--add-data", f"{source}{sep}{target}"]
-    command.append(str(ROOT / "src" / "backend" / "desktop.py"))
+        command += ["--add-data", f"{source}{os.pathsep}{target}"]
+    command.append(str(ROOT / "src" / "backend" / "serve.py"))
     subprocess.run(command, cwd=ROOT, check=True)
-    return ROOT / "dist" / NAME
+
+    target = SHELL / "backend"
+    shutil.rmtree(target, ignore_errors=True)
+    shutil.copytree(work / "dist" / BACKEND_NAME, target)
+    return target
 
 
-def main() -> int:
-    shutil.rmtree(ROOT / "dist" / NAME, ignore_errors=True)
-    app = build_app(build_frontend())
-    size = sum(f.stat().st_size for f in app.rglob("*") if f.is_file())
-    print(f"built {app} ({size / 1e6:.0f} MB)")
+def build_installer() -> list[Path]:
+    npm = "npm.cmd" if sys.platform == "win32" else "npm"
+    subprocess.run(
+        [npm, "run", "tauri", "--", "build", "--config", str(BUNDLE_CONFIG)],
+        cwd=FRONTEND,
+        check=True,
+    )
+    bundle = SHELL / "target" / "release" / "bundle"
+    return sorted(
+        p
+        for p in bundle.rglob("*")
+        if p.suffix in {".exe", ".msi", ".dmg", ".deb", ".AppImage"}
+    )
+
+
+def _size(path: Path) -> str:
+    total = (
+        sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        if path.is_dir()
+        else path.stat().st_size
+    )
+    return f"{total / 1e6:.0f} MB"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="build_desktop")
+    parser.add_argument(
+        "--skip-backend",
+        action="store_true",
+        help="reuse the backend already in src-tauri/backend/",
+    )
+    args = parser.parse_args(argv)
+    if args.skip_backend:
+        backend = SHELL / "backend"
+        if (
+            not (backend / f"{BACKEND_NAME}.exe").exists()
+            and not (backend / BACKEND_NAME).exists()
+        ):
+            raise SystemExit(
+                "no backend in src-tauri/backend/; build without --skip-backend"
+            )
+    else:
+        backend = build_backend()
+    print(f"backend: {backend} ({_size(backend)})")
+    for installer in build_installer():
+        print(f"installer: {installer} ({_size(installer)})")
     return 0
 
 

@@ -38,7 +38,7 @@
     >
       <Icon name="book" class="h-[18px] w-[18px]" />
     </span>
-    <span class="font-display text-[17px] font-semibold tracking-tight text-fg">Course Assistant</span>
+    <span class="font-display text-[17px] font-semibold tracking-tight text-fg">Stacks</span>
   </a>
 {/snippet}
 

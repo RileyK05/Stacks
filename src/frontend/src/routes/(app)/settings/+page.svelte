@@ -69,8 +69,9 @@
   type DataFolderView =
     paths['/settings/data']['get']['responses'][200]['content']['application/json'];
   let dataFolder = $state<DataFolderView | null>(null);
+  let appVersion = $state<string | null>(null);
 
-  const DISCLOSED_KEY = 'course_assistant_disclosed_providers';
+  const DISCLOSED_KEY = 'stacks_disclosed_providers';
 
   onMount(() => {
     load().catch((err) => {
@@ -82,12 +83,14 @@
   async function load() {
     loading = true;
     try {
-      const [providersRes, usageRes, dataRes] = await Promise.all([
+      const [providersRes, usageRes, dataRes, healthRes] = await Promise.all([
         api.GET('/settings/providers'),
         api.GET('/settings/usage'),
-        api.GET('/settings/data')
+        api.GET('/settings/data'),
+        api.GET('/health')
       ]);
       dataFolder = dataRes.data ?? null;
+      appVersion = healthRes.data?.version ?? null;
       if (providersRes.error || !providersRes.data) {
         throw providersRes.error ?? new Error('empty response');
       }
@@ -513,6 +516,13 @@
           </dl>
         </div>
       </Card>
+    {/if}
+
+    {#if appVersion}
+      <p class="text-center text-xs text-subtle">
+        Stacks {appVersion} · MIT License ·
+        <a class="underline hover:text-muted" href="https://github.com/RileyK05/Stacks">Source code</a>
+      </p>
     {/if}
   </div>
 {/if}

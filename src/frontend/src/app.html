@@ -3,13 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..650;1,9..144,400..650&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
-    />
-    <title>Course Assistant</title>
+    <title>Stacks</title>
     <script>
       // Pre-paint theme (mirrors $lib/stores/theme.svelte.ts) so dark-mode
       // users never see a flash of the light theme before the app boots.
@@ -19,9 +13,41 @@
         document.documentElement.classList.toggle('dark', dark);
       } catch {}
     </script>
+    <style>
+      /* Shown while the backend starts; the root layout removes it. */
+      #boot-splash {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        font: 500 14px/1 system-ui, sans-serif;
+        color: #6b6660;
+        background: #f8f6f2;
+      }
+      .dark #boot-splash {
+        color: #aaa59e;
+        background: #141312;
+      }
+      #boot-splash span {
+        width: 16px;
+        height: 16px;
+        border: 2px solid currentColor;
+        border-right-color: transparent;
+        border-radius: 50%;
+        animation: boot-spin 0.8s linear infinite;
+      }
+      @keyframes boot-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
     %sveltekit.head%
   </head>
   <body data-sveltekit-preload-data="hover">
+    <div id="boot-splash" role="status"><span></span>Starting Stacks…</div>
     <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>

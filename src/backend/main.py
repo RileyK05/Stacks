@@ -1,11 +1,10 @@
-"""The app: a root ASGI app that serves the built SPA at `/` and mounts
-the API at `/api`.
+"""The backend app: the JSON API mounted at `/api`.
 
-Serving both from one origin means the desktop window just loads
-http://127.0.0.1:<port>/ — no CORS, no reverse proxy, and no clash
-between API paths and SPA routes (plan §4, §11). The API requires the
-per-launch app token when one is configured (`api/deps.py`); the static
-SPA does not, and holds no data.
+The desktop shell (src/frontend/src-tauri) ships the SPA itself and talks
+to this app over 127.0.0.1 from its own webview origin, so CORS admits
+exactly the Tauri origins (plus APP_CORS_ORIGINS in development, e.g. the
+Vite dev server). CORS only decides which pages may read responses; the
+per-launch app token (`api/deps.py`) is what actually guards the API.
 """
 
 from __future__ import annotations
@@ -15,28 +14,33 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from src.backend.api import courses, data, runtime, settings, sources, tutor
 from src.backend.api.deps import require_app_token
 from src.backend.common import maintenance
-from src.backend.common.config import PROJECT_ROOT
 from src.backend.common.migrate import migrate
 from src.backend.ingest import worker as ingestion_worker
 from src.backend.runtime import supervisor
+from src.backend.version import APP_NAME, __version__
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_FRONTEND_DIST = PROJECT_ROOT / "src" / "frontend" / "build"
-SPA_FALLBACK = "200.html"
+# The webview origin of a bundled Tauri app: WebView2 (Windows) serves it
+# from http://tauri.localhost, WebKit (macOS, Linux) from tauri://localhost.
+TAURI_ORIGINS = (
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "tauri://localhost",
+)
 
 
 def create_api() -> FastAPI:
     """The JSON API (mounted at /api). Tests drive this app directly."""
     api = FastAPI(
-        title="Course Assistant",
+        title=APP_NAME,
+        version=__version__,
         dependencies=[Depends(require_app_token)],
     )
     api.include_router(courses.router)
@@ -48,7 +52,7 @@ def create_api() -> FastAPI:
 
     @api.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok"}
+        return {"status": "ok", "version": __version__}
 
     return api
 
@@ -75,27 +79,21 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await task
 
 
-def _frontend_dist() -> Path:
-    return Path(os.getenv("FRONTEND_DIST", str(DEFAULT_FRONTEND_DIST)))
+def cors_origins() -> list[str]:
+    extra = os.getenv("APP_CORS_ORIGINS", "")
+    return [*TAURI_ORIGINS, *(o.strip() for o in extra.split(",") if o.strip())]
 
 
 def create_app() -> FastAPI:
     app = FastAPI(lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins(),
+        allow_methods=["*"],
+        allow_headers=["*"],
+        max_age=600,
+    )
     app.mount("/api", create_api())
-
-    @app.get("/{path:path}", include_in_schema=False)
-    def spa(path: str) -> FileResponse:
-        """Static files from the SPA build; anything else gets the SPA
-        shell so client-side routes survive a reload."""
-        dist = _frontend_dist().resolve()
-        fallback = dist / SPA_FALLBACK
-        if not fallback.is_file():
-            raise HTTPException(404, "frontend not built (run npm run build)")
-        candidate = (dist / path).resolve()
-        if candidate.is_file() and candidate.is_relative_to(dist):
-            return FileResponse(candidate)
-        return FileResponse(fallback)
-
     return app
 
 

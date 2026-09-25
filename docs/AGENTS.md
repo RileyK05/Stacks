@@ -85,8 +85,9 @@ src/
     evals/         # answer eval harness (retrieval evals live in retrieval/)
     runtime/       # bundled llama.cpp server, model catalog, verified downloads
     api/           # FastAPI routers (courses/trash, sources, tutor, settings, runtime)
-    main.py        # ASGI app: SPA at /, API mounted at /api
-    desktop.py     # desktop entry point (native window + backend)
+    main.py        # ASGI app: the API mounted at /api (CORS for the Tauri webview)
+    serve.py       # the backend process the desktop shell runs
+    version.py     # app name + version (scripts/set_version.py)
     common/
       schemas/       # Pydantic models, one module per storage layer
       config.py      # .env loading + settings
@@ -100,6 +101,7 @@ src/
       prompt_registry.py  # prompt loading + untrusted-material fencing
       repos          # per-aggregate SQL callers (courses_repo, sources_repo, ...)
   frontend/        # SvelteKit + TS SPA; talks to backend only via its API
+    src-tauri/     # Tauri v2 desktop shell (Rust): window, backend process
 tests/           # pytest; mirrors src/backend/ layout
 runs/            # experiment + eval logs — GITIGNORED
 docs/
@@ -150,10 +152,10 @@ Run from the project root, using the venv:
 .venv/Scripts/python -m pytest                        # tests (fresh SQLite per test)
 .venv/Scripts/python -m ruff check .                  # lint
 .venv/Scripts/python -m mypy src                      # typecheck
-.venv/Scripts/python -m uvicorn src.backend.main:app  # dev server (SPA + /api)
-.venv/Scripts/python -m src.backend.desktop           # the desktop app
+.venv/Scripts/python -m uvicorn src.backend.main:app  # API only (browser dev, with npm run dev)
 .venv/Scripts/python -m scripts.eval_models --help    # model bake-off / eval
-.venv/Scripts/python -m scripts.build_desktop         # package dist/CourseAssistant
+.venv/Scripts/python -m scripts.build_desktop         # installer (src-tauri/target/release/bundle)
+.venv/Scripts/python -m scripts.set_version X.Y.Z     # bump the version everywhere
 ```
 
 All three checks must pass before declaring work done. Tests never start
@@ -164,6 +166,7 @@ Frontend (see `src/frontend/README.md` — separate npm codebase, run from
 
 ```
 npm run check    # svelte-check typecheck/diagnostics (must pass)
+npm run desktop  # the desktop app in dev (tauri dev; starts the backend)
 npm run build    # static SPA into build/
 npm run gen:api  # regenerate API types from the backend's OpenAPI schema
 ```

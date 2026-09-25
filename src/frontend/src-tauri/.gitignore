@@ -1,0 +1,4 @@
+/target/
+/gen/schemas/
+# The packaged Python backend (scripts/build_desktop.py).
+/backend/

@@ -521,7 +521,7 @@ would have rewritten each query twice.
 - [x] `conftest.py`: fresh SQLite file per test, in-memory keyring, env
       scrubbed. Suite: 253 tests in ~8 s (was 359 in ~190 s on Postgres;
       the difference is deleted multi-user tests)
-- [x] Importer `scripts/import_postgres.py`; the owner's real course
+- [x] Importer (`scripts/import_postgres.py`, removed once used); the owner's real course
       (2 PDFs) imported and re-ingested locally
 - [~] Retrieval-eval baseline: not recorded — the eval set has one case
       whose course tag exists in no database, so the number would have
@@ -616,22 +616,31 @@ Found and fixed along the way:
 
 ### Phase 6 — desktop shell and distribution
 
-- [x] Desktop shell: **pywebview** instead of Tauri for now — the same OS
-      webview (WebView2 / WebKit), but no Rust toolchain and no sidecar:
-      one Python process serves the SPA + API on a random 127.0.0.1 port
-      with a per-launch token passed in the URL fragment
-      (`src/backend/desktop.py`). Tauri stays an option if a smaller
-      shell or an updater plugin is wanted
-- [x] PyInstaller build (`scripts/build_desktop.py` → `dist/CourseAssistant/`,
-      699 MB, mostly torch until Phase 5); llama.cpp and models download
-      on first use. Verified packaged: upload → ingest → local model →
-      cited answer (7 s) → clean shutdown with no process left behind
+- [x] Desktop shell: first **pywebview** (one Python process), then
+      **Tauri v2** from 0.2.0 (`src/frontend/src-tauri/`). The shell owns
+      the window and ships the SPA; it starts the PyInstaller-frozen
+      backend (`src/backend/serve.py`) with a per-launch token, reads the
+      port the backend bound (`STACKS_PORT=`), waits for health, and hands
+      address + token to its own webview only (`backend_info`). Closing
+      the backend's stdin is the shutdown signal, so quitting — or the app
+      dying — stops the backend and its model server. Single-instance;
+      external links open in the browser; CORS admits only Tauri origins
+- [x] Build (`scripts/build_desktop.py`): backend folder via PyInstaller
+      (227 MB), then `tauri build` → NSIS per-user installer
+      `Stacks_<version>_x64-setup.exe` (76 MB). llama.cpp and models
+      download on first use. Verified installed: fresh data folder,
+      token-guarded API (401 without it), clean shutdown, clean uninstall
+- [x] Versions: one version in `src/backend/version.py`, pyproject,
+      package.json (Tauri reads it) and Cargo.toml, set by
+      `scripts/set_version.py` and checked by tests/test_version.py;
+      CHANGELOG.md; shown in Settings
 - [x] Data folder (Settings → Your data: location, sizes, open) and
       `.course` export/import. Export writes to Downloads with "Show in
       folder"; import treats the file as untrusted (manifest-named members
       only, size/count caps, MIME check, sha256 check, all-or-nothing)
 - [ ] Tray option
-- [ ] Windows installer first (the owner's platform), then macOS, Linux
+- [x] Windows installer (NSIS, per-user, no admin rights)
+- [ ] macOS and Linux builds
 - [ ] GitHub Releases + updater; signing decision
 
 ### Phase 7 — later

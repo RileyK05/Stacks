@@ -1,14 +1,8 @@
 import createClient, { type Middleware } from 'openapi-fetch';
-import { APP_TOKEN_HEADER, appToken } from '$lib/api/appToken';
+import { APP_TOKEN_HEADER, apiBase, appToken } from '$lib/api/backend';
 import { logRequest } from '$lib/stores/debug.svelte';
 import { ApiError } from './errors';
 import type { paths } from './schema';
-
-// The backend serves this SPA and mounts the API at /api on the same
-// origin (desktop and dev alike, via the Vite proxy in dev).
-export const baseUrl = (import.meta.env.PUBLIC_API_BASE as string | undefined) || '/api';
-
-const rawClient = createClient<paths>({ baseUrl });
 
 const startTimes = new WeakMap<Request, number>();
 
@@ -52,7 +46,19 @@ const appMiddleware: Middleware = {
   }
 };
 
-rawClient.use(appMiddleware);
+type Client = ReturnType<typeof createClient<paths>>;
+
+// Created on first use: the root layout connects to the backend before any
+// page loads, so by then apiBase() is the desktop backend's address.
+let rawClient: Client | null = null;
+
+function client(): Client {
+  if (rawClient === null) {
+    rawClient = createClient<paths>({ baseUrl: apiBase() });
+    rawClient.use(appMiddleware);
+  }
+  return rawClient;
+}
 
 // Fetch-level failures (server down, DNS, CORS) never reach the middleware
 // chain, so convert them here — every caller can rely on ApiError alone.
@@ -79,9 +85,10 @@ function wrap<Args extends unknown[], Return>(fn: (...args: Args) => Promise<Ret
   };
 }
 
-export const api = new Proxy(rawClient, {
-  get(target, prop, receiver) {
-    const value = Reflect.get(target, prop, receiver);
+export const api = new Proxy({} as Client, {
+  get(_target, prop) {
+    const target = client();
+    const value = Reflect.get(target, prop, target);
     return typeof value === 'function' ? wrap(value.bind(target)) : value;
   }
 });

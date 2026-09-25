@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "course-assistant"
-version = "0.1.0"
+name = "stacks"
+version = "0.2.0"
 description = "Local-first course memory and adaptive study system"
 requires-python = ">=3.12"
 dependencies = [
@@ -32,8 +32,8 @@ dependencies = [
 parity = [
     "sentence-transformers>=5.0",
 ]
+# Packaging the backend for the desktop app (scripts/build_desktop.py).
 desktop = [
-    "pywebview>=5",
     "pyinstaller>=6",
 ]
 dev = [
@@ -63,6 +63,9 @@ python_version = "3.12"
 strict = true
 explicit_package_bases = true
 mypy_path = "."
+# The frontend holds no Python of ours, only the packaged backend copy
+# that scripts/build_desktop.py drops into src-tauri/backend/.
+exclude = ["^src/frontend/"]
 
 [[tool.mypy.overrides]]
 # pypdfium2 ships no type stubs; the OCR rasterizer is the only caller and

@@ -22,9 +22,10 @@ course knowledge, TOC-as-index) is defined in
 `docs/decisions/007_memory_model.md` and controls wherever the word "memory"
 appears below.
 
-- **Shape:** one process (`src/backend/desktop.py`) serves the SvelteKit SPA
-  at `/` and the FastAPI API at `/api` on a random 127.0.0.1 port, shown in a
-  native OS-webview window; a per-launch token guards the API
+- **Shape:** a Tauri app (`src/frontend/src-tauri/`) shows the SvelteKit
+  SPA in the OS webview and runs the FastAPI backend
+  (`src/backend/serve.py`) as a child process on a free 127.0.0.1 port; a
+  per-launch token, handed only to the app's own webview, guards the API
 - **Database:** SQLite (WAL, foreign keys on, FTS5) in the per-user data
   directory; raw SQL; baseline migration `001_local_baseline.sql`; every FK
   cascades; deleted courses sit in a 30-day trash

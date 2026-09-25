@@ -165,9 +165,10 @@ The MVP is useful if, for one real course:
 
 ## Technical requirements (agreed)
 
-- **App:** a native window (pywebview) around the FastAPI backend and the
-  built SvelteKit SPA, packaged with PyInstaller. A per-launch token
-  between the window and the backend is the only auth.
+- **App:** a Tauri v2 shell showing the SvelteKit SPA, with the FastAPI
+  backend (frozen by PyInstaller) as a child process; shipped as a
+  per-user installer. A per-launch token between the window and the
+  backend is the only auth.
 - **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem.
 - **Database:** SQLite (WAL, foreign keys, FTS5) via raw SQL, no ORM.
   Versioned, append-only migrations (`common/migrations/00X_*.sql`) applied

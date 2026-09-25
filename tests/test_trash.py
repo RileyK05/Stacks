@@ -429,7 +429,11 @@ def test_maintenance_pass_purges_due_trash_and_sweeps() -> None:
 
 def test_app_lifespan_migrates_and_serves_api() -> None:
     from src.backend.main import create_app
+    from src.backend.version import __version__
 
     with TestClient(create_app()) as client:
-        assert client.get("/api/health").json() == {"status": "ok"}
+        assert client.get("/api/health").json() == {
+            "status": "ok",
+            "version": __version__,
+        }
         assert client.get("/api/courses").json() == []

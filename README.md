@@ -25,32 +25,43 @@ leaving the answer.
 This is an early build. The student model (diagnostics, mastery, "what to
 study next") is designed but not built yet; see [docs/project.md](docs/project.md).
 
-## Requirements
+## Install
 
-- Windows 11 (macOS and Linux are planned but untested)
-- 8 GB RAM minimum, 16 GB recommended
-- Python 3.12+ and Node.js 22+ to build from source
+Installers will be published on this repo's Releases page; until the
+first one is, build it from source (below). The installer,
+`Stacks_<version>_x64-setup.exe`, installs for your user only (no admin
+rights needed). It isn't code-signed yet, so Windows SmartScreen will warn
+before it runs.
 
 Before the first question, download a local model in Settings. The default
 is about 1.6 GB, and the llama.cpp runtime comes with it; both are
 checksummed. If LM Studio or the Hugging Face cache already holds a
 verified copy, the app uses that one instead.
 
-## Run from source
+**Requirements:** Windows 10 or 11, 8 GB RAM minimum (16 GB recommended).
+macOS and Linux builds are planned.
+
+## Build from source
+
+You need Python 3.12+, Node.js 22+, and a Rust toolchain
+([rustup](https://rustup.rs); on Windows also the Visual Studio C++ build
+tools).
 
 ```
 python -m venv .venv
 .venv/Scripts/pip install -e ".[desktop,dev]"
-
-cd src/frontend
-npm install
-npm run build
-cd ../..
-
-.venv/Scripts/python -m src.backend.desktop
+cd src/frontend && npm install && cd ../..
 ```
 
-To package it as a standalone app in `dist/CourseAssistant/`:
+Run the app in development (it starts the backend from `.venv` and uses
+the checkout's `data/` folder):
+
+```
+cd src/frontend
+npm run desktop
+```
+
+Build the installer (lands in `src/frontend/src-tauri/target/release/bundle/nsis/`):
 
 ```
 .venv/Scripts/python -m scripts.build_desktop
@@ -59,11 +70,15 @@ To package it as a standalone app in `dist/CourseAssistant/`:
 ## Development
 
 ```
-.venv/Scripts/python -m pytest          # tests
-.venv/Scripts/python -m ruff check .    # lint
-.venv/Scripts/python -m mypy src        # typecheck
-cd src/frontend && npm run check        # frontend typecheck
+.venv/Scripts/python -m pytest              # tests
+.venv/Scripts/python -m ruff check .        # lint
+.venv/Scripts/python -m mypy src            # typecheck
+cd src/frontend && npm run check            # frontend typecheck
+cd src/frontend/src-tauri && cargo clippy   # desktop shell lint
 ```
+
+Releases: `python -m scripts.set_version X.Y.Z` sets the version in every
+manifest, and [CHANGELOG.md](CHANGELOG.md) gets the notes.
 
 `scripts/eval_models.py` measures answer quality for any model in the
 catalog, optionally against your own course files:
@@ -79,3 +94,8 @@ catalog, optionally against your own course files:
 - [docs/system.md](docs/system.md): architecture
 - [docs/AGENTS.md](docs/AGENTS.md): conventions for contributors and coding agents
 - [docs/decisions/](docs/decisions/): design decisions (012 covers the move to local-first)
+- [src/frontend/README.md](src/frontend/README.md): the desktop app's frontend and Tauri shell
+
+## License
+
+[MIT](LICENSE)

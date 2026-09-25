@@ -30,3 +30,5 @@ Thumbs.db
 # Desktop build output
 /dist/
 /build/
+# The dev backend's log (src/backend/serve.py)
+data/*.log

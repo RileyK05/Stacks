@@ -55,7 +55,7 @@ def test_export_then_import_round_trips_the_files(client: TestClient) -> None:
 
     with zipfile.ZipFile(path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
-        assert manifest["format"] == "course-assistant/course"
+        assert manifest["format"] == "stacks/course"
         names = [s["filename"] for s in manifest["sources"]]
         assert names == ["notes.md", "week 2.txt"]
         assert archive.read(manifest["sources"][0]["path"]) == NOTES
@@ -107,7 +107,7 @@ def _manifest(**source_overrides: object) -> dict[str, object]:
     }
     source.update(source_overrides)
     return {
-        "format": "course-assistant/course",
+        "format": "stacks/course",
         "format_version": 1,
         "name": "Crafted",
         "exported_at": "2026-09-25T00:00:00+00:00",
