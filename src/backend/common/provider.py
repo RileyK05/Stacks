@@ -84,14 +84,23 @@ def generate(
     course_id: UUID | None = None,
     images: Sequence[bytes] | None = None,
     response_schema: dict[str, Any] | None = None,
+    bigger: bool = False,
 ) -> GenerationResult:
     """One routed, recorded model call. `images` carries PNG page renders
     for the multimodal OCR task. `response_schema`, when given, asks the
-    endpoint to constrain output to that JSON schema."""
-    endpoint = providers.resolve(providers.task_class(task))
+    endpoint to constrain output to that JSON schema. `bigger` routes an
+    interactive task to the user's "bigger model" slot instead."""
+    cls = providers.task_class(task)
+    if bigger:
+        if cls != providers.TaskClass.INTERACTIVE:
+            raise ValueError(f"only interactive tasks can ask a bigger model: {task}")
+        cls = providers.TaskClass.BIGGER
+    endpoint = providers.resolve(cls)
     if endpoint is None:
         raise ProviderUnavailableError(
-            "no model provider configured — choose one in Settings"
+            "no bigger model configured — choose one in Settings"
+            if bigger
+            else "no model provider configured — choose one in Settings"
         )
     if endpoint.name == "local":
         _ensure_local_runtime(endpoint.model)
@@ -103,7 +112,9 @@ def generate(
             task, endpoint, prompt, images=images, response_schema=response_schema
         )
     except ProviderRateLimitedError:
-        local = _local_fallback(endpoint)
+        # The user asked for the bigger model on purpose: quietly answering
+        # with the small one instead would defeat the button.
+        local = None if bigger else _local_fallback(endpoint)
         if local is None:
             raise
         logger.warning(

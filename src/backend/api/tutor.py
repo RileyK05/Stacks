@@ -27,6 +27,9 @@ class AskRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str = Field(min_length=1, max_length=2000)
+    # "Ask a bigger model": answer with the user's Settings → bigger-model
+    # choice instead of their everyday one. Only ever set by the user.
+    bigger_model: bool = False
 
 
 class AnswerView(BaseModel):
@@ -79,6 +82,7 @@ def ask(course_id: UUID, payload: AskRequest) -> AnswerView:
                 load_retrieval_policy(),
                 query_embedding=query_embedding,
                 embedding_model=load_embedding_policy().model,
+                bigger=payload.bigger_model,
             )
             conn.commit()
     except tutor_answer.NothingRelevantFoundError as err:

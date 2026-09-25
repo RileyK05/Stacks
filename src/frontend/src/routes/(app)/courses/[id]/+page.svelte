@@ -46,6 +46,9 @@
     traceId: string | null;
     /** A rate-limited cloud model handed this answer to the local model. */
     fellBackToLocal: boolean;
+    /** Answered by the Settings → "Bigger model" choice, at the user's request. */
+    bigger: boolean;
+    model: string;
     citations: Citation[];
     citationsLoading: boolean;
     error: unknown;
@@ -68,6 +71,8 @@
   let question = $state('');
   let asking = $state(false);
   let turns = $state<Turn[]>([]);
+  /** The model behind "Ask a bigger model"; null hides the button. */
+  let biggerModel = $state<string | null>(null);
   let sessionRef = $state<HTMLElement | null>(null);
   let workspaceRef = $state<HTMLElement | null>(null);
   /** Right-hand workspace canvas: tabs accumulate across turns. */
@@ -128,6 +133,16 @@
     if (res.error) throw res.error;
     sources = res.data ?? [];
     void pollSourcesUntilSettled();
+    void loadBiggerModel();
+  }
+
+  async function loadBiggerModel() {
+    try {
+      const { data } = await api.GET('/settings/providers');
+      biggerModel = data?.resolved.bigger?.model ?? null;
+    } catch {
+      biggerModel = null;
+    }
   }
 
   let polling = false;
@@ -164,14 +179,22 @@
 
   async function ask(event: SubmitEvent) {
     event.preventDefault();
+    const text = question;
+    question = '';
+    await submit(text, false);
+  }
+
+  async function submit(text: string, bigger: boolean) {
     asking = true;
     const turn: Turn = {
-      question,
+      question: text,
       answer: null,
       workspace: [],
       withheld: [],
       traceId: null,
       fellBackToLocal: false,
+      bigger,
+      model: '',
       citations: [],
       citationsLoading: false,
       error: null,
@@ -179,11 +202,10 @@
     };
     turns = [...turns, turn];
     const index = turns.length - 1;
-    question = '';
     try {
       const { data, error: err } = await api.POST('/courses/{course_id}/ask', {
         params: { path: { course_id: courseId } },
-        body: { question: turn.question }
+        body: { question: turn.question, bigger_model: bigger }
       });
       if (!data) throw err ?? new Error('unexpected empty response');
       turns[index].answer = data.text;
@@ -192,6 +214,7 @@
       canvas.openFromTurn(index, turns[index].workspace);
       turns[index].traceId = data.trace_id;
       turns[index].fellBackToLocal = data.fell_back_to_local ?? false;
+      turns[index].model = data.model ?? '';
       // Fetch the evidence behind the answer immediately (golden rule
       // 1: every answer shows its sources, right under itself).
       turns[index].citationsLoading = true;
@@ -519,6 +542,21 @@
                             <Icon name="info" class="h-3.5 w-3.5" />
                             The cloud model hit its rate limit, so the local model answered this one.
                           </p>
+                        {/if}
+                        {#if turn.bigger}
+                          <p class="inline-flex items-center gap-1.5 self-start text-xs text-subtle">
+                            <Icon name="cpu" class="h-3.5 w-3.5" /> Answered by the bigger model ({turn.model})
+                          </p>
+                        {:else if biggerModel && turn.answer}
+                          <button
+                            type="button"
+                            class="inline-flex items-center gap-1.5 self-start rounded-lg px-2 py-1 text-xs font-medium text-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+                            disabled={asking}
+                            onclick={() => submit(turn.question, true)}
+                            title="Ask this question again with the bigger model chosen in Settings"
+                          >
+                            <Icon name="cpu" class="h-3.5 w-3.5" /> Ask a bigger model ({biggerModel})
+                          </button>
                         {/if}
 
                         {#if turn.workspace.length > 0}

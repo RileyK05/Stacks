@@ -17,7 +17,7 @@
   type ProvidersView =
     paths['/settings/providers']['get']['responses'][200]['content']['application/json'];
   type Preset = ProvidersView['presets'][number];
-  type TaskClass = 'interactive' | 'background';
+  type TaskClass = 'interactive' | 'background' | 'bigger';
   type UsageView =
     paths['/settings/usage']['get']['responses'][200]['content']['application/json'];
   type ConnectionTest =
@@ -40,6 +40,12 @@
       title: 'Model for background work',
       description:
         'Reads scanned PDFs and other slow jobs that run while you do something else. Uses the answers model unless you pick one here.'
+    },
+    {
+      id: 'bigger',
+      title: 'Bigger model',
+      description:
+        'Used only when you press “Ask a bigger model” under an answer: a larger local model or a cloud provider. Never used automatically.'
     }
   ];
 
@@ -50,7 +56,8 @@
   let actionError = $state<unknown>(null);
   let drafts = $state<Record<TaskClass, Draft>>({
     interactive: { preset: 'local', model: '', baseUrl: '' },
-    background: { preset: '', model: '', baseUrl: '' }
+    background: { preset: '', model: '', baseUrl: '' },
+    bigger: { preset: '', model: '', baseUrl: '' }
   });
   let keyDrafts = $state<Record<string, string>>({});
   let saving = $state<TaskClass | null>(null);
@@ -323,17 +330,24 @@
                 {resolved.model} · {resolved.is_local ? 'on this computer' : resolved.name}
               </Badge>
             {:else}
-              <Badge tone="warning" dot>Nothing configured</Badge>
+              <Badge tone={cls.id === 'bigger' ? 'neutral' : 'warning'} dot>
+                {cls.id === 'bigger' ? 'Not set' : 'Nothing configured'}
+              </Badge>
             {/if}
           </div>
 
           <div class="grid gap-2 sm:grid-cols-2">
-            {#if cls.id === 'background'}
+            {#if cls.id !== 'interactive'}
               <label class={`flex cursor-pointer items-start gap-3 rounded-xl border p-3 transition-colors ${draft.preset === '' ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'}`}>
                 <input type="radio" class="mt-1" bind:group={drafts[cls.id].preset} value="" />
                 <span>
-                  <span class="block text-sm font-medium text-fg">Same as answers</span>
-                  <span class="block text-xs text-subtle">Use the model chosen above.</span>
+                  {#if cls.id === 'background'}
+                    <span class="block text-sm font-medium text-fg">Same as answers</span>
+                    <span class="block text-xs text-subtle">Use the model chosen above.</span>
+                  {:else}
+                    <span class="block text-sm font-medium text-fg">None</span>
+                    <span class="block text-xs text-subtle">Hide the “Ask a bigger model” button.</span>
+                  {/if}
                 </span>
               </label>
             {/if}

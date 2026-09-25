@@ -191,6 +191,49 @@ def test_rate_limited_cloud_call_falls_back_to_local(
     assert usage_repo.ledger_page()[0].provider == "local"
 
 
+def test_bigger_slot_resolves_only_from_its_own_choice(
+    monkeypatch: pytest.MonkeyPatch, _memory_keyring: dict[str, str]
+) -> None:
+    """Never automatic: no interactive or environment fallback."""
+    monkeypatch.setenv("LLM_BASE_URL", "http://127.0.0.1:1234/v1")
+    monkeypatch.setenv("LLM_MODEL", "env-model")
+    providers.save_choice(TaskClass.INTERACTIVE, ProviderChoice(preset="local"))
+    assert providers.resolve(TaskClass.BIGGER) is None
+    with pytest.raises(provider.ProviderUnavailableError, match="bigger model"):
+        provider.generate("tutor_answer", "prompt", bigger=True)
+
+    _memory_keyring["openrouter"] = "sk-or-test"
+    providers.save_choice(TaskClass.BIGGER, ProviderChoice(preset="openrouter"))
+    bigger = providers.resolve(TaskClass.BIGGER)
+    assert bigger is not None and bigger.name == "openrouter"
+    assert providers.resolve(TaskClass.INTERACTIVE) == _endpoint()
+
+
+def test_bigger_model_routes_and_never_falls_back(
+    monkeypatch: pytest.MonkeyPatch, _memory_keyring: dict[str, str]
+) -> None:
+    _memory_keyring["openrouter"] = "sk-or-test"
+    providers.save_choice(TaskClass.INTERACTIVE, ProviderChoice(preset="local"))
+    providers.save_choice(TaskClass.BIGGER, ProviderChoice(preset="openrouter"))
+    seen: list[str] = []
+    limited = False
+
+    def transport(task, endpoint, prompt, *, images=None, response_schema=None):
+        seen.append(endpoint.name)
+        if limited and endpoint.name == "openrouter":
+            raise provider.ProviderRateLimitedError("429")
+        return "answer", 7, 3
+
+    monkeypatch.setattr(provider, "_call_provider", transport)
+    assert provider.generate("tutor_answer", "p", bigger=True).provider == "openrouter"
+    limited = True
+    with pytest.raises(provider.ProviderRateLimitedError):
+        provider.generate("tutor_answer", "p", bigger=True)
+    assert seen == ["openrouter", "openrouter"], "no silent local substitute"
+    with pytest.raises(ValueError):
+        provider.generate("ocr", "p", bigger=True)
+
+
 # --- the HTTP transport -----------------------------------------------------------
 
 

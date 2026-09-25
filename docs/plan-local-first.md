@@ -578,7 +578,11 @@ Found and fixed along the way:
 - [x] Provider modes (§7.1) with test-connection; keys in OS keyring
 - [x] Per-task routing; OpenRouter 429 handling and local fallback
 - [x] Cloud disclosure notice; in-app setup guides
-- [ ] "Ask a bigger model" per answer
+- [x] "Ask a bigger model" per answer: a third Settings slot (`bigger`)
+      that resolves only from the user's own choice; the button re-asks the
+      same question there. A rate-limited bigger model errors instead of
+      falling back to the small one. A local choice switches the bundled
+      server's model (verified live: MiniCPM5-2B ⇄ Qwen3.5-2B)
 
 ### Phase 5 — encoders and local OCR
 

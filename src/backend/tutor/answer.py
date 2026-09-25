@@ -72,6 +72,7 @@ def answer_question(
     *,
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
+    bigger: bool = False,
 ) -> Answer:
     """One grounded answer: retrieve, frame + generate (compose.py), then
     record the trace.
@@ -98,7 +99,11 @@ def answer_question(
         task: str, prompt: str, *, response_schema: dict[str, Any] | None = None
     ) -> str:
         generation = provider.generate(
-            task, prompt, course_id=course_id, response_schema=response_schema
+            task,
+            prompt,
+            course_id=course_id,
+            response_schema=response_schema,
+            bigger=bigger,
         )
         calls.append(generation)
         return generation.text

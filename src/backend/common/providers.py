@@ -3,7 +3,10 @@
 Two task classes: INTERACTIVE (answers, probes, artifacts — the user is
 waiting) and BACKGROUND (ingestion-time generation). The user picks a
 provider preset per class in Settings; background falls back to the
-interactive choice. Resolution order for a class:
+interactive choice. A third slot, BIGGER, is the model behind the
+per-answer "Ask a bigger model" button (plan §6 item 12): it resolves only
+from the user's own saved choice — never automatically, never from the
+environment. Resolution order for the first two classes:
 
 1. the user's saved choice (app_settings `provider.<class>`), with its
    key from the OS keyring;
@@ -37,6 +40,7 @@ DEFAULT_MODELS_PATH = PROJECT_ROOT / "configs" / "models.toml"
 class TaskClass(StrEnum):
     INTERACTIVE = "interactive"
     BACKGROUND = "background"
+    BIGGER = "bigger"
 
 
 def task_class(task: str) -> TaskClass:
@@ -165,6 +169,8 @@ def _from_environment() -> ResolvedProvider | None:
 def resolve(cls: TaskClass) -> ResolvedProvider | None:
     """The endpoint for a task class, or None when nothing is configured."""
     choice = saved_choice(cls)
+    if cls == TaskClass.BIGGER:
+        return _from_choice(choice) if choice is not None else None
     if choice is None and cls == TaskClass.BACKGROUND:
         choice = saved_choice(TaskClass.INTERACTIVE)
     if choice is not None:

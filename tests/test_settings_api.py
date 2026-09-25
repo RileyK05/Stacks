@@ -10,8 +10,9 @@ def test_providers_overview_starts_unconfigured(client: TestClient) -> None:
     overview = client.get("/settings/providers").json()
     names = [preset["name"] for preset in overview["presets"]]
     assert names == ["local", "openrouter", "openai", "custom"]
-    assert overview["choices"] == {"interactive": None, "background": None}
-    assert overview["resolved"] == {"interactive": None, "background": None}
+    unset = {"interactive": None, "background": None, "bigger": None}
+    assert overview["choices"] == unset
+    assert overview["resolved"] == unset
     disclosed = {p["name"]: p["disclosure"] for p in overview["presets"]}
     assert disclosed["local"] is False and disclosed["openrouter"] is True
 

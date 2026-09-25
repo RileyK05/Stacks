@@ -117,6 +117,33 @@ def test_ask_happy_path_stubbed_provider(
     )
 
 
+def test_ask_a_bigger_model(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    _memory_keyring: dict[str, str],
+) -> None:
+    """The per-answer button: 503 until a bigger model is chosen, then the
+    same question is answered by that endpoint."""
+    from src.backend.common import providers
+    from src.backend.common.providers import ProviderChoice, TaskClass
+
+    course_id = _seeded_course(client)
+    calls = configure_test_provider(monkeypatch, GROUNDED_ANSWER)
+    body = {"question": "what is linearity", "bigger_model": True}
+    refused = client.post(f"/courses/{course_id}/ask", json=body)
+    assert refused.status_code == 503
+    assert "bigger model" in refused.json()["detail"]
+
+    _memory_keyring["openai"] = "sk-test"
+    providers.save_choice(
+        TaskClass.BIGGER, ProviderChoice(preset="openai", model="big-model")
+    )
+    response = client.post(f"/courses/{course_id}/ask", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["model"] == "big-model"
+    assert [c["endpoint"].name for c in calls] == ["openai"]
+
+
 def test_ask_lifts_cited_workspace_items_and_withholds_uncited(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
