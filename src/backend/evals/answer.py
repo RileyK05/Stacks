@@ -405,6 +405,7 @@ def run_answer_eval(
     lands behind a dedicated eval adapter that bills an eval account —
     review catch #10, decision 010)."""
     from src.backend.common.prompt_registry import load_prompt_policy
+    from src.backend.retrieval.rerank import select_for_generation
     from src.backend.tutor.compose import (
         build_prompt,
         classify_intent,
@@ -450,7 +451,10 @@ def run_answer_eval(
                 )
             )
             continue
-        composed = compose_answer(case.question, candidates, generate)
+        composed = compose_answer(
+            case.question, candidates, generate, select=select_for_generation
+        )
+        candidates = composed.candidates
         answer_text = composed.text
         prompt = (
             build_prompt(case.question, candidates)

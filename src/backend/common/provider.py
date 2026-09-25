@@ -357,6 +357,36 @@ def embed_texts(
     return vectors_list
 
 
+_RERANKER: Any = None
+_RERANKER_NAME: str | None = None
+
+
+def reset_reranker() -> None:
+    global _RERANKER, _RERANKER_NAME
+    _RERANKER, _RERANKER_NAME = None, None
+
+
+def rerank_scores(model_name: str, query: str, texts: Sequence[str]) -> list[float]:
+    """Relevance of each text to the query from a cross-encoder (higher =
+    more relevant). In-process and CPU-only, like the embedding seam:
+    records nothing and sends nothing anywhere."""
+    global _RERANKER, _RERANKER_NAME
+    if not texts:
+        return []
+    if _RERANKER is None or model_name != _RERANKER_NAME:
+        try:
+            from sentence_transformers import CrossEncoder
+        except ImportError as err:
+            raise ProviderUnavailableError(
+                "sentence-transformers not installed — reranker unavailable"
+            ) from err
+        model = CrossEncoder(model_name, device="cpu")
+        model.model.float()
+        _RERANKER, _RERANKER_NAME = model, model_name
+    scores = _RERANKER.predict([(query, text) for text in texts])
+    return [float(score) for score in scores]
+
+
 def embed_query(text: str) -> list[float]:
     return embed_texts([text], kind="query")[0]
 

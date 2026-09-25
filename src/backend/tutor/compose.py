@@ -131,6 +131,9 @@ class Composed:
     text: str
     intent: Intent
     structured: bool
+    # The chunks the model read, in the order they were numbered: [1] is
+    # candidates[0]. Citations, the trace and scoring all use this.
+    candidates: tuple[Candidate, ...] = ()
 
 
 def numbered_material(question: str, candidates: tuple[Candidate, ...]) -> str:
@@ -297,12 +300,15 @@ def compose_answer(
     generate: Generate,
     *,
     on_schema_rejected: Callable[[Exception], bool] | None = None,
+    select: Callable[[str, tuple[Candidate, ...]], tuple[Candidate, ...]] | None = None,
 ) -> Composed:
     """Frame the task, generate, and return standard answer text.
 
     `on_schema_rejected(err)` decides whether a failed constrained call
     should be retried without the schema (an endpoint that rejects
     `response_format`); it returns False to re-raise."""
+    if select is not None:
+        candidates = select(question, candidates)
     intent = classify_intent(question)
     if intent in (Intent.ANSWER, Intent.GRADED):
         instruction = "tutor_steer" if intent is Intent.GRADED else "tutor_answer"
@@ -310,7 +316,9 @@ def compose_answer(
             load_prompt(instruction), numbered_material(question, candidates)
         )
         text = generate("tutor_answer", prompt)
-        return Composed(strip_fence_echo(text), intent, structured=False)
+        return Composed(
+            strip_fence_echo(text), intent, structured=False, candidates=candidates
+        )
 
     prompt = grounded_prompt(
         load_prompt(f"workspace_{intent.value}"),
@@ -328,8 +336,12 @@ def compose_answer(
     if not isinstance(item, dict):
         # Unusable structure: show whatever prose came back; the workspace
         # gate has nothing to lift, so nothing uncited can slip through.
-        return Composed(strip_fence_echo(raw), intent, structured=False)
+        return Composed(
+            strip_fence_echo(raw), intent, structured=False, candidates=candidates
+        )
     reply = str(parsed.get("reply") or "").strip() if parsed else ""
     block = json.dumps(item, ensure_ascii=False)
     text = f"{reply}\n\n```workspace\n{block}\n```".strip()
-    return Composed(strip_fence_echo(text), intent, structured=True)
+    return Composed(
+        strip_fence_echo(text), intent, structured=True, candidates=candidates
+    )

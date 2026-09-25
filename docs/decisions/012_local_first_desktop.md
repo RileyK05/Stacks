@@ -56,6 +56,7 @@ Owner's laptop: Intel Core Ultra 7 258V, 32 GB, Arc iGPU (Vulkan).
 | With the old prompt, MiniCPM talked about the workspace instructions instead of following them (3/4 workspace cases failed) | Task framing + schema: 4/4, across all three models tested |
 | Built-in cases, final harness: MiniCPM5-2B 10/10 (2.3 s), Qwen3.5-2B 10/10 (4.2 s), Granite 4.1 3B 9/10 (6.0 s) | MiniCPM5-2B is the default |
 | Real material (owner's syllabus + reading, 13 cases): MiniCPM5-2B 10–13/13 across runs (5–6 s), Qwen3.5-2B 11/13, Granite 11/13 | Dominant remaining failure is **over-refusal** (answer present, model says it isn't) |
+| Cross-encoder reranker (ms-marco-MiniLM-L6, CPU) before generation, keeping 6 of 10 chunks: live answers 9.9 → 8.3 s on average, and "what percentage for an A-?" went from a false "not in the material" to the correct scale | Reranker on by default (`configs/retrieval.toml [rerank]`); real-material eval 13/13 and 12/13 |
 | Reading answers found scorer false negatives (inflections, "not provided") and false positives (refusal markers inside copied syllabus text) | Scorer fixed and regression-tested; answers are read, not just counted |
 
 The plan's pass bar (≥ 90% on the eval set with thinking off, < 30 s per
@@ -64,8 +65,7 @@ material runs; the 8 GB floor machine is not yet measured.
 
 ## Consequences
 
-- Next levers, in order: relevance ordering (reranker) and a per-model
-  top-k so the answering chunk leads a shorter prompt; quote-first answers
-  (§6.2) against over-refusal; a larger real-material eval set.
+- Next levers: quote-first answers (§6.2) against the remaining
+  over-refusal; per-model top-k profiles; a larger real-material eval set.
 - Every prompt or model change is re-measured with
   `scripts/eval_models.py` (bundled runtime, optional real-material course).

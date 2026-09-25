@@ -22,6 +22,18 @@ class RetrievalPolicy(BaseModel):
     embedding_only_quota: int = Field(ge=0)
 
 
+class RerankPolicy(BaseModel):
+    enabled: bool
+    model: str
+    generation_k: int = Field(ge=1)
+
+
+def load_rerank_policy(path: Path = DEFAULT_RETRIEVAL_PATH) -> RerankPolicy:
+    with path.open("rb") as config_file:
+        raw = tomllib.load(config_file)
+    return RerankPolicy.model_validate(raw["rerank"])
+
+
 def load_retrieval_policy(
     path: Path = DEFAULT_RETRIEVAL_PATH,
 ) -> RetrievalPolicy:

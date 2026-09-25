@@ -72,6 +72,20 @@ def _no_local_runtime(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
 
 
 @pytest.fixture(autouse=True)
+def _fake_reranker(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test downloads the cross-encoder. The stub scores by word
+    overlap with the question, so ordering is deterministic and sensible."""
+    from src.backend.common import provider
+
+    def overlap(model_name, query, texts):
+        words = set(query.lower().split())
+        return [float(len(words & set(text.lower().split()))) for text in texts]
+
+    monkeypatch.setattr(provider, "rerank_scores", overlap)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_live_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """No test makes a live HTTP model call: the transport is stubbed
     fail-closed. Tests that need a working provider monkeypatch

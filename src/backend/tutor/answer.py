@@ -14,13 +14,14 @@ endpoint says so (503) rather than pretending.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 from uuid import UUID
 
 from src.backend.common import provider
 from src.backend.common.db import Connection
 from src.backend.common.prompt_registry import strip_fence_echo
-from src.backend.retrieval import funnel, trace
+from src.backend.retrieval import funnel, rerank, trace
 from src.backend.retrieval.config import RetrievalPolicy
 from src.backend.tutor.compose import build_prompt as build_prompt
 from src.backend.tutor.compose import compose_answer
@@ -109,19 +110,21 @@ def answer_question(
         on_schema_rejected=lambda err: isinstance(
             err, provider.ProviderRequestRejectedError
         ),
+        select=rerank.select_for_generation,
     )
+    used = dataclasses.replace(result, candidates=composed.candidates)
     stored = trace.record_trace(
         conn,
         course_id,
         question,
-        result,
+        used,
         embedding_model=embedding_model,
         toc_entry_ids=result.matched_toc_entry_ids,
     )
     last = calls[-1]
     return Answer(
         text=composed.text,
-        chunk_ids=tuple(c.chunk_id for c in result.candidates),
+        chunk_ids=tuple(c.chunk_id for c in composed.candidates),
         trace_id=stored.trace_id,
         layer_contribution=result.layer_contribution,
         model=last.model,

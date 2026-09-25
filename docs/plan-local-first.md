@@ -547,7 +547,9 @@ Found and fixed along the way:
       slides/code → narrow prompt + JSON schema with citation numbers
       bounded to the material); eval runs the same path
 - [ ] Quote-anchored citations with JSON schema + mechanical verification
-- [ ] Reranker and sentence extraction in the retrieval funnel
+- [x] Cross-encoder reranker between retrieval and generation (keeps 6 of
+      10; −16% answer time, fixed a measured over-refusal)
+- [ ] Sentence-level extraction inside chunks
 - [ ] Decomposed `ask` pipeline where the eval shows single-shot failing
 - [ ] Per-model capability profiles in `configs/models/`
 - [ ] Prompt-prefix stability for KV-cache reuse; answer cache
