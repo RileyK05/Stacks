@@ -1,0 +1,126 @@
+[version]
+runtime_config_version = "1"
+
+# The bundled local model server (docs/plan-local-first.md §5.2, §11).
+# The llama.cpp build is pinned: a new build is adopted only after the
+# eval set passes on it (new architectures have regressed across builds).
+[llama_cpp]
+build = "b11177"
+port = 8081
+context_size = 8192
+# Server-side thinking kill-switch. Runners disagree on the per-request
+# switch (LM Studio ignored enable_thinking; MiniCPM5-2B then spent a
+# whole 2048-token budget thinking and answered nothing — plan §3), so
+# the bundled server disables reasoning outright.
+reasoning_budget = 0
+startup_timeout_seconds = 180
+
+# One archive per platform + accelerator. Vulkan covers Intel, AMD and
+# NVIDIA GPUs (including integrated ones); the CPU build is the fallback
+# when no Vulkan driver is present.
+[llama_cpp.assets.windows-x64-vulkan]
+file = "llama-b11177-bin-win-vulkan-x64.zip"
+sha256 = "6e4e7a8cea0d2dbd0a745b55f6b42d46d8130f8df4791938802f8269dfc205d5"
+size_bytes = 32456717
+
+[llama_cpp.assets.windows-x64-cpu]
+file = "llama-b11177-bin-win-cpu-x64.zip"
+sha256 = "7f11f910c9ef590782a0a0edbaa99aac1665823ab7bbd63830eca97c39e8defc"
+size_bytes = 18568210
+
+[llama_cpp.assets.macos-arm64]
+file = "llama-b11177-bin-macos-arm64.tar.gz"
+sha256 = "815f8f3ddc8f57ceb792fed561bd6a6c6bd590578f3ad38604e7f70c49de1ac1"
+size_bytes = 11202247
+
+[llama_cpp.assets.linux-x64-vulkan]
+file = "llama-b11177-bin-ubuntu-vulkan-x64.tar.gz"
+sha256 = "1557dbc00d446cb21d7e9771d98106495f55d8cef4faff85ee479eef3698d0c3"
+size_bytes = 30951748
+
+[llama_cpp.assets.linux-x64-cpu]
+file = "llama-b11177-bin-ubuntu-x64.tar.gz"
+sha256 = "9e088583293c4c104953ead0dd8957f4e00dca318c7f241c039198e5eb2e2e54"
+size_bytes = 17009420
+
+# Model catalog (plan §5.1–5.2). Q4_K_M quantizations; checksums are the
+# Hugging Face LFS sha256 values. `min_ram_gb` is the machine RAM below
+# which the app warns before downloading. Model choices are provisional
+# until the Phase 0 bake-off (decision 012).
+#
+# Only architectures the pinned llama.cpp build supports are listed.
+# K2 Horizon (arch "k2-horizon") is NOT supported by upstream llama.cpp at
+# b11177 — LM Studio ships a patched runtime — so it is reachable through
+# the "custom" provider preset pointed at LM Studio, not bundled here.
+
+[[models]]
+id = "minicpm5-2b"
+label = "MiniCPM5 2B"
+tier = "starter"
+repo = "openbmb/MiniCPM5-2B-GGUF"
+file = "MiniCPM5-2B-Q4_K_M.gguf"
+sha256 = "ec2d5801640099e97d8d7e8003ad4d81f336e757811f03a26173dddf386602fd"
+size_bytes = 1561318368
+min_ram_gb = 8
+license = "Apache-2.0"
+notes = "Default. Fast on laptops; strong for its size."
+
+[[models]]
+id = "qwen3.5-2b"
+label = "Qwen3.5 2B"
+tier = "starter"
+repo = "unsloth/Qwen3.5-2B-GGUF"
+file = "Qwen3.5-2B-Q4_K_M.gguf"
+sha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
+size_bytes = 1280835840
+min_ram_gb = 8
+license = "Apache-2.0"
+notes = "Smallest download. Thinking is off by default at this size."
+
+[[models]]
+id = "granite-4.1-3b"
+label = "Granite 4.1 3B"
+tier = "standard"
+repo = "unsloth/granite-4.1-3b-GGUF"
+file = "granite-4.1-3b-Q4_K_M.gguf"
+sha256 = "ac08a622126e1feec0e3ae6b08505c8ecdd90d9d4002f07ac8820fd6169eb979"
+size_bytes = 2099502400
+min_ram_gb = 12
+license = "Apache-2.0"
+notes = "Built for answering from documents."
+
+[[models]]
+id = "qwen3.5-4b"
+label = "Qwen3.5 4B"
+tier = "standard"
+repo = "unsloth/Qwen3.5-4B-GGUF"
+file = "Qwen3.5-4B-Q4_K_M.gguf"
+sha256 = "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+size_bytes = 2740937888
+min_ram_gb = 12
+license = "Apache-2.0"
+notes = "Better answers than the 2B models; needs more memory."
+
+[[models]]
+id = "ling-3.0-tiny"
+label = "Ling 3.0 Tiny"
+tier = "standard"
+repo = "bartowski/Ling-3.0-tiny-GGUF"
+file = "Ling-3.0-tiny-Q4_K_M.gguf"
+sha256 = "5eb12d8150f502e5ef15c05f0a03aec72ef8b8319fbaa8b2e03b43754ce9f2c5"
+size_bytes = 4917354688
+min_ram_gb = 16
+license = "MIT"
+notes = "Mixture-of-experts: fast like a 1B model, needs memory like an 8B."
+
+[[models]]
+id = "gemma-4-e2b"
+label = "Gemma 4 E2B"
+tier = "standard"
+repo = "lmstudio-community/gemma-4-E2B-it-GGUF"
+file = "gemma-4-E2B-it-Q4_K_M.gguf"
+sha256 = "71e6e8cb64a76da1a734fb8f6ba389d2784950d9902f5e87244fca0a15190c94"
+size_bytes = 3427880384
+min_ram_gb = 12
+license = "Gemma"
+notes = "Reads images too (candidate for scanned-PDF OCR)."

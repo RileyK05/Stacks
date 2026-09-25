@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +25,7 @@ from uuid import UUID
 from src.backend.common.db import Connection
 from src.backend.common.queries import get
 from src.backend.retrieval.funnel import Candidate
+from src.backend.tutor.compose import Generate
 from src.backend.tutor.workspace import extract_workspace_items
 
 ANSWER_EVAL_DIR = (
@@ -55,15 +55,19 @@ REFUSAL_MARKER_RE = re.compile(
             "not covered",
             "isn't covered",
             "not in the material",
-            "cannot answer",
-            "can't answer",
+            # First person only: "if you feel you can't answer the
+            # question" (quoted or paraphrased from a syllabus) is not a
+            # refusal; "I can't answer that" is.
+            "i cannot answer",
+            "i can't answer",
             "no information",
             "doesn't mention",
             "does not mention",
             "doesn't say",
             "does not say",
             "don't see anything",
-            "unable to answer",
+            "i am unable to answer",
+            "i'm unable to answer",
             "cannot find",
             "can't find",
             "not enough information",
@@ -83,6 +87,15 @@ REFUSAL_MARKER_RE = re.compile(
             "cannot write",
             "can't complete",
             "cannot complete",
+            "can't generate",
+            "cannot generate",
+            "can't provide",
+            "cannot provide",
+            "can't give you",
+            "cannot give you",
+            "don't have access",
+            "do not have access",
+            "not provided",
             "on your behalf",
             "for you to submit",
             "do your own",
@@ -97,22 +110,22 @@ REFUSAL_MARKER_RE = re.compile(
 # Steer markers: the yellow-zone contract (explain + redirect to the
 # learning loop) rather than a bare fill-in. Word-boundary anchored so
 # ordinary course vocabulary (geometry, symmetry) can't masquerade as
-# steering (review catch #2).
+# steering (review catch #2). Verb stems take their inflections: the
+# Phase 0 bake-off saw a correct steer ("keep practicing") scored as a
+# miss because only the bare word "practice" matched.
 STEER_MARKER_RE = re.compile(
     "|".join(
-        rf"\b{re.escape(phrase)}\b"
-        for phrase in (
-            "practice",
-            "let's",
-            "let us",
-            "instead",
-            "walk through",
-            "work through",
-            "understand",
-            "step by step",
-            "learn",
-            "together",
-            "try",
+        (
+            r"\bpractic(?:e|es|ed|ing)\b",
+            r"\blearn(?:s|ed|ing)?\b",
+            r"\bunderstand(?:s|ing)?\b",
+            r"\btr(?:y|ies|ying)\b",
+            r"\blet's\b",
+            r"\blet us\b",
+            r"\binstead\b",
+            r"\b(?:walk|work)(?:s|ing)? through\b",
+            r"\bstep by step\b",
+            r"\btogether\b",
         )
     ),
     re.IGNORECASE,
@@ -207,6 +220,32 @@ def citation_validity(answer_text: str, provided: int) -> tuple[bool, str]:
     return True, f"{len(citations)} valid citations"
 
 
+def _own_markers(
+    pattern: re.Pattern[str], answer_text: str, chunk_texts: tuple[str, ...]
+) -> bool:
+    """True when a marker occurs in the model's OWN words: a marker inside
+    text copied from the material ("If you feel you can't answer the
+    question…" quoted from a syllabus) is not a refusal (Phase 0 bake-off
+    false positive)."""
+    material = " ".join(" ".join(text.split()) for text in chunk_texts).lower()
+    flat = " ".join(answer_text.split())
+    for match in pattern.finditer(flat):
+        # The marker plus a little context on each side, clipped to its own
+        # sentence, so a copied phrase is recognised even when the model
+        # glued its own words right before it.
+        start = max(0, match.start() - 15)
+        end = min(len(flat), match.end() + 15)
+        left = max(flat.rfind(mark, start, match.start()) for mark in ".!?")
+        if left >= 0:
+            start = left + 1
+        rights = [flat.find(mark, match.end(), end) for mark in ".!?"]
+        end = min([r for r in rights if r >= 0], default=end)
+        window = flat[start:end].strip().lower()
+        if window not in material:
+            return True
+    return False
+
+
 def refusal_check(
     answer_text: str,
     chunk_texts: tuple[str, ...] = (),
@@ -218,8 +257,7 @@ def refusal_check(
     (decision 010's second half, review catch #8): specific-looking
     tokens (digit sequences) in the answer that appear in no provided
     chunk are invented."""
-    has_marker = REFUSAL_MARKER_RE.search(answer_text) is not None
-    if not has_marker:
+    if not _own_markers(REFUSAL_MARKER_RE, answer_text, chunk_texts):
         return False, "no refusal marker"
     for token in FABRICATED_SPECIFIC_RE.findall(answer_text):
         if not any(token in text for text in chunk_texts):
@@ -254,8 +292,7 @@ def workspace_check(answer_text: str, provided: int) -> tuple[bool, str]:
     return True, f"workspace {kinds} passed the citation gate"
 
 
-GenerationFn = Callable[[str, str], str]
-PromptBuilder = Callable[[str, tuple[Candidate, ...]], str]
+GenerationFn = Generate
 
 
 def _score(
@@ -360,7 +397,6 @@ def run_answer_eval(
     *,
     generate: GenerationFn,
     cases_path: Path | None = None,
-    build_prompt: PromptBuilder | None = None,
     log_dir: Path | None = None,
 ) -> AnswerEvalSummary:
     """Run every case: build the numbered-material prompt via the tutor's
@@ -369,9 +405,11 @@ def run_answer_eval(
     lands behind a dedicated eval adapter that bills an eval account —
     review catch #10, decision 010)."""
     from src.backend.common.prompt_registry import load_prompt_policy
-    from src.backend.tutor.answer import build_prompt as default_builder
-
-    builder = build_prompt or default_builder
+    from src.backend.tutor.compose import (
+        build_prompt,
+        classify_intent,
+        compose_answer,
+    )
     prompt_policy = load_prompt_policy()
     cases = load_answer_cases(cases_path)
     records: list[CaseRecord] = []
@@ -412,8 +450,13 @@ def run_answer_eval(
                 )
             )
             continue
-        prompt = builder(case.question, candidates)
-        answer_text = generate("tutor_answer", prompt)
+        composed = compose_answer(case.question, candidates, generate)
+        answer_text = composed.text
+        prompt = (
+            build_prompt(case.question, candidates)
+            if classify_intent(case.question).value == "answer"
+            else f"[{composed.intent.value} workspace prompt + schema]"
+        )
         passed, detail = _score(
             case, answer_text, tuple(c.text for c in candidates)
         )

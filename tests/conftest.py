@@ -58,6 +58,20 @@ def _memory_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, str]]
 
 
 @pytest.fixture(autouse=True)
+def _no_local_runtime(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """Tests never start llama-server or read other apps' model folders
+    (LM Studio, the Hugging Face cache). Records which catalog models the
+    generation seam asked to have running."""
+    from src.backend.common import provider
+    from src.backend.runtime import model_store
+
+    started: list[str] = []
+    monkeypatch.setattr(provider, "_ensure_local_runtime", started.append)
+    monkeypatch.setattr(model_store, "_external_roots", lambda: [])
+    yield started
+
+
+@pytest.fixture(autouse=True)
 def _no_live_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """No test makes a live HTTP model call: the transport is stubbed
     fail-closed. Tests that need a working provider monkeypatch

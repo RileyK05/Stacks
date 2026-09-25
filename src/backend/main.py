@@ -19,12 +19,13 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from src.backend.api import courses, settings, sources, tutor
+from src.backend.api import courses, runtime, settings, sources, tutor
 from src.backend.api.deps import require_app_token
 from src.backend.common import maintenance
 from src.backend.common.config import PROJECT_ROOT
 from src.backend.common.migrate import migrate
 from src.backend.ingest import worker as ingestion_worker
+from src.backend.runtime import supervisor
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ def create_api() -> FastAPI:
     api.include_router(sources.router)
     api.include_router(tutor.router)
     api.include_router(settings.router)
+    api.include_router(runtime.router)
 
     @api.get("/health")
     def health() -> dict[str, str]:
@@ -60,6 +62,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     tasks = [
         asyncio.create_task(maintenance.run_forever(stop)),
         asyncio.create_task(ingestion_worker.run_forever(stop)),
+        asyncio.create_task(supervisor.run_forever(stop)),
     ]
     try:
         yield

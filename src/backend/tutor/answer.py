@@ -14,14 +14,16 @@ endpoint says so (503) rather than pretending.
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from src.backend.common import provider
 from src.backend.common.db import Connection
-from src.backend.common.prompt_registry import grounded_prompt, load_prompt
+from src.backend.common.prompt_registry import strip_fence_echo
 from src.backend.retrieval import funnel, trace
 from src.backend.retrieval.config import RetrievalPolicy
-from src.backend.retrieval.funnel import Candidate
+from src.backend.tutor.compose import build_prompt as build_prompt
+from src.backend.tutor.compose import compose_answer
 from src.backend.tutor.workspace import (
     WorkspaceItem,
     extract_workspace_items,
@@ -49,13 +51,13 @@ class Answer:
         model: str = "",
         fell_back_to_local: bool = False,
     ) -> None:
-        self.text = text
+        self.text = strip_fence_echo(text)
         self.chunk_ids = chunk_ids
         self.trace_id = trace_id
         self.layer_contribution = layer_contribution
         self.model = model
         self.fell_back_to_local = fell_back_to_local
-        extracted = extract_workspace_items(text, len(chunk_ids))
+        extracted = extract_workspace_items(self.text, len(chunk_ids))
         self.body = extracted.body
         self.workspace_items: tuple[WorkspaceItem, ...] = extracted.items
         self.withheld = extracted.withheld
@@ -70,7 +72,8 @@ def answer_question(
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
 ) -> Answer:
-    """One grounded answer: retrieve, generate, then record the trace.
+    """One grounded answer: retrieve, frame + generate (compose.py), then
+    record the trace.
 
     The trace is written only after generation succeeds, so an answer
     that never happened leaves no evidence-shaped noise — and no write
@@ -88,8 +91,25 @@ def answer_question(
         raise NothingRelevantFoundError(
             "nothing in the course materials matches this question"
         )
-    prompt = build_prompt(question, result.candidates)
-    generation = provider.generate("tutor_answer", prompt, course_id=course_id)
+    calls: list[provider.GenerationResult] = []
+
+    def generate(
+        task: str, prompt: str, *, response_schema: dict[str, Any] | None = None
+    ) -> str:
+        generation = provider.generate(
+            task, prompt, course_id=course_id, response_schema=response_schema
+        )
+        calls.append(generation)
+        return generation.text
+
+    composed = compose_answer(
+        question,
+        result.candidates,
+        generate,
+        on_schema_rejected=lambda err: isinstance(
+            err, provider.ProviderRequestRejectedError
+        ),
+    )
     stored = trace.record_trace(
         conn,
         course_id,
@@ -98,31 +118,12 @@ def answer_question(
         embedding_model=embedding_model,
         toc_entry_ids=result.matched_toc_entry_ids,
     )
+    last = calls[-1]
     return Answer(
-        text=generation.text,
+        text=composed.text,
         chunk_ids=tuple(c.chunk_id for c in result.candidates),
         trace_id=stored.trace_id,
         layer_contribution=result.layer_contribution,
-        model=generation.model,
-        fell_back_to_local=generation.fell_back_to_local,
+        model=last.model,
+        fell_back_to_local=any(call.fell_back_to_local for call in calls),
     )
-
-
-def build_prompt(question: str, candidates: tuple[Candidate, ...]) -> str:
-    """The grounded prompt: question + cited chunks with their locator
-    ids. The instruction line comes from the prompt registry (decision
-    010) and carries the citation contract (Fork C working direction) +
-    the three-zone steer (decision 009): every factual claim cites the
-    locator it rests on; the model may only use the provided material;
-    homework-fill requests steer to reasoning + practice. Course chunks
-    are untrusted uploaded text, so the material and the question are
-    fenced as data (input marking, the prompt-injection gate)."""
-    blocks = [
-        f"[{index + 1}] chunk {candidate.chunk_id}"
-        f"\n{candidate.text}"
-        for index, candidate in enumerate(candidates)
-    ]
-    evidence = "\n\n".join(blocks)
-    instruction = load_prompt("tutor_answer")
-    material = f"Question: {question}\n\nCourse material:\n{evidence}"
-    return grounded_prompt(instruction, material)

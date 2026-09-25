@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
 from pydantic import BaseModel, model_validator
 from src.backend.common.config import PROJECT_ROOT
 from src.backend.common.schemas.base import KNOWN_GENERATION_TASKS
+
+# Prompts that are not generation tasks of their own: the per-kind
+# workspace prompts share the `artifact_generation` task for routing and
+# usage, but each has its own text (tutor/compose.py).
+WORKSPACE_PROMPTS = frozenset(
+    f"workspace_{kind}" for kind in ("quiz", "document", "sheet", "slides", "code")
+)
+KNOWN_PROMPTS = KNOWN_GENERATION_TASKS | WORKSPACE_PROMPTS | {"tutor_steer"}
 
 DEFAULT_PROMPTS_PATH = PROJECT_ROOT / "configs" / "prompts.toml"
 
@@ -36,6 +45,21 @@ def fence_untrusted(text: str) -> str:
     return f"{UNTRUSTED_BEGIN}\n{safe}\n{UNTRUSTED_END}"
 
 
+def strip_fence_echo(text: str) -> str:
+    """Remove fenced material a model echoed into its answer — whole
+    begin…end blocks, then any stray marker line. It is prompt plumbing,
+    never content (Phase 0 bake-off: a 2B model appended the entire fenced
+    question and material after its answer)."""
+    begin, end = re.escape(UNTRUSTED_BEGIN), re.escape(UNTRUSTED_END)
+    text = re.sub(rf"{begin}.*?{end}", "", text, flags=re.DOTALL)
+    lines = [
+        line
+        for line in text.splitlines()
+        if UNTRUSTED_BEGIN not in line and UNTRUSTED_END not in line
+    ]
+    return "\n".join(lines).strip()
+
+
 def grounded_prompt(instruction: str, material: str) -> str:
     """Assemble a task prompt: trusted instruction first, then the course
     material fenced as data. Every prompt that embeds uploaded text goes
@@ -55,7 +79,7 @@ class PromptPolicy(BaseModel):
 
     @model_validator(mode="after")
     def _complete_known_tasks(self) -> PromptPolicy:
-        missing = KNOWN_GENERATION_TASKS.difference(self.prompts)
+        missing = KNOWN_PROMPTS.difference(self.prompts)
         if missing:
             raise ValueError(
                 f"prompts.toml must cover the known generation tasks "
@@ -79,8 +103,8 @@ def load_prompt_policy(
 
 
 def load_prompt(task: str, path: Path = DEFAULT_PROMPTS_PATH) -> str:
-    if task not in KNOWN_GENERATION_TASKS:
-        raise ValueError(f"unknown generation task: {task}")
+    if task not in KNOWN_PROMPTS:
+        raise ValueError(f"unknown prompt: {task}")
     policy = load_prompt_policy(path)
     text = policy.prompts.get(task)
     if text is None:

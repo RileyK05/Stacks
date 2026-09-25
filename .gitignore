@@ -11,6 +11,9 @@ venv/
 
 # Local course data and generated artifacts (never committed)
 data/raw/
+# Local model runtime + model files (dev checkout)
+data/runtime/
+data/models/
 data/processed/
 # The local SQLite database (dev checkout; the desktop app uses the OS
 # per-user data directory instead)

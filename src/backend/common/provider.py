@@ -68,6 +68,12 @@ class ProviderRateLimitedError(ProviderUnavailableError):
     """The provider answered 429 (rate limit / daily free-model cap)."""
 
 
+class ProviderRequestRejectedError(ProviderUnavailableError):
+    """The provider refused the request itself (4xx other than 429) —
+    e.g. a model without structured-output support rejecting
+    `response_format`. Retrying without that option may succeed."""
+
+
 class EmptyModelError(RuntimeError):
     """The provider returned no usable text. Stages must fail on this —
     a model stage that 'succeeds' while writing no rows is a false
@@ -90,6 +96,8 @@ def generate(
         raise ProviderUnavailableError(
             "no model provider configured — choose one in Settings"
         )
+    if endpoint.name == "local":
+        _ensure_local_runtime(endpoint.model)
     fell_back = False
     try:
         if not endpoint.is_local:
@@ -107,6 +115,7 @@ def generate(
             task,
         )
         endpoint, fell_back = local, True
+        _ensure_local_runtime(endpoint.model)
         raw_text, input_tokens, output_tokens = _call_provider(
             task, endpoint, prompt, images=images, response_schema=response_schema
         )
@@ -128,6 +137,24 @@ def generate(
         provider=endpoint.name,
         fell_back_to_local=fell_back,
     )
+
+
+def _ensure_local_runtime(model_id: str) -> None:
+    """The "local" preset is the app's own llama.cpp server: start the
+    chosen catalog model on first use. A model name outside the catalog
+    (a server the user runs themselves) is left alone."""
+    from src.backend.runtime.config import load_runtime_config
+    from src.backend.runtime.server import RuntimeUnavailableError, ensure_running
+
+    if load_runtime_config().model(model_id) is None:
+        return
+    try:
+        ensure_running(model_id)
+    except RuntimeUnavailableError as err:
+        raise ProviderUnavailableError(
+            f"the local model could not start: {err}. "
+            "Download it or pick another model in Settings."
+        ) from err
 
 
 def _local_fallback(failed: ResolvedProvider) -> ResolvedProvider | None:
@@ -184,9 +211,13 @@ def _call_provider(
         "max_tokens": defaults.max_output_tokens,
     }
     if endpoint.is_local or endpoint.name == "custom":
-        # llama.cpp-family servers read this; cloud APIs reject unknown
-        # fields, so it is only sent to local/custom endpoints.
+        # Local runtimes disagree on the switch: llama-server reads the
+        # template kwarg, LM Studio only honours reasoning_effort (measured:
+        # MiniCPM5-2B spent ~90% of its tokens thinking with the kwarg alone).
+        # Cloud APIs reject unknown fields, so neither goes to them.
         body["chat_template_kwargs"] = {"enable_thinking": defaults.enable_thinking}
+        if not defaults.enable_thinking:
+            body["reasoning_effort"] = "none"
     if response_schema is not None:
         body["response_format"] = {
             "type": "json_schema",
@@ -207,13 +238,18 @@ def _call_provider(
             raise ProviderRateLimitedError(
                 f"{endpoint.name} rate-limited (task={task}, model={endpoint.model})"
             )
+        if 400 <= response.status_code < 500:
+            raise ProviderRequestRejectedError(
+                f"{endpoint.name} rejected the request ({response.status_code}, "
+                f"task={task}, model={endpoint.model})"
+            )
         response.raise_for_status()
         payload = response.json()
         text = payload["choices"][0]["message"]["content"] or ""
         usage = payload.get("usage") or {}
         input_tokens = int(usage.get("prompt_tokens", 0))
         output_tokens = int(usage.get("completion_tokens", 0))
-    except ProviderRateLimitedError:
+    except (ProviderRateLimitedError, ProviderRequestRejectedError):
         raise
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as err:
         raise ProviderUnavailableError(

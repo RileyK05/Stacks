@@ -243,6 +243,7 @@ def test_local_request_disables_thinking_and_sends_no_auth(
     assert request["headers"] == {}
     body = request["json"]
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    assert body["reasoning_effort"] == "none"
     assert body["response_format"]["type"] == "json_schema"
     assert body["model"] == "minicpm5-2b" and body["max_tokens"] > 0
 
@@ -266,6 +267,7 @@ def test_cloud_request_sends_key_and_no_llama_cpp_fields(
     assert request["url"] == "https://api.openai.com/v1/chat/completions"
     assert request["headers"] == {"Authorization": "Bearer sk"}
     assert "chat_template_kwargs" not in request["json"]
+    assert "reasoning_effort" not in request["json"]
 
 
 def test_http_429_raises_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
