@@ -1,12 +1,12 @@
-# Project: Course Memory and Adaptive Study System
+# Project: Stacks — course memory and adaptive study
 
 ## One-line idea
 
-Build an academic assistant that continuously ingests course materials, preserves
-source-grounded course knowledge plus a per-user course-memory focus record
-(decision 007), learns from a student's study attempts over time, and helps the
-student decide what to study next — deployed for a small user base with
-operator-owned data.
+A desktop study tool that ingests a student's course materials, keeps
+source-grounded course knowledge plus a course-memory focus record
+(decision 007), and helps the student decide what to study next. It runs
+on the student's own laptop, with a small open model by default and any
+cloud model the student chooses (decision 012).
 
 This is **not** just "chat with PDFs." The useful output is an inspectable, evolving model of:
 
@@ -31,31 +31,30 @@ The project should make course work compound across a semester. It should help a
 
 ## Primary user
 
-A small set of students (the operator and people they know) using it for their own
-courses. Multi-user from the start: accounts with email + password, per-user data
-isolation in the schema. Not an LMS, not a universal tutor — a useful personal
-instrument that can be evaluated on real courses.
+One student on their own machine, using it for their own courses. No
+accounts, no server: one SQLite database per user in their app-data
+folder. Not an LMS, not a universal tutor — a useful personal instrument
+that can be evaluated on real courses. The target is an ordinary laptop
+(8 GB RAM minimum, 16 GB recommended).
 
 ## Product principles
 
 - **Source grounded:** substantive academic answers link to uploaded source material. Every claim carries an evidence chain.
 - **Inspectable:** the system shows what it retrieved, what it inferred, and why it believes a concept is weak or mastered.
-- **Data ownership:** course material and study history live in our own Postgres. Inference goes to hosted model APIs that contractually do not retain data.
+- **The user owns their data:** course material and study history stay in
+  the user's data folder. The default model runs locally; a cloud provider
+  is used only if the user picks one, after a one-time notice of what it
+  receives. A whole course can be exported as one `.course` file.
 - **Course-specific:** preserve a professor's notation, definitions, rubrics, and examples rather than replacing them with generic explanations.
-- **Metered compute:** model calls are budgeted per user per week and routed by
-  tier (free gets the cheap model, paid gets the newer one); every call is
-  logged in an append-only ledger. Generation is never anonymous and never
-  unbudgeted.
+- **Small models, strong harness:** the harness frames each task (prompt,
+  output schema, bounded citations) so a ~2B local model does narrow,
+  checkable work. Every model call is recorded in a local usage ledger.
 - **Learning over completion:** the tool helps practice and diagnose understanding, not produce assignments for submission.
 - **ML earns its role:** begin with retrieval, structure, and simple measurable baselines; add fine-tuning only for documented failures.
 - **Extensible by design:** new content kinds, locator types, and formats are free strings — they insert without schema redesign.
-- **One canonical code format:** course join codes and premium/support codes
-  share a single format (16 chars, look-alike-free alphabet, grouped display)
-  validated at the API boundary and constrained in the database.
-- **Destruction leaves a distilled record:** course deletion retains the exact
-  course for a 90-day copy grace period, then purges everything except the
-  course owner's bounded, evidence-bearing course-memory node; account deletion
-  has a 7-day grace period.
+- **Destruction leaves a distilled record:** a deleted course sits in the
+  trash for 30 days; purging it keeps only its bounded, evidence-bearing
+  course-memory keepsake.
 
 ## Non-goals
 
@@ -67,92 +66,67 @@ instrument that can be evaluated on real courses.
 
 ## Core system model
 
-The system has six layers (mirrored by `src/backend/common/schemas/` and the
-Postgres migrations).
+The system has six layers (mirrored by `src/backend/common/schemas/`). The
+SQLite baseline (migration 001) holds layers 1–3 and 6; the student model
+and chat history are designed below and land with Milestones 3–4.
 
-### 1. Identity & course structure
+### 1. Courses
 
-Users (email + password auth, 7-day deletion grace, customer tier — free or
-paid, controlling the weekly generation budget and which models answer),
-courses, **study periods** — user-definable sliding time windows (a lecture, a
-month, the stretch before an exam — never a hardcoded "week"), and **course
-objects** — any object a course owns and the owner publishes: uploaded sources
-and shared study materials. `kind` is a free string; `content_type` routes
-storage/serving; `content_uri` points at the format-appropriate store.
+Courses and their uploaded sources. `kind` is a free string;
+`content_type` routes storage/serving. A course can be exported to a
+`.course` file (the original files plus a manifest) and imported on
+another machine, where normal ingestion rebuilds everything else.
 
-Each course has one owner and is in exactly one of **three shapes: private,
-invite-only, or public** (decision `006_three_course_shapes.md`; a closed set
-— new shapes require a deliberate schema+policy change). Every course has a
-server-generated canonical join code (16 chars from a look-alike-free
-alphabet, display form `XXXX-XXXX-XXXX-XXXX`) — separate from its display
-name. Anonymous visitors may view published objects and the join code on
-public courses, but cannot use model compute; invite-only and private courses
-are invisible to them. An authenticated learner self-enrolls in a public
-course, submits a join code on a public or invite-only course, or accepts an
-owner invitation before using its source collection for retrieval or
-generation. Invitations grant no access until acceptance. Only the owner may
-change canonical course objects or base sources. Learner generations live as
-private user artifacts outside the course's canonical objects; the course
-owner and other learners cannot view them.
-Attempts, mastery, conversations, recommendations, and tutor preferences are
-also private to the learner. An uploaded source is a specialized course object
-linked 1:1 to its generic object record.
-
-Tutor preferences change presentation, not truth or retrieval. Presentation
-is a user-memory (root) concern per decision 007: the owner may use a
-private structured profile for interactive responses in their course;
-non-owners use a versioned generic profile for now (the full user-memory
-root is Milestone 2 work). Neither profile may alter the TOC, evidence
-selection, citations, or mastery evaluation.
+Tutor preferences change presentation, not truth or retrieval.
+Presentation is a user-memory (root) concern per decision 007 and may not
+alter the TOC, evidence selection, citations, or mastery evaluation.
 
 ### 2. Source content
 
 Materials are stored **whole** — nothing is destroyed at ingest. Uploads
-stream to disk under a hard byte ceiling (oversized bodies are cut
-mid-stream), are stored under server-generated names (path traversal
-structurally impossible), and are gzip-compressed only when the mime type
-allows and it saves ≥10% (`stored_encoding`: `identity` / `gzip`). Each source
-gets **locators**: a free-typed per-format table of contents (slide 7, page 3,
-timestamp 12:30, cell range A1:D20 — each format keeps its natural unit).
-Retrieval units are **token-bounded chunks** sized to fit the model's context
-window, each pointing back to the locators it spans; a chunk is stored ONCE
-with its locator set in a join table (`chunk_locators`, migration 031) so
-retrieval hits never scale with locator grain. Sources carry `file_hash`
-for dedup. Ingestion is an ordered, versioned pipeline: text extraction →
-OCR (only for image-only PDFs; rasterization-capped) → locators → chunks →
-chunk embeddings (self-hosted) → cascading TOC update → course-knowledge
-extraction. A stage runs only after its dependency succeeds, retries according
-to versioned configuration, and stops the pipeline with an inspectable error
-when its attempts are exhausted.
+stream to disk under a hard byte ceiling, are stored under generated names
+(path traversal structurally impossible), and are gzip-compressed only
+when the mime type allows and it saves ≥10% (`stored_encoding`:
+`identity` / `gzip`). Each source gets **locators**: a free-typed
+per-format table of contents (slide 7, page 3, timestamp 12:30, cell range
+A1:D20 — each format keeps its natural unit). Retrieval units are
+**token-bounded chunks**, each stored once with its locator set in a join
+table (`chunk_locators`). Sources carry `file_hash` for dedup. Ingestion
+is an ordered, versioned pipeline: text extraction → OCR (image-only PDFs;
+rasterization-capped) → locators → chunks → chunk embeddings → TOC update →
+course-knowledge extraction. A stage runs only after its dependency
+succeeds, retries per versioned configuration, and stops the pipeline with
+an inspectable error when its attempts are exhausted.
 
-### 3. Course knowledge (shared per course — not memory; decision 007)
+### 3. Course knowledge (not memory; decision 007)
 
 Concepts (with synonyms, evidence levels), dependencies (nullable prereq,
 in-course or external — Calc 2 can depend on Calc 1), memory objects
 (concepts/formulas/theorems/examples/misconceptions with evidence), and the
-**table of contents**: a model-written, per-course, versioned index describing
-what's in the course and where.
+**table of contents**: a per-course, versioned index of what's in the
+course and where, built from the author's own structure when the file has
+one.
 
-**Retrieval is hybrid four-seam (decision 008), not single-path.** Keyword,
+**Retrieval is hybrid four-seam (decision 008).** Keyword (SQLite FTS5),
 TOC routing, dependency walk, and embeddings generate candidates; fusion
-normalizes and allocates the final cited set. Each seam activates as its data
-arrives; every seam must beat the funnel without it on the eval set, and
-fusion must beat the best single seam, or it is dropped.
+normalizes and allocates the cited set, and a cross-encoder reranker picks
+what the model reads. Each seam must beat the funnel without it on the
+eval set, and fusion must beat the best single seam, or it is dropped.
 
 ### 4. Student model
 
 Assessment items (prompt, concepts tested, difficulty, rubric), attempts
 (multi-concept, confidence before feedback, evaluation, error category), concept
-mastery (a per-user ladder: unseen → exposed → can recognize → can reproduce with
+mastery (a ladder: unseen → exposed → can recognize → can reproduce with
 cues → can apply independently → can transfer — not one fake-precise score), and
 recommendations ("what to study next," traceable to attempts and concepts).
 
 ### 5. Chat history
 
-Conversations are stored in **two forms**: the raw turns (what the user sees) and
-a compressed summary (what the model is prompted with), regenerated when the
-conversation grows past a threshold so context stays current without paying for
-full transcripts.
+Conversations are stored in **two forms**: the raw turns (what the user
+sees) and a compressed summary (what the model is prompted with),
+regenerated when the conversation grows past a threshold so a small
+model's context stays current.
 
 ### 6. Evidence & grounding
 
@@ -165,18 +139,18 @@ regenerated.
 
 ## MVP
 
-Build a single-course MVP for a small set of users.
+A single-course MVP for one student on their own laptop.
 
 ### MVP user stories
 
-1. I can create an account and upload PDFs, Markdown notes, and text for one course.
+1. I can install the app, create a course, and upload PDFs, Markdown notes, and text.
 2. I can ask a question and receive an answer with citations to the uploaded material — and see the cited passages ("sources used") without leaving the answer.
 3. I can view a concept page containing a course-specific definition, prerequisite links, examples, and source evidence.
-4. I can request a short closed-notes diagnostic constrained to selected study periods/topics.
+4. I can request a short closed-notes diagnostic constrained to selected topics.
 5. I can answer the diagnostic, state my confidence beforehand, and receive feedback.
 6. The system stores my errors by concept and displays the evidence behind any recommendation.
 7. I can ask, "What should I work on next?" and get a transparent answer grounded in my attempts and the course's current material.
-8. I can delete a course (a compressed memory is archived; 90-day copy grace) or my account (7-day grace).
+8. I can delete a course (30 days in the trash; its course memory survives the purge) and export or import a course as one file.
 
 ### MVP success criteria
 
@@ -186,49 +160,48 @@ The MVP is useful if, for one real course:
 - a cold probe exposes at least some real gaps that rereading would not reveal;
 - recommendations can be traced to specific attempts and concepts;
 - the student uses it repeatedly for at least two weeks;
-- it saves time or improves study decisions compared with manually searching files and guessing what to review.
+- it saves time or improves study decisions compared with manually searching files and guessing what to review;
+- answers stay usable on the floor machine (< 30 s each on 8 GB RAM, no GPU).
 
 ## Technical requirements (agreed)
 
+- **App:** a native window (pywebview) around the FastAPI backend and the
+  built SvelteKit SPA, packaged with PyInstaller. A per-launch token
+  between the window and the backend is the only auth.
 - **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem.
-- **Database:** Postgres via raw SQL (no ORM). Versioned, append-only migrations
-  (`common/migrations/00X_*.sql`, currently 001–032) applied by a runner
-  (`common/migrate.py`). Extracted text + metadata are the source of truth;
-  giant raw originals are trimmed after a confirmed parse. Uploads live under
-  `STORAGE_ROOT` on disk, named by server-generated IDs, accounted in the DB.
-- **Inference:** two seams, both in `common/provider.py`. Generation goes to
-  hosted model APIs (no data retention) routed by tier from `configs/tiers.toml`:
-  free tier gets the cheap generative model (DeepSeek v4 flash), paid gets the
-  newer one, a small stable model writes the TOC, OCR uses the multimodal model
-  (wired, rasterization-capped). **Embeddings are self-hosted and in-process**
-  (`sentence-transformers` + IBM granite-embedding-english-r2): no API, no key,
-  no spend gate, and course text never leaves the machine — the no-retention
-  vendor check does not apply to embeddings by construction. Model choice is a
-  pencil mark: `chunk_embeddings` rows are keyed by model name, so a swap is
-  re-ingest, not a rewrite.
-- **Frontend:** separate codebase (`src/frontend/`), talks to backend only via API.
-- **Auth:** email + password (bcrypt, 12+ chars), JWT with issuer/audience
-  validation and password-change session invalidation; login throttling
-  (`common/login_throttle.py`); per-user isolation throughout.
+- **Database:** SQLite (WAL, foreign keys, FTS5) via raw SQL, no ORM.
+  Versioned, append-only migrations (`common/migrations/00X_*.sql`) applied
+  by `common/migrate.py`. Every foreign key cascades.
+- **Generation:** one seam, `common/provider.py`, routed per task class
+  (interactive answers, background work, and an optional "bigger model")
+  to the endpoint the user chose in Settings: the bundled llama.cpp server
+  (default MiniCPM5-2B; others in `configs/runtime.toml`), OpenRouter,
+  OpenAI, or any OpenAI-compatible endpoint. Keys live in the OS keychain.
+- **Encoders:** embeddings (IBM granite-embedding-english-r2) and the
+  reranker run in-process on ONNX Runtime, pinned and checksummed. Model
+  choice is a pencil mark: `chunk_embeddings` rows are keyed by model name,
+  so a swap is re-ingest, not a rewrite.
+- **Frontend:** separate codebase (`src/frontend/`), talks to the backend only via its API.
 - **Config:** tunables versioned in `configs/` (`ingestion.toml`,
-  `tutor.toml`, `tiers.toml`, `lifecycle.toml`, `retrieval.toml`,
-  `embeddings.toml`, `auth.toml`, `prompts.toml`); credentials in `.env`
-  (gitignored, `STORAGE_ROOT` for upload files).
+  `retrieval.toml`, `embeddings.toml`, `models.toml`, `runtime.toml`,
+  `prompts.toml`, `tutor.toml`, `lifecycle.toml`). `.env` holds only
+  optional development settings.
 
 ## Evaluation plan
 
 Evaluation is the center of the project, not an afterthought. The
 mechanical harness is live (decision 010): retrieval
 (`retrieval/evals.py` + `data/eval/retrieval/cases.json`) and the answer
-harness (`evals/answer.py` + `data/eval/answer/cases.json` — four case
-kinds, mechanical scorers, prompt-version-stamped logs under `runs/`).
+harness (`evals/answer.py` + `data/eval/answer/cases.json`, mechanical
+scorers, prompt-version-stamped logs under `runs/`).
+`scripts/eval_models.py` runs it against the bundled runtime, any model in
+the catalog, and optionally a real course.
 
 ### 1. Retrieval evaluation
 
 Create 30–50 course questions with known supporting passages. Measure recall@k,
 citation precision, and source preference (instructor material when it should be
-used). *Status: harness live, seeded with synthetic cases; real material is the
-next step (needs real uploads).*
+used).
 
 ### 2. Answer evaluation
 
@@ -236,8 +209,8 @@ For a small held-out set, score factual correctness against source
 material, citation correctness, course-notation fidelity, appropriate
 uncertainty, and usefulness. *Status: the mechanical half is live —
 citation validity, refusal honesty, steer behavior per decision 009's
-three zones. LLM-judged qualities (notation fidelity, usefulness) land
-with the real provider + a judge model.*
+three zones, workspace output. LLM-judged qualities (notation fidelity,
+usefulness) are open.*
 
 ### 3. Probe evaluation
 
@@ -260,46 +233,34 @@ for course concepts, a reranker, a probe generator, an error classifier.
 
 ## Privacy and academic integrity
 
-- Data ownership: course data and study history live in our Postgres.
-- Inference only through providers that do not retain data.
+- Course data and study history stay on the user's machine unless the user
+  exports them.
+- Nothing is sent to a cloud model unless the user chooses one; the
+  one-time notice says what it receives.
 - Never ingest classmates' work without permission.
 - Do not automatically submit answers, solve graded assignments on demand, or conceal source use.
 - Separate practice mode from assignment-reference mode.
 - Visible evidence for every response based on course material.
-- Public visibility exposes published course objects without granting compute or
-  raw-source access. Enrollment unlocks source-backed retrieval and generation,
-  never access to another student's attempts, conversations, mastery,
-  recommendations, preferences, or private artifacts. Only the owner can mutate
-  canonical course objects and base sources.
-- **Deletion:** a course becomes an exact 90-day archive, copyable by current
-  participants throughout the grace period. Expiry purges the full course
-  tree and physical files through a durable retry job; only the course
-  owner's bounded course-memory node survives. Account deletion has a 7-day
-  grace period before full removal.
 
 ## Milestones
 
-- [x] **Milestone 0: Foundations** — project scaffolding, tooling, six-layer
-  Pydantic schema, Postgres migrations + runner, deletion design.
-- [x] **Milestone 0.5: Accounts, courses, access & metering** — auth (JWT +
-  bcrypt), course CRUD with tier gating, the three course shapes, enrollment
-  (self/invitation/join-code), owner/member permissions, canonical code
-  format, storage layer (streaming uploads, dedup, conditional gzip), tiers +
-  weekly budgets + generation ledger, support/premium claim codes, and the
-  two-phase course archive (90-day grace → purge, owner's course-memory
-  node survives).
-- [x] **Milestone 1: Source-grounded retrieval** — ingestion wiring into the
-  pipeline (parse → locators → chunks → embeddings → TOC/knowledge stages
-  through the provider seam), hybrid four-seam retrieval with fusion +
-  traces (decision 008), the worker loop, the tutor endpoint (ask with
-  strict refusal), and the citations endpoint backing the UI's
-  "sources used" panel. *Remaining: the hosted chat provider itself
-  (model stages + generation fail closed until it lands).*
+- [x] **Milestone 0: Foundations** — scaffolding, tooling, six-layer
+  Pydantic schema, migrations + runner, deletion design.
+- [x] **Milestone 0.5: Hosted accounts and metering** — built for the
+  hosted version (accounts, tiers, enrollment, sharing), then replaced by
+  decision 012. That version lives on in the original hosted repository.
+- [x] **Milestone 1: Source-grounded retrieval** — the ingestion pipeline,
+  hybrid four-seam retrieval with fusion + traces (decision 008), the
+  worker loop, the tutor endpoint (ask with strict refusal), and the
+  citations endpoint behind the "sources used" panel.
+- [x] **Milestone 1.5: Local-first desktop** — SQLite, the bundled
+  llama.cpp runtime, provider choice, ONNX encoders, task framing, the
+  desktop shell and packaging (`docs/plan-local-first.md`).
 - [ ] **Milestone 2: User + course memory** — the memory tree of decision
   007: elevate tutor profiles into the user-memory root (behavioral,
-  cross-course), evolve the owner's course-memory node from a content
-  summary into FOCUS memory as student data accumulates; plus concept/
-  dependency extraction with evidence, inspectable concept pages.
+  cross-course), evolve the course-memory node from a content summary
+  into FOCUS memory as student data accumulates; plus concept/dependency
+  extraction with evidence, inspectable concept pages.
 - [ ] **Milestone 3: Cold probe loop** — diagnostics, confidence capture,
   scoring, error categories, per-concept history.
 - [ ] **Milestone 4: Adaptive recommendations** — transparent "what to study
@@ -312,23 +273,19 @@ for course concepts, a reranker, a probe generator, an error classifier.
 
 ## Open questions
 
-- Chat model provider (OpenAI-style API contract is settled; Xiaomi MiMo and
-  similar OpenAI-compatible hosts are the lean). Verify no-retention policy
-  before committing — that check gates generation go-live (embeddings are
-  already self-hosted and exempt).
 - How will mathematical notation and diagrams be represented and cited?
-  (Extraction is currently text-only; image-only PDFs route to the OCR stage
-  once a multimodal provider lands — a natively multimodal flash model is the
-  natural fit.)
+  (Extraction is text-only; image-only PDFs need local OCR, which is
+  planned but not yet bundled.)
 - How much manual review of course-knowledge objects is acceptable?
 - How should a student override an incorrect concept link or mastery inference?
 - What does "mastery" mean for a proof course versus a programming/data course?
+- How well does the default model hold up on the 8 GB floor machine?
 
 ## Definition of done for v1
 
-A student can create an account, upload one course's materials, ask
+A student can install the app, upload one course's materials, ask
 source-cited questions, take a short closed-notes diagnostic, review their
 concept-linked mistakes, and receive a transparent recommendation for what to
-study next. The system records provenance for every claim, archives a distilled
-record on deletion, and has a small regression/evaluation suite that prevents
-silent quality loss.
+study next — all on their own laptop. The system records provenance for
+every claim, keeps a distilled record when a course is purged, and has a
+small regression/evaluation suite that prevents silent quality loss.

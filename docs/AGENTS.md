@@ -6,7 +6,7 @@ should be questioned, not the file ignored.
 
 ## Project
 
-Academic assistant that accumulates a source-grounded course memory and a student
+Stacks is an academic assistant that accumulates a source-grounded course memory and a student
 error model, then recommends what to study next. **A local-first desktop tool**
 (decision 012, `docs/plan-local-first.md`): one user per SQLite file on their
 own machine, a bundled llama.cpp server running a small open model by default,
