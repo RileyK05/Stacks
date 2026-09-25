@@ -465,26 +465,26 @@ deletion under existing tests, shrinks the SQLite port, and doesn't depend
 on which models win. Then Phase 2. Phase 0 runs whenever the owner has
 time to download and run models; it must finish before Phase 3.
 
-### Phase 0 — model bake-off (go/no-go)
+### Phase 0 — model bake-off (go/no-go) ✅ (decision 012)
 
-- [ ] Stand up `llama-server` locally (pinned build that includes
-      `bailingmoe3`) with each candidate at Q4_K_M
-- [ ] Point the answer eval (`evals/answer.py`, decision 010) at a
-      configurable OpenAI-compatible endpoint
-- [ ] Add eval cases from real courses, including the §3 homework question
-- [ ] Run every candidate: thinking off, thinking capped; plain citations
-      vs quote-anchored citations
-- [ ] Record: citation validity, quote-verification rate, refusal
-      correctness, zone behaviour (009), JSON parse rate,
-      time-to-first-token, total time, tokens, peak RAM — on the owner's
-      laptop and one 8 GB "floor" machine
+- [x] `llama-server` pinned at b11177 (includes `bailingmoe3`), Q4_K_M
+      candidates; K2 Horizon found unsupported upstream and dropped
+- [x] `scripts/eval_models.py`: answer eval against any endpoint or the
+      bundled runtime, one model after another, with an optional
+      real-material course (`--course`, `--cases`)
+- [x] Real-course cases (owner's syllabus + reading, 13 cases incl. the
+      §3 homework question), kept local and uncommitted
+- [x] MiniCPM5-2B, Qwen3.5-2B, Granite 4.1 3B run on the owner's laptop;
+      results and failure analysis in decision 012
+- [ ] Quote-anchored vs plain citations (deferred to Phase 3 §6.2)
+- [ ] Peak RAM and the 8 GB "floor" machine (not available yet)
 - [ ] Structure/titling bake-off on real course files: encoder
       phrase-picking vs fine-tuned T5Gemma 2 270M vs the starter chat
       model; check embedding similarity drops line up with real topic
       changes
 - [ ] T5Gemma 2 gates: ONNX export runs in ONNX Runtime; Gemma license
       allows redistribution
-- [ ] Choose starter/standard/large defaults; write decision 012
+- [x] Defaults chosen (MiniCPM5-2B starter); decision 012 written
 
 **Pass bar (proposed):** the starter model reaches ≥ 90% verified
 citations and correct refusals with thinking off, and answers a typical
@@ -527,7 +527,7 @@ would have rewritten each query twice.
       whose course tag exists in no database, so the number would have
       been meaningless. Equivalence is covered by the 34 ported
       retrieval tests; a real eval set is part of Phase 0
-- [ ] Supersede decisions 002–005 in `docs/decisions/` (with 012)
+- [x] Decisions 002–006 superseded by 012
 
 Found and fixed along the way:
 - Ingestion stages for TOC/knowledge called the model and discarded the
@@ -542,7 +542,10 @@ Found and fixed along the way:
 
 ### Phase 3 — harness for small models
 
-- [ ] Task framing resolved before the prompt (§6.1)
+- [x] Task framing resolved before the prompt (§6.1): `tutor/compose.py`
+      — intent rules (graded work → steer prompt; quiz/notes/table/
+      slides/code → narrow prompt + JSON schema with citation numbers
+      bounded to the material); eval runs the same path
 - [ ] Quote-anchored citations with JSON schema + mechanical verification
 - [ ] Reranker and sentence extraction in the retrieval funnel
 - [ ] Decomposed `ask` pipeline where the eval shows single-shot failing
@@ -552,16 +555,20 @@ Found and fixed along the way:
       boundaries/clustering → titles (§10a)
 - [ ] Decomposed knowledge extraction over the whole document (§10a)
 - [ ] Study pack generated at ingestion
-- [ ] Re-run Phase 0 eval; beat the Phase 0 numbers
+- [x] Fence-echo stripping; 4xx-rejected schema → unconstrained retry
+- [ ] Re-run Phase 0 eval; beat the Phase 0 numbers (over-refusal on
+      real material is the target: reranker + top-k + quote-first)
 
 ### Phase 4 — providers and settings
 
-- [ ] `llama-server` lifecycle owned by the backend
-- [ ] Model manager: catalog, download with checksum, hardware check,
-      switch
-- [ ] Provider modes (§7.1) with test-connection; keys in OS keyring
-- [ ] Per-task routing; OpenRouter 429 handling and local fallback
-- [ ] Cloud disclosure notice; in-app setup guides
+- [x] `llama-server` lifecycle owned by the backend: supervised, crash
+      restart, resume last model at launch, Windows job object so it can
+      never outlive the app, stale-pidfile cleanup
+- [x] Model manager: catalog, checksummed resumable download, RAM fit,
+      reuse of verified LM Studio / HF-cache files, switch, delete
+- [x] Provider modes (§7.1) with test-connection; keys in OS keyring
+- [x] Per-task routing; OpenRouter 429 handling and local fallback
+- [x] Cloud disclosure notice; in-app setup guides
 - [ ] "Ask a bigger model" per answer
 
 ### Phase 5 — encoders and local OCR
