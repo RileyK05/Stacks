@@ -29,6 +29,10 @@ dependencies = [
 embeddings = [
     "sentence-transformers>=5.0",
 ]
+desktop = [
+    "pywebview>=5",
+    "pyinstaller>=6",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",

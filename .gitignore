@@ -26,3 +26,7 @@ runs/
 .DS_Store
 Thumbs.db
 .pytest_tmp/
+
+# Desktop build output
+/dist/
+/build/

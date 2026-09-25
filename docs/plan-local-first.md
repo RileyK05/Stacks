@@ -586,9 +586,17 @@ Found and fixed along the way:
 
 ### Phase 6 — desktop shell and distribution
 
-- [ ] Tauri v2 project wrapping the SPA; runtime API base + token
-- [ ] PyInstaller spec for the backend; `llama-server` binaries per OS
-- [ ] Sidecar lifecycle, tray option, data folder/export
+- [x] Desktop shell: **pywebview** instead of Tauri for now — the same OS
+      webview (WebView2 / WebKit), but no Rust toolchain and no sidecar:
+      one Python process serves the SPA + API on a random 127.0.0.1 port
+      with a per-launch token passed in the URL fragment
+      (`src/backend/desktop.py`). Tauri stays an option if a smaller
+      shell or an updater plugin is wanted
+- [x] PyInstaller build (`scripts/build_desktop.py` → `dist/CourseAssistant/`,
+      699 MB, mostly torch until Phase 5); llama.cpp and models download
+      on first use. Verified packaged: upload → ingest → local model →
+      cited answer (7 s) → clean shutdown with no process left behind
+- [ ] Tray option, data folder / export
 - [ ] Windows installer first (the owner's platform), then macOS, Linux
 - [ ] GitHub Releases + updater; signing decision
 
