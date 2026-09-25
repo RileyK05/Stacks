@@ -139,6 +139,8 @@ class ProposalView(BaseModel):
     sources: list[str]
     model: str
     trace_id: str
+    # New lines not tied to any source: shown as a warning before accepting.
+    uncited_lines: int = 0
 
 
 class ExportRequest(BaseModel):
@@ -452,6 +454,7 @@ def propose_edit(
         sources=[str(s) for s in proposal.sources],
         model=proposal.model,
         trace_id=str(proposal.trace_id),
+        uncited_lines=proposal.uncited_lines,
     )
 
 

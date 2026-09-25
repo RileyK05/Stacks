@@ -9,7 +9,7 @@
   // The course page hosts chats + conversation + workspace, which needs
   // room: there the sidebar narrows to an icon rail and the page uses the
   // full width. Every other page keeps the reading width.
-  let wide = $derived(page.route.id === '/(app)/courses/[id]');
+  let wide = $derived(page.route.id?.startsWith('/(app)/courses/[id]') ?? false);
   let drawerOpen = $state(false);
 
   const navItems: { href: string; label: string; icon: IconName }[] = [

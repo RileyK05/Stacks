@@ -16,9 +16,11 @@
     sourcesFor: (turnIndex: number) => SourceRef[];
     onclose: () => void;
     onfollowup: (question: string) => void;
+    /** Save the open item as a course artifact (turn index, item index). */
+    onsave?: (turnIndex: number, itemIndex: number) => void;
   }
 
-  let { canvas, sourcesFor, onclose, onfollowup }: Props = $props();
+  let { canvas, sourcesFor, onclose, onfollowup, onsave }: Props = $props();
 
   const active = $derived(canvas.active);
 
@@ -42,11 +44,22 @@
     {#if active}
       <span class="rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-muted">from {active.origin}</span>
     {/if}
+    {#if active && onsave}
+      {@const current = active}
+      <button
+        type="button"
+        onclick={() => onsave(current.turnIndex, Number(current.id.split(':')[1] ?? 0))}
+        title="Keep it in this course as an editable artifact"
+        class="ml-auto inline-flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1 text-[12px] font-medium text-on-accent shadow-card transition-colors hover:bg-accent-hover"
+      >
+        <Icon name="bookmark" class="h-3.5 w-3.5" /> Save to artifacts
+      </button>
+    {/if}
     <button
       type="button"
       onclick={onclose}
       aria-label="Close workspace"
-      class="ml-auto rounded-lg p-1.5 text-subtle transition-colors hover:bg-surface-2 hover:text-fg"
+      class={`${active && onsave ? '' : 'ml-auto'} rounded-lg p-1.5 text-subtle transition-colors hover:bg-surface-2 hover:text-fg`}
     >
       <Icon name="x" class="h-4 w-4" />
     </button>

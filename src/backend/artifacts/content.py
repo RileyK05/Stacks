@@ -40,12 +40,19 @@ MAX_TEXT = 200_000
 MAX_CELL = 5_000
 
 CITATION_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+_ESCAPED_CITATION = re.compile(r"\\\[(\d+(?:\s*,\s*\d+)*)\\\]")
 
 
 class DocContent(BaseModel):
     """A document as Markdown (headings, lists, tables, math, code)."""
 
     markdown: str = Field(default="", max_length=MAX_TEXT)
+
+    @model_validator(mode="after")
+    def _citations_unescaped(self) -> DocContent:
+        # Markdown writers escape "[" ("\[1\]"); a citation stays "[1]".
+        self.markdown = _ESCAPED_CITATION.sub(r"[\1]", self.markdown)
+        return self
 
 
 class SheetContent(BaseModel):

@@ -12,10 +12,12 @@
   import Popover from '$lib/components/Popover.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
   import WorkspacePanel from '$lib/components/WorkspacePanel.svelte';
+  import ArtifactsPanel from '$lib/components/course/ArtifactsPanel.svelte';
   import ChatList from '$lib/components/course/ChatList.svelte';
   import ChatThread from '$lib/components/course/ChatThread.svelte';
   import SourcePicker from '$lib/components/course/SourcePicker.svelte';
   import SourcesPanel from '$lib/components/course/SourcesPanel.svelte';
+  import { listArtifacts, saveFromMessage, type ArtifactSummary } from '$lib/stores/artifact.svelte';
   import { CourseChats, type ModelChoice } from '$lib/stores/chat.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
   import { toast } from '$lib/stores/toast.svelte';
@@ -38,7 +40,13 @@
   let error = $state<unknown>(null);
   let actionError = $state<unknown>(null);
 
-  let activeTab = $state<'chat' | 'sources'>('chat');
+  type Tab = 'chat' | 'artifacts' | 'sources';
+  const requestedTab = page.url.searchParams.get('tab');
+  let activeTab = $state<Tab>(
+    requestedTab === 'artifacts' || requestedTab === 'sources' ? requestedTab : 'chat'
+  );
+  let artifacts = $state<ArtifactSummary[]>([]);
+  let artifactsLoading = $state(true);
   let renaming = $state(false);
   let renameValue = $state('');
 
@@ -83,7 +91,7 @@
       });
       if (err || !data) throw err ?? new Error('unexpected empty response');
       course = data;
-      await Promise.all([loadSources(), chats.loadList()]);
+      await Promise.all([loadSources(), chats.loadList(), loadArtifacts()]);
       void loadModels();
       const wanted = page.url.searchParams.get('chat');
       if (wanted && chats.conversations.some((c) => c.conversation_id === wanted)) {
@@ -103,6 +111,27 @@
     if (res.error) throw res.error;
     sources = res.data ?? [];
     void pollSourcesUntilSettled();
+  }
+
+  async function loadArtifacts() {
+    artifactsLoading = true;
+    try {
+      artifacts = await listArtifacts(courseId);
+    } finally {
+      artifactsLoading = false;
+    }
+  }
+
+  async function saveToArtifacts(turnIndex: number, itemIndex: number) {
+    const messageId = chats.turns[turnIndex]?.messageId;
+    if (!messageId) return;
+    try {
+      const saved = await saveFromMessage(courseId, messageId, itemIndex);
+      artifacts = [saved, ...artifacts];
+      toast(`Saved "${saved.title}" to this course's artifacts.`);
+    } catch (caught) {
+      actionError = caught;
+    }
   }
 
   async function loadModels() {
@@ -150,6 +179,8 @@
     const url = new URL(page.url);
     if (id) url.searchParams.set('chat', id);
     else url.searchParams.delete('chat');
+    if (activeTab === 'chat') url.searchParams.delete('tab');
+    else url.searchParams.set('tab', activeTab);
     if (url.search !== page.url.search) replaceState(url, page.state);
   });
 
@@ -253,8 +284,9 @@
     }
   }
 
-  const tabs: { id: typeof activeTab; label: string; icon: IconName }[] = [
+  const tabs: { id: Tab; label: string; icon: IconName }[] = [
     { id: 'chat', label: 'Chat', icon: 'message-square' },
+    { id: 'artifacts', label: 'Artifacts', icon: 'package' },
     { id: 'sources', label: 'Sources', icon: 'file-text' }
   ];
 </script>
@@ -298,6 +330,7 @@
           {/if}
           <p class="mt-1 text-[13px] text-subtle">
             {plural(course.source_count, 'source')} · {plural(chats.conversations.length, 'chat')} ·
+            {plural(artifacts.length, 'artifact')} ·
             {formatBytes(course.stored_bytes ?? 0)} stored
           </p>
         </div>
@@ -338,6 +371,9 @@
         >
           <Icon name={icon} class={`h-4 w-4 ${activeTab === tab ? 'text-accent-text' : 'text-subtle'}`} />
           {label}
+          {#if tab === 'artifacts' && artifacts.length > 0}
+            <span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-semibold text-muted">{artifacts.length}</span>
+          {/if}
           {#if tab === 'sources'}
             <span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-semibold text-muted">{sources.length}</span>
             {#if anyPending}
@@ -426,10 +462,13 @@
               sourcesFor={(turnIndex) => chats.turns[turnIndex]?.citations ?? []}
               onclose={() => canvas.hide()}
               onfollowup={(text) => thread?.prefill(text)}
+              onsave={saveToArtifacts}
             />
           </div>
         {/if}
       </div>
+    {:else if activeTab === 'artifacts'}
+      <ArtifactsPanel {courseId} {artifacts} loading={artifactsLoading} />
     {:else}
       <SourcesPanel {courseId} {sources} onchanged={loadSources} />
     {/if}

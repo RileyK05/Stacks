@@ -11,6 +11,8 @@ export type Citation = components['schemas']['CitationView'];
 /** One question and its reply, as the chat shows them. */
 export interface Turn {
   question: string;
+  /** The stored reply (for saving its workspace items as artifacts). */
+  messageId: string | null;
   /** Chat body (workspace blocks lifted out server-side); null while waiting. */
   answer: string | null;
   /** The material had nothing relevant: a real reply, not an error. */
@@ -32,6 +34,7 @@ export interface Turn {
 function emptyTurn(question: string, bigger: boolean): Turn {
   return {
     question,
+    messageId: null,
     answer: null,
     noMatch: false,
     workspace: [],
@@ -51,6 +54,7 @@ function emptyTurn(question: string, bigger: boolean): Turn {
 
 function applyReply(turn: Turn, reply: MessageView): void {
   const answer: AnswerView | null | undefined = reply.answer;
+  turn.messageId = reply.message_id;
   turn.noMatch = reply.no_match ?? false;
   if (!answer) {
     turn.answer = reply.text;

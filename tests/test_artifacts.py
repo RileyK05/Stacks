@@ -286,7 +286,7 @@ def test_a_doc_edit_is_a_proposal_with_citations_merged(
     )
     proposal = client.post(
         f"/courses/{course_id}/artifacts/{doc['artifact_id']}/propose-edit",
-        json={"request": "add what a basis is"},
+        json={"request": "rewrite it to also say what a basis is"},
     )
     assert proposal.status_code == 200, proposal.text
     body = proposal.json()
@@ -294,7 +294,7 @@ def test_a_doc_edit_is_a_proposal_with_citations_merged(
     assert set(body["sources"]) == {str(chunks[0]), str(chunks[1])}
     assert "A basis spans [2]" in body["content"]["markdown"]
     prompt = str(calls[-1]["prompt"])
-    assert "Requested change: add what a basis is" in prompt
+    assert "Requested change: rewrite it to also say what a basis is" in prompt
     assert prompt.index(LINEARITY) < prompt.index(BASIS), "cited material comes first"
 
     current = client.get(f"/courses/{course_id}/artifacts/{doc['artifact_id']}").json()
@@ -306,7 +306,7 @@ def test_a_doc_edit_is_a_proposal_with_citations_merged(
         content=body["content"],
         sources=body["sources"],
         author="model",
-        note="add what a basis is",
+        note="rewrite it to also say what a basis is",
     )
     assert accepted.status_code == 200
     versions = client.get(
@@ -487,3 +487,124 @@ def test_deleting_the_course_removes_its_artifacts(client: TestClient) -> None:
             for t in ("artifacts", "artifact_versions")
         ]
     assert counts == [0, 0]
+
+
+def test_code_comments_are_not_section_headings() -> None:
+    text = "# Intro\nx\n```python\n# a comment\nprint(1)\n```\n## Next\ny\n"
+    sections = artifact_edit.doc_sections(text)
+    assert [s.splitlines()[0] for s in sections] == ["# Intro", "## Next"]
+
+
+def test_new_lines_lifted_from_a_passage_get_its_citation() -> None:
+    from src.backend.artifacts import attribution
+
+    material = [
+        "Exams are closed book and no notes or computers are permitted.",
+        "Attendance counts for twenty percent of the final course grade.",
+    ]
+    text = (
+        "# Policies\n"
+        "Attendance counts for twenty percent of the final grade.\n"
+        "Exams are closed book: no notes or computers permitted.\n"
+        "Bring snacks to every exam for good luck.\n"
+        "My own line, already there.\n"
+    )
+    result = attribution.attach(text, material, before="My own line, already there.\n")
+    lines = result.text.splitlines()
+    assert lines[0] == "# Policies", "headings are left alone"
+    assert lines[1].endswith("[2]") and lines[2].endswith("[1]")
+    assert lines[3] == "Bring snacks to every exam for good luck."
+    assert lines[4] == "My own line, already there.", (
+        "the student's text is never cited"
+    )
+    assert (result.cited_now, result.uncited) == (2, 1)
+
+
+def test_an_uncited_draft_is_cited_where_it_copies_the_material(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course_id, chunks = _course(client)
+    doc = _create(client, course_id, "doc")
+    configure_test_provider(
+        monkeypatch,
+        "# Linearity\nLinearity means preserving addition and scaling operations.\n"
+        "Remember to practise every single evening before class.\n",
+    )
+    body = client.post(
+        f"/courses/{course_id}/artifacts/{doc['artifact_id']}/propose-edit",
+        json={"request": "notes on linearity"},
+    ).json()
+    assert "scaling operations. [1]" in body["content"]["markdown"]
+    assert body["sources"] == [str(chunks[0])]
+    assert body["uncited_lines"] == 1
+
+
+def test_a_chatty_preamble_is_not_part_of_the_doc() -> None:
+    parsed = artifact_edit._parse(
+        "doc", "Here is a short study guide on grading:\n\n# Grading\nA [1]\n"
+    )
+    assert parsed["markdown"] == "# Grading\nA [1]\n"
+    kept = artifact_edit._parse("doc", "Here is the thing: it matters.\nMore.")
+    assert kept["markdown"].startswith("Here is the thing"), (
+        "only a lead-in ending in ':' goes"
+    )
+
+
+def test_an_addition_keeps_the_existing_text_and_inserts_only_the_new_part(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course_id, chunks = _course(client)
+    doc = _create(client, course_id, "doc")
+    existing = "# My notes\nI wrote this myself, keep it exactly.\n"
+    doc = _save(client, course_id, doc, content={"markdown": existing}).json()
+    calls = configure_test_provider(
+        monkeypatch, "## Basis\nA basis is a spanning set [1].\n"
+    )
+    body = client.post(
+        f"/courses/{course_id}/artifacts/{doc['artifact_id']}/propose-edit",
+        json={"request": "Add a section on what a basis is"},
+    ).json()
+    assert body["content"]["markdown"] == (
+        "# My notes\nI wrote this myself, keep it exactly.\n\n"
+        "## Basis\nA basis is a spanning set [1].\n"
+    )
+    assert body["sources"] == [str(chunks[1])]
+    assert "Write only the new part to add" in str(calls[-1]["prompt"])
+
+
+def test_pasted_material_is_removed_from_an_edit() -> None:
+    from src.backend.artifacts import attribution
+
+    material = [
+        "The first exam is held in class on Wednesday September 30 and the second "
+        "exam is held in class on Wednesday November 4 so plan ahead for both"
+    ]
+    pasted = (
+        "## Exams\n"
+        "Both exams are in class; plan ahead [1].\n"
+        "[1] The first exam is held in class on Wednesday September 30 and\n"
+        "the first exam is held in class on Wednesday September\n"
+        "30 and the second exam is held in class on Wednesday\n"
+        "November 4 so plan ahead for\n"
+    )
+    cleaned = attribution.strip_echo(pasted, material)
+    assert cleaned == "## Exams\nBoth exams are in class; plan ahead [1].\n"
+    quote = (
+        "As the syllabus says: The first exam is held in class on "
+        "Wednesday September 30.\n"
+    )
+    assert attribution.strip_echo(quote, material) == quote, "a quoted sentence stays"
+
+
+def test_empty_docs_and_decks_are_always_drafted_as_additions() -> None:
+    assert artifact_edit.is_addition("doc", "make this shorter", {"markdown": ""})
+    assert artifact_edit.is_addition("doc", "Add a summary", {"markdown": "text"})
+    assert not artifact_edit.is_addition(
+        "doc", "Make this shorter", {"markdown": "text"}
+    )
+    assert not artifact_edit.is_addition(
+        "doc", "Add clarity and rewrite it", {"markdown": "t"}
+    )
+    assert not artifact_edit.is_addition(
+        "sheet", "Add a row", {"columns": [], "rows": []}
+    )

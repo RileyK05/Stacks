@@ -22,6 +22,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, ValidationError
+from src.backend.artifacts import attribution
 from src.backend.artifacts import content as artifact_content
 from src.backend.artifacts.content import UnknownCitationError
 from src.backend.common import provider
@@ -39,7 +40,25 @@ from src.backend.retrieval.config import RetrievalPolicy
 from src.backend.tutor.compose import parse_json_object
 
 MAX_MATERIAL = 8
+REMOVED_SOURCE = "(this source was removed from the course)"
+# How much of the current content an addition shows the model for context.
+ADDITION_CONTEXT_CHARS = 4000
+_ADDITION = re.compile(
+    r"^\s*(?:please\s+)?(?:add|include|insert|append|write|draft|create|make|"
+    r"give\s+me|list|put)\b",
+    re.IGNORECASE,
+)
+_REWRITE = re.compile(
+    r"\b(?:rewrite|re-write|shorten|shorter|concise|simplify|fix|correct|reword|"
+    r"rephrase|replace|remove|delete|reorgani[sz]e|restructure|translate|edit|change|"
+    r"improve|expand this|turn (?:this|it) into)\b",
+    re.IGNORECASE,
+)
 _HEADING = re.compile(r"^#{1,6}\s", re.MULTILINE)
+_PREAMBLE = re.compile(
+    r"^(?:sure|certainly|okay|ok|of course|here(?:'s| is| are)|below is)\b.*:$",
+    re.IGNORECASE,
+)
 _FENCE = re.compile(r"^```[a-zA-Z]*\s*\n(.*)\n```\s*$", re.DOTALL)
 
 
@@ -62,6 +81,9 @@ class Proposal:
     sources: list[UUID]
     model: str
     trace_id: UUID
+    # New lines the model wrote that match no passage clearly enough to
+    # cite: the student is told before accepting.
+    uncited_lines: int = 0
 
 
 @dataclass(frozen=True)
@@ -73,10 +95,33 @@ class _Material:
 # --- the part being edited ----------------------------------------------
 
 
+def _fenced_spans(markdown: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    opened: int | None = None
+    offset = 0
+    for line in markdown.splitlines(keepends=True):
+        if line.lstrip().startswith(("```", "~~~")):
+            if opened is None:
+                opened = offset
+            else:
+                spans.append((opened, offset + len(line)))
+                opened = None
+        offset += len(line)
+    if opened is not None:
+        spans.append((opened, len(markdown)))
+    return spans
+
+
 def doc_sections(markdown: str) -> list[str]:
     """A doc split at its headings; text before the first heading is a
-    section of its own. Joining the sections gives the doc back."""
-    starts = [m.start() for m in _HEADING.finditer(markdown)]
+    section of its own. Joining the sections gives the doc back. A "#"
+    line inside a fenced code block (a Python comment) is not a heading."""
+    fenced = _fenced_spans(markdown)
+    starts = [
+        m.start()
+        for m in _HEADING.finditer(markdown)
+        if not any(a <= m.start() < b for a, b in fenced)
+    ]
     if not starts or starts[0] != 0:
         starts = [0, *starts]
     bounds = [*starts, len(markdown)]
@@ -217,13 +262,77 @@ def _parse(kind: str, raw: str) -> dict[str, Any]:
     if kind == "doc":
         text = strip_fence_echo(raw).strip()
         fenced = _FENCE.match(text)
-        return {"markdown": (fenced.group(1) if fenced else text) + "\n"}
+        body = (fenced.group(1) if fenced else text).strip()
+        # "Here is a short study guide…:" is the model talking, not content.
+        first, _, rest = body.partition("\n")
+        if rest.strip() and _PREAMBLE.match(first.strip()):
+            body = rest.strip()
+        return {"markdown": body + "\n"}
     parsed = parse_json_object(raw)
     if parsed is None:
         raise EditFailedError(
             "the model's reply wasn't in the expected format; try again"
         )
     return parsed
+
+
+def _attribute(
+    kind: str, edited: dict[str, Any], shown: Any, texts: list[str]
+) -> tuple[dict[str, Any], int]:
+    """Cite the new prose lines of a doc or slide edit that clearly come
+    from one passage (attribution.py). Numbers refer to the material list,
+    like the model's own citations."""
+    if kind == "doc":
+        result = attribution.attach(
+            str(edited.get("markdown", "")), texts, before=_render(kind, shown)
+        )
+        return {**edited, "markdown": result.text}, result.uncited
+    if kind == "slides" and isinstance(edited.get("slides"), list):
+        before = json.dumps(shown, ensure_ascii=False)
+        uncited = 0
+        slides = []
+        for slide in edited["slides"]:
+            if not isinstance(slide, dict):
+                slides.append(slide)
+                continue
+            result = attribution.attach(
+                str(slide.get("body", "")), texts, before=before
+            )
+            uncited += result.uncited
+            slides.append({**slide, "body": result.text})
+        return {**edited, "slides": slides}, uncited
+    return edited, 0
+
+
+def _strip_echo(
+    kind: str, edited: dict[str, Any], shown: Any, texts: list[str]
+) -> dict[str, Any]:
+    """Drop course material the model pasted back instead of writing
+    (attribution.strip_echo)."""
+    before = _render(kind, shown)
+    if kind == "doc":
+        return {
+            **edited,
+            "markdown": attribution.strip_echo(
+                str(edited.get("markdown", "")), texts, before
+            ),
+        }
+    if kind == "slides" and isinstance(edited.get("slides"), list):
+        return {
+            **edited,
+            "slides": [
+                {
+                    **s,
+                    "body": attribution.strip_echo(
+                        str(s.get("body", "")), texts, before
+                    ),
+                }
+                if isinstance(s, dict)
+                else s
+                for s in edited["slides"]
+            ],
+        }
+    return edited
 
 
 # --- material ------------------------------------------------------------------
@@ -267,8 +376,48 @@ def _material(
         {"chunk_ids": json_ids(chunk_ids)},
     ).fetchall()
     text_by_id = {row["chunk_id"]: row["text"] for row in rows}
-    present = [cid for cid in chunk_ids if cid in text_by_id]
-    return _Material(present, [text_by_id[cid] for cid in present]), result
+    # A cited chunk whose source was removed keeps its place (so the
+    # numbering the model sees still lines up with the artifact's).
+    kept = [cid for cid in chunk_ids if cid in text_by_id or cid in cited]
+    return (
+        _Material(kept, [text_by_id.get(cid, REMOVED_SOURCE) for cid in kept]),
+        result,
+    )
+
+
+def is_addition(kind: str, request: str, target: Any) -> bool:
+    """Whether the request adds something new (answered with only the new
+    part, inserted by code) rather than changing what is there. An empty
+    doc or deck is always an addition."""
+    if kind == "doc":
+        if not str(target.get("markdown", "")).strip():
+            return True
+    elif kind == "slides":
+        slides = target.get("slides", [])
+        if all(not (s.get("title") or s.get("body")) for s in slides):
+            return True
+    else:
+        return False
+    return bool(_ADDITION.match(request)) and not _REWRITE.search(request)
+
+
+_ADD_HINTS: dict[str, str] = {
+    "doc": "Return only the new Markdown to add, nothing else.",
+    "slides": (
+        'Return JSON: {"slides": [{"title": "...", "body": "Markdown", '
+        '"notes": "..."}]} with only the new slides.'
+    ),
+}
+
+
+def _combine(kind: str, shown: Any, added: dict[str, Any]) -> dict[str, Any]:
+    if kind == "doc":
+        current = str(shown.get("markdown", "")).rstrip()
+        new = str(added.get("markdown", "")).strip()
+        joined = f"{current}\n\n{new}" if current else new
+        return {"markdown": joined + "\n"}
+    existing = [s for s in shown.get("slides", []) if s.get("title") or s.get("body")]
+    return {"slides": [*existing, *added.get("slides", [])]}
 
 
 def propose_edit(
@@ -304,20 +453,31 @@ def propose_edit(
         if 1 <= n <= len(artifact.sources)
         and artifact.sources[n - 1] in material.chunk_ids
     }
-    try:
-        shown = artifact_content.renumber(target, to_material)
-    except UnknownCitationError:
-        shown = target
+    shown = artifact_content.renumber(target, to_material)
     numbered = "\n\n".join(
         f"[{index + 1}] {text}" for index, text in enumerate(material.texts)
     )
-    block = (
-        f"Artifact type: {artifact.kind}\n"
-        f"Current content:\n{_render(artifact.kind, shown)}\n\n"
-        f"Requested change: {request}\n\n"
-        f"{_FORMAT_HINTS[artifact.kind]}\n\n"
-        f"Course material:\n{numbered or '(none found for this request)'}"
-    )
+    adding = is_addition(artifact.kind, request, target)
+    if adding:
+        context = _render(artifact.kind, shown)
+        if len(context) > ADDITION_CONTEXT_CHARS:
+            context = "…" + context[-ADDITION_CONTEXT_CHARS:]
+        block = (
+            f"Artifact type: {artifact.kind}\n"
+            f"Current content (for context only; do not repeat it):\n"
+            f"{context.strip() or '(empty)'}\n\n"
+            f"Write only the new part to add: {request}\n\n"
+            f"{_ADD_HINTS[artifact.kind]}\n\n"
+            f"Course material:\n{numbered or '(none found for this request)'}"
+        )
+    else:
+        block = (
+            f"Artifact type: {artifact.kind}\n"
+            f"Current content:\n{_render(artifact.kind, shown)}\n\n"
+            f"Requested change: {request}\n\n"
+            f"{_FORMAT_HINTS[artifact.kind]}\n\n"
+            f"Course material:\n{numbered or '(none found for this request)'}"
+        )
     schema = _schema(artifact.kind, len(material.chunk_ids))
     prompt = grounded_prompt(load_prompt("artifact_edit"), block)
     try:
@@ -334,7 +494,12 @@ def propose_edit(
         generation = provider.generate(
             "artifact_generation", prompt, course_id=course_id, choice=choice
         )
-    edited = _parse(artifact.kind, generation.text)
+    edited = _strip_echo(
+        artifact.kind, _parse(artifact.kind, generation.text), shown, material.texts
+    )
+    if adding:
+        edited = _combine(artifact.kind, shown, edited)
+    edited, uncited = _attribute(artifact.kind, edited, shown, material.texts)
     try:
         edited = artifact_content.validate_content(artifact.kind, edited)
         merged, sources = artifact_content.merge(
@@ -368,6 +533,7 @@ def propose_edit(
         toc_entry_ids=result.matched_toc_entry_ids,
     )
     return Proposal(
+        uncited_lines=uncited,
         title=artifact.title,
         content=full,
         sources=sources,

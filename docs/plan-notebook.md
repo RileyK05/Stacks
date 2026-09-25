@@ -240,13 +240,35 @@ travel in the `.course` export.
       the model's numbering, so "[1]" could open the wrong excerpt. Fixed
       in the query, regression-tested
 
-### Phase B — artifacts
+### Phase B — artifacts (mostly done; see §10 for what is left)
 
-- [ ] Artifacts + versions (tables, API); save from chat
-- [ ] Doc editor (rich blocks), sheet editor (grid), slides editor +
-      presenter, quiz and flashcards players
-- [ ] Model edits as proposed changes (accept / undo), cited and gated
-- [ ] Export: .docx, .xlsx, .pptx, .md, .csv
+- [x] Artifacts + versions (migration 004, `common/artifacts_repo.py`,
+      `api/artifacts.py`): every save a version (author you / model), a
+      save based on an outdated copy is refused (409), restore saves the
+      old version as the newest. Save from chat: "Save to artifacts" in
+      the chat workspace panel; the item is read from the stored message
+      and its citations pinned to that answer's chunks
+- [x] Editors (`src/frontend/src/lib/components/artifacts/`): doc (TipTap
+      rich editor, markdown storage, math, tables, citation chips), sheet
+      (grid, add/remove/sort), slides (thumbnails, editor, live preview,
+      full-screen presenter), quiz (take + edit), flashcards (study +
+      edit), code, chart. Artifact page at
+      `/courses/[id]/artifacts/[artifactId]` with autosave, versions,
+      export, delete; Artifacts tab on the course page
+- [x] Model edits as proposals (`artifacts/edit.py`): scope whole / one
+      doc section / one slide; "add …" requests (and empty docs/decks) ask
+      the model for only the new part and insert it, so the student's text
+      is never rewritten; pasted-back material is stripped
+      (`attribution.strip_echo`); new uncited lines that clearly copy a
+      passage get its citation (`attribution.attach`), the rest are
+      counted and shown as a warning before accepting; citations to
+      material the model wasn't given are refused
+- [x] Export: .docx, .xlsx, .pptx, .md, .csv, code file, .html (charts
+      lose scripts/handlers); every file ends with its sources. In the
+      app, Export opens a native Save dialog (Tauri)
+- [~] Live-verified in the app: create doc → "Draft a short study guide
+      on the course grading policy" → proposal in ~19 s with citations →
+      Accept. **Not yet re-verified after the last fixes** (§10.2)
 - [ ] Source viewer at the cited passage
 - [ ] `.course` format version 2 carries chats and artifacts
 
@@ -303,3 +325,100 @@ travel in the `.course` export.
 | Editors are a lot of UI | Established libraries where they exist (TipTap for docs); simple, well-styled grid and slide editors of our own |
 | 8 GB machines | Background heavy work, per-model profiles, measure on the floor machine |
 | Memory feels wrong | Summary shown, evidence kept, reset per course or overall |
+
+## 10. Handoff (2026-09-25, end of the first build session)
+
+Written for the next model picking this up. The owner will have the
+original author review the result afterwards.
+
+### 10.1 State
+
+- Branch `main` of `RileyK05/Stacks` (public, MIT). Push is allowed once
+  checks pass and nothing sensitive is included (the owner's course PDFs
+  live in gitignored `runs/` and `data/`; never commit them).
+- Phases A and B are built (§7). Checks at hand-off: 413 pytest passed,
+  ruff clean, mypy strict clean, `npm run check` 0 errors,
+  `cargo clippy` clean (last run before Phase B's frontend; re-run it).
+- Version 0.2.0 (unreleased). Bump with `python -m scripts.set_version`
+  and add a CHANGELOG entry when cutting a release.
+
+### 10.2 Verify first (fixed but not yet re-tested live)
+
+1. **Doc citations survive the editor.** TipTap's Markdown writer escapes
+   "[1]" as "\[1\]". Fixed twice: `DocEditor.markdownOf()` unescapes, and
+   `DocContent` unescapes on save. Check: accept a cited proposal, type in
+   the doc, reload — chips still show and the Sources panel still lists
+   them.
+2. **No phantom versions.** Opening a doc or accepting a proposal must add
+   exactly one version (accept) or none (open). `DocEditor` now only
+   reports changes after real input (keydown / paste / drop / cut /
+   toolbar) and compares against the editor's canonical Markdown; the
+   store skips no-op saves. Check the version number after open, after
+   accept, after typing.
+3. **Additions insert, never rewrite.** "Add a section on exam rules" on a
+   doc with text: the proposal keeps the old text byte-for-byte and adds
+   the new section at the end (or after the scoped section).
+4. **Pasted material is gone.** The earlier live run produced ~99 citation
+   chips because MiniCPM5-2B pasted raw syllabus lines ("[1] Fraga …");
+   `strip_echo` now removes those. Confirm on the owner's course.
+5. **Save from chat** end to end: ask "quiz me on …" in a chat, open the
+   workspace, "Save to artifacts", open it from the Artifacts tab.
+6. The dev database holds test artifacts from this session (an "Untitled
+   doc" whose stored Markdown has escaped citations from before fix 1).
+   Delete them from the Artifacts tab before judging anything.
+
+### 10.3 Left to build
+
+- Phase B: source viewer (open the original PDF at the cited page),
+  `.course` format v2 (chats + artifacts in the export; importer must
+  accept v1 and v2), a delete/rename for artifacts from the Artifacts
+  tab cards (today only on the artifact page).
+- Phase C/D/E as listed in §7. Highest value next: table-aware PDF
+  extraction (the grading-table misreads are the worst answer-quality
+  problem seen), then concept extraction.
+- Docs: `docs/AGENTS.md` structure section should list `artifacts/`,
+  `api/conversations.py`, `api/artifacts.py`, `tutor/chat.py`,
+  `common/model_profiles.py`, `runtime/user_models.py`; `project.md` MVP
+  stories need the chat/artifact wording; README could mention artifacts.
+- Packaging: rebuild the installer (`python -m scripts.build_desktop`)
+  and check exports inside the installed app (PyInstaller now collects
+  the docx/pptx templates; untested there).
+
+### 10.4 How to run and check
+
+- Backend checks: `.venv/Scripts/python -m pytest -q`, `-m ruff check .`,
+  `-m mypy src`. Frontend: `cd src/frontend && npm run check`. Shell:
+  `cd src/frontend/src-tauri && cargo clippy --all-targets -- -D warnings`
+  (Rust lives at `%USERPROFILE%\.cargo\bin`; add it to PATH).
+- Dev app: `cd src/frontend && npm run desktop` (Vite + Tauri; starts the
+  backend from `.venv` against the checkout's `data/`). The Python
+  backend does **not** hot-reload: restart the app after backend changes.
+  After adding npm packages, Vite re-bundles and reloads the page once.
+- Driving the real window: start it with
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333`
+  (9222 is taken by another WebView2 app on the owner's machine) and use
+  the DevTools protocol (`/json`, `Runtime.evaluate`,
+  `Page.captureScreenshot`). `window.__TAURI_INTERNALS__.invoke('backend_info')`
+  gives the backend URL and token for direct API calls. Close the app with
+  the window's close (the backend then stops the model server cleanly).
+- API types: after backend route/schema changes,
+  `python -m scripts.dump_openapi <file>` then
+  `OPENAPI_FILE=<file> npm run gen:api` (schema.d.ts is gitignored).
+
+### 10.5 Gotchas met this session
+
+- Many source files have CRLF line endings in the working copy; string-
+  replacement scripts must normalise (the Edit tool handles it).
+- Shell heredocs mangled backslashes more than once (a regex `\b` became
+  a backspace byte). Write edit scripts to files, then run them.
+- `structuredClone` throws on Svelte `$state` proxies: snapshot first
+  (`$state.snapshot`). This silently broke the proposal view once.
+- `ruff format` over whole folders reformats untouched files; format only
+  the files you changed.
+- The citation list must stay in the order the model numbered the
+  material (`chunks_with_locators_by_ids` orders by the id list); a test
+  guards it.
+- Small-model behaviour seen live: MiniCPM5-2B misreads two-column PDF
+  tables, adds chatty preambles (stripped for docs), forgets citations
+  (attributed by overlap), and pastes material back (stripped). Measure
+  prompt changes with `scripts/eval_models.py` before trusting them.
