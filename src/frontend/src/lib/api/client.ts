@@ -1,11 +1,12 @@
-import { goto } from '$app/navigation';
 import createClient, { type Middleware } from 'openapi-fetch';
-import { clearToken, loadToken } from '$lib/auth/token';
+import { APP_TOKEN_HEADER, appToken } from '$lib/api/appToken';
 import { logRequest } from '$lib/stores/debug.svelte';
 import { ApiError } from './errors';
 import type { paths } from './schema';
 
-const baseUrl = (import.meta.env.PUBLIC_API_BASE as string | undefined) ?? '';
+// The backend serves this SPA and mounts the API at /api on the same
+// origin (desktop and dev alike, via the Vite proxy in dev).
+export const baseUrl = (import.meta.env.PUBLIC_API_BASE as string | undefined) || '/api';
 
 const rawClient = createClient<paths>({ baseUrl });
 
@@ -16,11 +17,11 @@ function requestPath(request: Request): string {
   return url.pathname + url.search;
 }
 
-const authMiddleware: Middleware = {
+const appMiddleware: Middleware = {
   async onRequest({ request }) {
     startTimes.set(request, performance.now());
-    const token = loadToken();
-    if (token) request.headers.set('Authorization', `Bearer ${token}`);
+    const token = appToken();
+    if (token) request.headers.set(APP_TOKEN_HEADER, token);
     return request;
   },
   async onResponse({ request, response }) {
@@ -47,19 +48,11 @@ const authMiddleware: Middleware = {
       errorKind: error.kind,
       errorMessage: error.message
     });
-    if (error.kind === 'unauthorized' && loadToken()) {
-      // A stored token was rejected (expired or password changed) — only
-      // then bounce to login, preserving where the user was headed. A bare
-      // 401 (e.g. wrong password on /auth/login) must not navigate.
-      clearToken();
-      const here = window.location.pathname + window.location.search;
-      void goto(`/login?next=${encodeURIComponent(here)}`);
-    }
     throw error;
   }
 };
 
-rawClient.use(authMiddleware);
+rawClient.use(appMiddleware);
 
 // Fetch-level failures (server down, DNS, CORS) never reach the middleware
 // chain, so convert them here — every caller can rely on ApiError alone.

@@ -1,16 +1,4 @@
-import type { IconName } from '$lib/components/Icon.svelte';
-
 /** Display labels for backend enums — never show raw snake_case values. */
-
-export const visibilityMeta: Record<string, { label: string; icon: IconName; hint: string }> = {
-  private: { label: 'Private', icon: 'lock', hint: 'Only you' },
-  invite_only: { label: 'Invite only', icon: 'users', hint: 'Anyone with the join code' },
-  public: { label: 'Public', icon: 'globe', hint: 'Listed under Discover' }
-};
-
-export function visibilityLabel(value: string): string {
-  return visibilityMeta[value]?.label ?? humanize(value);
-}
 
 export function humanize(value: string): string {
   const spaced = value.replace(/_/g, ' ');

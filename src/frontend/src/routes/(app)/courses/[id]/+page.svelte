@@ -20,14 +20,12 @@
   import { toast } from '$lib/stores/toast.svelte';
   import { itemTitle, openSession, WorkspaceCanvas, type WorkspaceSession } from '$lib/stores/workspace.svelte';
   import { formatBytes } from '$lib/utils/format';
-  import { humanize, plural, visibilityMeta } from '$lib/utils/labels';
+  import { humanize, plural } from '$lib/utils/labels';
 
   type CourseView =
     paths['/courses/{course_id}']['get']['responses'][200]['content']['application/json'];
   type SourceView =
     paths['/courses/{course_id}/sources']['get']['responses'][200]['content']['application/json'][number];
-  type MemberView =
-    paths['/courses/{course_id}/members']['get']['responses'][200]['content']['application/json'][number];
   type Citation =
     paths['/courses/{course_id}/traces/{trace_id}/citations']['get']['responses'][200]['content']['application/json'][number];
   type SourceType = NonNullable<
@@ -46,6 +44,8 @@
     /** Why any generated workspace block was withheld (uncited, malformed). */
     withheld: string[];
     traceId: string | null;
+    /** A rate-limited cloud model handed this answer to the local model. */
+    fellBackToLocal: boolean;
     citations: Citation[];
     citationsLoading: boolean;
     error: unknown;
@@ -57,12 +57,13 @@
 
   let course = $state<CourseView | null>(null);
   let sources = $state<SourceView[]>([]);
-  let members = $state<MemberView[]>([]);
   let loading = $state(true);
   let error = $state<unknown>(null);
   let actionError = $state<unknown>(null);
 
-  let activeTab = $state<'ask' | 'sources' | 'members'>('ask');
+  let activeTab = $state<'ask' | 'sources'>('ask');
+  let renaming = $state(false);
+  let renameValue = $state('');
 
   let question = $state('');
   let asking = $state(false);
@@ -93,8 +94,6 @@
     'code'
   ].map((value) => ({ value: value as SourceType, label: humanize(value) }));
 
-  let isOwner = $derived(course?.role === 'owner');
-  let joinCode = $derived(course?.join_code ?? null);
   let anyPending = $derived(
     sources.some((source) => source.status === 'uploaded' || source.status === 'scanned')
   );
@@ -123,28 +122,33 @@
 
   async function loadExtras() {
     if (!course) return;
-    if (isOwner) {
-      const [sourcesRes, membersRes] = await Promise.all([
-        api.GET('/courses/{course_id}/sources', {
-          params: { path: { course_id: courseId } }
-        }),
-        api.GET('/courses/{course_id}/members', {
-          params: { path: { course_id: courseId } }
-        })
-      ]);
-      if (sourcesRes.error) throw sourcesRes.error;
-      if (membersRes.error) throw membersRes.error;
-      sources = sourcesRes.data ?? [];
-      members = membersRes.data ?? [];
-    }
+    const res = await api.GET('/courses/{course_id}/sources', {
+      params: { path: { course_id: courseId } }
+    });
+    if (res.error) throw res.error;
+    sources = res.data ?? [];
+    void pollSourcesUntilSettled();
   }
+
+  let polling = false;
 
   async function pollSourcesUntilSettled() {
     // Fresh uploads sit at uploaded→scanned→indexed invisibly otherwise
     // (the worker heartbeats; the UI just has to look). Poll every
-    // 1.5s while anything is in flight; stop when all settle. No
-    // polling after an error — the requeue button is the recovery path.
-    for (let attempt = 0; attempt < 60 && anyPending; attempt++) {
+    // 1.5s while anything is in flight; stop when all settle. One loop
+    // at a time. No polling after an error — Retry is the recovery path.
+    if (polling) return;
+    polling = true;
+    try {
+      await pollLoop();
+    } finally {
+      polling = false;
+    }
+  }
+
+  async function pollLoop() {
+    // A laptop may take minutes on a large PDF: poll for up to ~15 min.
+    for (let attempt = 0; attempt < 600 && anyPending; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 1500));
       if (!course) return;
       try {
@@ -167,6 +171,7 @@
       workspace: [],
       withheld: [],
       traceId: null,
+      fellBackToLocal: false,
       citations: [],
       citationsLoading: false,
       error: null,
@@ -186,6 +191,7 @@
       turns[index].withheld = data.withheld ?? [];
       canvas.openFromTurn(index, turns[index].workspace);
       turns[index].traceId = data.trace_id;
+      turns[index].fellBackToLocal = data.fell_back_to_local ?? false;
       // Fetch the evidence behind the answer immediately (golden rule
       // 1: every answer shows its sources, right under itself).
       turns[index].citationsLoading = true;
@@ -219,8 +225,7 @@
 
   const tabs: { id: typeof activeTab; label: string; icon: IconName }[] = [
     { id: 'ask', label: 'Ask', icon: 'sparkles' },
-    { id: 'sources', label: 'Sources', icon: 'file-text' },
-    { id: 'members', label: 'Members', icon: 'users' }
+    { id: 'sources', label: 'Sources', icon: 'file-text' }
   ];
 
   const upcoming: { label: string; icon: IconName }[] = [
@@ -264,7 +269,6 @@
       if (err) throw err;
       if (fileInput) fileInput.value = '';
       await loadExtras();
-      void pollSourcesUntilSettled();
     } catch (caught) {
       uploadError = caught;
     } finally {
@@ -287,70 +291,67 @@
       });
       if (err) throw err;
       await loadExtras();
-      void pollSourcesUntilSettled();
     } catch (caught) {
       actionError = caught;
     }
   }
 
-  async function copyJoinCode() {
-    if (!joinCode) return;
-    await navigator.clipboard.writeText(joinCode);
-    toast('Join code copied to clipboard.');
-  }
-
-  async function rotateJoinCode() {
+  async function removeSource(sourceId: string, filename: string) {
     if (!(await confirmDialog({
-      title: 'Rotate join code?',
-      message: 'The current code stops working immediately. Anyone you shared it with will need the new one.',
-      confirmLabel: 'Rotate'
-    }))) return;
-    actionError = null;
-    try {
-      const { data, error: err } = await api.POST('/courses/{course_id}/join-code/rotate', {
-        params: { path: { course_id: courseId } }
-      });
-      if (err || !data) throw err ?? new Error('unexpected empty response');
-      course = data;
-      toast('Join code rotated.');
-    } catch (caught) {
-      actionError = caught;
-    }
-  }
-
-  async function revoke(userId: string) {
-    if (!(await confirmDialog({
-      title: 'Revoke this member?',
-      message: 'They lose access immediately but can re-join with the code if the course is not private.',
-      confirmLabel: 'Revoke',
+      title: 'Remove this file?',
+      message: `${filename} and everything derived from it (search index, citations) are deleted from this computer.`,
+      confirmLabel: 'Remove',
       danger: true
     }))) return;
     actionError = null;
     try {
-      const { error: err } = await api.DELETE('/courses/{course_id}/enrollments/{user_id}', {
-        params: { path: { course_id: courseId, user_id: userId } }
+      const { error: err } = await api.DELETE('/courses/{course_id}/sources/{source_id}', {
+        params: { path: { course_id: courseId, source_id: sourceId } }
       });
       if (err) throw err;
       await loadExtras();
-      toast('Member revoked.');
+      toast('File removed.');
     } catch (caught) {
       actionError = caught;
     }
   }
 
-  async function leave() {
+  function startRename() {
+    if (!course) return;
+    renameValue = course.name;
+    renaming = true;
+  }
+
+  async function saveRename(event: SubmitEvent) {
+    event.preventDefault();
+    actionError = null;
+    try {
+      const { data, error: err } = await api.PATCH('/courses/{course_id}', {
+        params: { path: { course_id: courseId } },
+        body: { name: renameValue }
+      });
+      if (err || !data) throw err ?? new Error('unexpected empty response');
+      course = data;
+      renaming = false;
+    } catch (caught) {
+      actionError = caught;
+    }
+  }
+
+  async function moveToTrash() {
     if (!(await confirmDialog({
-      title: 'Leave this course?',
-      message: 'You keep your private study history, but lose access to the course materials.',
-      confirmLabel: 'Leave',
+      title: 'Move this course to the trash?',
+      message: 'You can restore it from Trash for 30 days. After that it is deleted permanently.',
+      confirmLabel: 'Move to trash',
       danger: true
     }))) return;
     actionError = null;
     try {
-      const { error: err } = await api.DELETE('/courses/{course_id}/enrollment', {
+      const { error: err } = await api.DELETE('/courses/{course_id}', {
         params: { path: { course_id: courseId } }
       });
       if (err) throw err;
+      toast('Course moved to the trash.');
       await goto('/');
     } catch (caught) {
       actionError = caught;
@@ -370,22 +371,29 @@
     <Skeleton class="h-64 w-full rounded-2xl" />
   </div>
 {:else}
-  {@const visibility = visibilityMeta[course.visibility]}
   <div class="flex flex-col gap-6">
     <header class="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
       <div class="flex min-w-0 items-start gap-4">
         <Monogram name={course.name} size="lg" class="hidden sm:flex" />
         <div class="min-w-0">
-          <h1 class="font-display text-[1.75rem] font-medium leading-tight tracking-tight text-fg sm:text-[2rem]">
-            {course.name}
-          </h1>
+          {#if renaming}
+            <form onsubmit={saveRename} class="flex items-center gap-2">
+              <input
+                bind:value={renameValue}
+                required
+                maxlength={200}
+                aria-label="Course name"
+                class="min-w-0 flex-1 rounded-lg border border-line-strong bg-surface px-3 py-1.5 font-display text-xl text-fg focus:border-accent focus:outline-none"
+              />
+              <Button type="submit" size="sm">Save</Button>
+              <Button variant="ghost" size="sm" onclick={() => (renaming = false)}>Cancel</Button>
+            </form>
+          {:else}
+            <h1 class="font-display text-[1.75rem] font-medium leading-tight tracking-tight text-fg sm:text-[2rem]">
+              {course.name}
+            </h1>
+          {/if}
           <div class="mt-2.5 flex flex-wrap items-center gap-2">
-            <Badge tone={isOwner ? 'accent' : 'neutral'} icon={isOwner ? 'key' : 'user'}>
-              {isOwner ? 'Owner' : humanize(course.role)}
-            </Badge>
-            {#if visibility}
-              <Badge icon={visibility.icon}>{visibility.label}</Badge>
-            {/if}
             <span class="text-[13px] text-subtle">
               {plural(course.source_count, 'source')} · {formatBytes(course.stored_bytes ?? 0)} stored
             </span>
@@ -403,18 +411,18 @@
             <span class="rounded bg-surface-3 px-1 py-px text-[10px] font-semibold uppercase tracking-wide text-subtle">Soon</span>
           </a>
         {/each}
-        {#if course.role === 'learner'}
-          <Button variant="ghost" size="sm" onclick={leave} class="text-danger-text hover:bg-danger-soft hover:text-danger-text">
-            <Icon name="log-out" class="h-4 w-4" /> Leave
-          </Button>
-        {/if}
+        <Button variant="ghost" size="sm" onclick={startRename}>
+          <Icon name="file-pen" class="h-4 w-4" /> Rename
+        </Button>
+        <Button variant="ghost" size="sm" onclick={moveToTrash} class="text-danger-text hover:bg-danger-soft hover:text-danger-text">
+          <Icon name="trash" class="h-4 w-4" /> Delete
+        </Button>
       </div>
     </header>
 
     {#if actionError}<ErrorBanner error={actionError} />{/if}
 
-    {#if isOwner}
-      <div class="flex gap-1 border-b border-line" role="tablist">
+    <div class="flex gap-1 border-b border-line" role="tablist">
         {#each tabs as { id: tab, label, icon } (tab)}
           <button
             type="button"
@@ -434,15 +442,10 @@
               {#if anyPending}
                 <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-warning" title="Indexing in progress"></span>
               {/if}
-            {:else if tab === 'members'}
-              <span class="rounded-full bg-surface-3 px-1.5 text-[11px] font-semibold text-muted">
-                {members.filter((member) => member.status === 'active').length}
-              </span>
             {/if}
           </button>
         {/each}
-      </div>
-    {/if}
+    </div>
 
     {#if activeTab === 'ask'}
       <div class={`grid items-start gap-6 ${workspaceOpen ? 'lg:grid-cols-2' : ''}`}>
@@ -510,6 +513,12 @@
                       {:else}
                         {#if turn.answer}
                           <RichText text={turn.answer} class="prose-p:leading-relaxed text-[15px]" />
+                        {/if}
+                        {#if turn.fellBackToLocal}
+                          <p class="inline-flex items-center gap-1.5 self-start rounded-lg bg-warning-soft px-2.5 py-1 text-xs text-warning-text">
+                            <Icon name="info" class="h-3.5 w-3.5" />
+                            The cloud model hit its rate limit, so the local model answered this one.
+                          </p>
                         {/if}
 
                         {#if turn.workspace.length > 0}
@@ -648,7 +657,7 @@
           </div>
         {/if}
       </div>
-    {:else if activeTab === 'sources' && isOwner}
+    {:else if activeTab === 'sources'}
       <div class="flex flex-col gap-6">
         <Card title="Add material" description="Upload a syllabus, slides, notes, problem sets — anything the tutor should answer from.">
           <div class="flex flex-col gap-4 sm:flex-row sm:items-stretch">
@@ -735,72 +744,15 @@
                     {:else}
                       <Badge>{humanize(source.status)}</Badge>
                     {/if}
-                  </div>
-                </li>
-              {/each}
-            </ul>
-          </section>
-        {/if}
-      </div>
-    {:else if activeTab === 'members' && isOwner}
-      <div class="flex flex-col gap-6">
-        {#if joinCode}
-          <Card title="Invite learners" description="Anyone with this code can join while the course is not private.">
-            <div class="flex flex-wrap items-center gap-3">
-              <code
-                class="rounded-xl border border-dashed border-line-strong bg-surface-2 px-4 py-2 font-mono text-lg font-medium tracking-[0.12em] text-fg"
-              >
-                {joinCode}
-              </code>
-              <Button variant="secondary" onclick={copyJoinCode}>
-                <Icon name="copy" class="h-4 w-4" /> Copy
-              </Button>
-              <Button variant="ghost" onclick={rotateJoinCode}>
-                <Icon name="refresh" class="h-4 w-4" /> Rotate
-              </Button>
-            </div>
-          </Card>
-        {/if}
-
-        {#if members.length === 0}
-          <EmptyState
-            icon="users"
-            title="No members yet"
-            message={joinCode
-              ? 'Share the join code above to add learners.'
-              : 'This course is private. Change its visibility to let learners join with a code.'}
-          />
-        {:else}
-          <section class="overflow-hidden rounded-2xl border border-line bg-surface shadow-card">
-            <div class="flex items-center justify-between border-b border-line px-5 py-3.5 sm:px-6">
-              <h2 class="text-[15px] font-semibold text-fg">Members</h2>
-              <span class="text-[13px] text-subtle">{plural(members.length, 'member')}</span>
-            </div>
-            <ul class="divide-y divide-line">
-              {#each members as member (member.user_id)}
-                <li class="flex items-center gap-4 px-5 py-3 sm:px-6">
-                  <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-surface-3 text-muted">
-                    <Icon name="user" class="h-4 w-4" />
-                  </span>
-                  <span class="min-w-0 flex-1 truncate font-mono text-[13px] text-fg-soft" title={member.user_id}>
-                    {member.user_id}
-                  </span>
-                  <Badge
-                    tone={member.status === 'active' ? 'success' : member.status === 'invited' ? 'info' : 'neutral'}
-                    dot
-                  >
-                    {humanize(member.status)}
-                  </Badge>
-                  {#if member.status === 'active'}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onclick={() => revoke(member.user_id)}
-                      class="hover:bg-danger-soft hover:text-danger-text"
+                    <button
+                      type="button"
+                      onclick={() => removeSource(source.source_id, source.filename)}
+                      class="rounded-lg p-1.5 text-subtle transition-colors hover:bg-danger-soft hover:text-danger-text"
+                      aria-label={`Remove ${source.filename}`}
                     >
-                      <Icon name="user-minus" class="h-3.5 w-3.5" /> Revoke
-                    </Button>
-                  {/if}
+                      <Icon name="trash" class="h-4 w-4" />
+                    </button>
+                  </div>
                 </li>
               {/each}
             </ul>

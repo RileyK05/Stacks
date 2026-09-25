@@ -40,10 +40,10 @@
           the question, or upload a source that covers it.
         </p>
       {/if}
-      {#if apiError?.kind === 'email_unverified'}
+      {#if apiError?.kind === 'unavailable' || apiError?.kind === 'budget'}
         <p class="mt-1 opacity-85">
-          Verify your email to continue — request a verification link on the
-          <a href="/account" class="font-medium underline underline-offset-2">account page</a>.
+          Choose or adjust the model in
+          <a href="/settings" class="font-medium underline underline-offset-2">Settings</a>.
         </p>
       {/if}
     </div>

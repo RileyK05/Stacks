@@ -1,6 +1,6 @@
 export type ApiErrorKind =
   | 'unauthorized'
-  | 'email_unverified'
+  | 'budget'
   | 'forbidden'
   | 'not_found'
   | 'conflict'
@@ -33,12 +33,10 @@ export class ApiError extends Error {
   }
 }
 
-function kindForStatus(status: number, message: string): ApiErrorKind {
+function kindForStatus(status: number, _message: string): ApiErrorKind {
   if (status === 401) return 'unauthorized';
-  if (status === 403) {
-    if (/verify/i.test(message)) return 'email_unverified';
-    return 'forbidden';
-  }
+  if (status === 402) return 'budget';
+  if (status === 403) return 'forbidden';
   if (status === 404) return 'not_found';
   if (status === 409) return 'conflict';
   if (status === 413) return 'too_large';

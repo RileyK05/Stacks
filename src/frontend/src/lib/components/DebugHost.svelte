@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { loadToken } from '$lib/auth/token';
-  import { authReady, currentUser } from '$lib/stores/auth.svelte';
+  import { appToken } from '$lib/api/appToken';
+  import { baseUrl } from '$lib/api/client';
   import {
     clearDebugLog,
     debugEntries,
@@ -13,7 +13,6 @@
 
   let enabled = $derived(debugEnabled());
   let entries = $derived(debugEntries());
-  let user = $derived(currentUser());
   let tab = $state<'requests' | 'state'>('requests');
   let expandedId = $state<number | null>(null);
 
@@ -48,7 +47,6 @@
     return status < 400 ? 'text-emerald-400' : 'text-red-400';
   }
 
-  const baseUrl = (import.meta.env.PUBLIC_API_BASE as string | undefined) ?? '(vite proxy)';
 </script>
 
 {#if enabled}
@@ -115,16 +113,8 @@
       <dl class="grid flex-1 auto-rows-min grid-cols-[max-content_1fr] gap-x-4 gap-y-1 overflow-y-auto p-3">
         <dt class="text-slate-500">route</dt>
         <dd>{page.url.pathname + page.url.search}</dd>
-        <dt class="text-slate-500">auth ready</dt>
-        <dd>{authReady()}</dd>
-        <dt class="text-slate-500">user</dt>
-        <dd>
-          {user
-            ? `${user.name}${user.email ? ` <${user.email}>` : ''}${user.user_id ? ` (id ${user.user_id})` : ''}`
-            : 'anonymous'}
-        </dd>
-        <dt class="text-slate-500">token</dt>
-        <dd>{loadToken() ? 'stored' : 'none'}</dd>
+        <dt class="text-slate-500">app token</dt>
+        <dd>{appToken() ? 'present' : 'none (development)'}</dd>
         <dt class="text-slate-500">api base</dt>
         <dd>{baseUrl}</dd>
         <dt class="text-slate-500">logged requests</dt>
