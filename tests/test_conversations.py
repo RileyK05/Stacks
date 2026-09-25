@@ -344,3 +344,23 @@ def test_titles_are_one_trimmed_line() -> None:
     )
     long = conversations_repo.title_from("word " * 40)
     assert len(long) <= conversations_repo.TITLE_MAX_LENGTH and long.endswith("…")
+
+
+def test_citations_come_back_in_the_order_the_model_numbered_them(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """[n] in an answer is the n-th chunk the model read; the citation list
+    must use the same order, or "Sources used" shows the wrong excerpt."""
+    course_id = _course(client)
+    for text in ("linearity in chapter two", "linearity in chapter three"):
+        add_chunk(UUID(course_id), text)
+    calls = configure_test_provider(monkeypatch, ANSWER)
+    reply = _send(client, course_id, _chat(client, course_id), "What is linearity?")
+    answer = reply.json()["reply"]["answer"]
+    cited = client.get(
+        f"/courses/{course_id}/traces/{answer['trace_id']}/citations"
+    ).json()
+    assert [c["chunk_id"] for c in cited] == answer["chunk_ids"]
+    prompt = str(calls[-1]["prompt"])
+    numbered = [prompt.index(f"chunk {c['chunk_id']}") for c in cited]
+    assert numbered == sorted(numbered), "[1] is the first chunk in the prompt"

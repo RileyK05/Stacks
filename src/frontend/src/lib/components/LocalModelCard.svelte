@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { isTauri } from '@tauri-apps/api/core';
   import { onDestroy, onMount } from 'svelte';
   import { api } from '$lib/api/client';
   import type { paths } from '$lib/api/schema';
@@ -8,12 +9,15 @@
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
+  import TextInput from '$lib/components/TextInput.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import { formatBytes } from '$lib/utils/format';
 
   type RuntimeView = paths['/runtime']['get']['responses'][200]['content']['application/json'];
   type ModelView = RuntimeView['models'][number];
+  type LinkView =
+    paths['/runtime/models/inspect']['post']['responses'][200]['content']['application/json'];
 
   interface Props {
     /** Called after the running model changes, so the page can refresh
@@ -111,7 +115,7 @@
       // Point the answers model at the local runtime running this model.
       const { error: saveErr } = await api.PUT('/settings/providers/{task_class}', {
         params: { path: { task_class: 'interactive' } },
-        body: { preset: 'local', model: model.id, base_url: null }
+        body: { connection: 'local', model: model.id }
       });
       if (saveErr) throw saveErr;
       toast(`${model.label} is running on this computer.`);
@@ -136,10 +140,15 @@
   }
 
   async function remove(model: ModelView) {
+    const inPlace = model.added_by_user && model.location !== 'app';
     if (!(await confirmDialog({
-      title: `Delete ${model.label}?`,
-      message: `This frees ${formatBytes(model.size_bytes)}. You can download it again any time.`,
-      confirmLabel: 'Delete',
+      title: inPlace ? `Remove ${model.label} from the list?` : `Delete ${model.label}?`,
+      message: inPlace
+        ? 'The file itself stays where it is on your computer.'
+        : model.added_by_user
+          ? `This frees ${formatBytes(model.size_bytes)} and removes it from your list.`
+          : `This frees ${formatBytes(model.size_bytes)}. You can download it again any time.`,
+      confirmLabel: inPlace ? 'Remove' : 'Delete',
       danger: true
     }))) return;
     const { data } = await api.DELETE('/runtime/models/{model_id}', {
@@ -155,6 +164,73 @@
   }
 
   const tierLabel = { starter: 'Starter', standard: 'Standard', large: 'Large' } as const;
+
+  // Adding a model: a Hugging Face link, or a .gguf file on this computer.
+  let addMode = $state<'link' | 'file' | null>(null);
+  let link = $state('');
+  let found = $state<LinkView | null>(null);
+  let pickedFile = $state('');
+  let filePath = $state('');
+  let adding = $state(false);
+  let addError = $state<unknown>(null);
+
+  function resetAdd(mode: 'link' | 'file' | null) {
+    addMode = mode;
+    link = '';
+    found = null;
+    pickedFile = '';
+    filePath = '';
+    addError = null;
+  }
+
+  async function lookUp(event: SubmitEvent) {
+    event.preventDefault();
+    adding = true;
+    addError = null;
+    found = null;
+    try {
+      const { data, error: err } = await api.POST('/runtime/models/inspect', {
+        body: { url: link.trim() }
+      });
+      if (err || !data) throw err ?? new Error('empty response');
+      found = data;
+      pickedFile =
+        data.selected ?? data.files.find((f) => /q4_k_m/i.test(f.file))?.file ?? data.files[0].file;
+    } catch (caught) {
+      addError = caught;
+    } finally {
+      adding = false;
+    }
+  }
+
+  async function addModel(body: { url?: string; file?: string; path?: string }) {
+    adding = true;
+    addError = null;
+    try {
+      const { data, error: err } = await api.POST('/runtime/models', { body });
+      if (err || !data) throw err ?? new Error('empty response');
+      view = data;
+      toast(body.path ? 'Model added.' : 'Model added; downloading now.');
+      resetAdd(null);
+      onchange?.();
+    } catch (caught) {
+      addError = caught;
+    } finally {
+      adding = false;
+    }
+  }
+
+  async function chooseFile() {
+    if (!isTauri()) return;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const chosen = await open({
+      multiple: false,
+      directory: false,
+      title: 'Choose a GGUF model file',
+      filters: [{ name: 'GGUF model', extensions: ['gguf'] }]
+    });
+    if (typeof chosen === 'string') filePath = chosen;
+  }
 </script>
 
 <Card
@@ -190,11 +266,12 @@
               {model.label}
               <Badge>{tierLabel[model.tier]}</Badge>
               {#if model.recommended}<Badge tone="accent">Recommended</Badge>{/if}
+              {#if model.added_by_user}<Badge tone="info">Added</Badge>{/if}
               {#if !model.fits}<Badge tone="warning">Needs {model.min_ram_gb} GB</Badge>{/if}
             </p>
             <p class="mt-0.5 text-xs text-subtle">
               {formatBytes(model.size_bytes)} · {model.license} · {model.notes}
-              {#if model.location === 'external' || model.location === 'external-unverified'}
+              {#if !model.added_by_user && (model.location === 'external' || model.location === 'external-unverified')}
                 · found in another app's folder
               {/if}
             </p>
@@ -218,7 +295,7 @@
                   <Icon name="sparkles" class="h-3.5 w-3.5" /> Use
                 </Button>
               {/if}
-              {#if model.location === 'app'}
+              {#if model.location === 'app' || model.added_by_user}
                 <Button variant="ghost" size="sm" onclick={() => remove(model)} aria-label={`Delete ${model.label}`}>
                   <Icon name="trash" class="h-4 w-4" />
                 </Button>
@@ -227,10 +304,112 @@
               <Button variant="secondary" size="sm" loading={busy === model.id} onclick={() => download(model)}>
                 <Icon name="download" class="h-3.5 w-3.5" /> Download
               </Button>
+              {#if model.added_by_user}
+                <Button variant="ghost" size="sm" onclick={() => remove(model)} aria-label={`Remove ${model.label}`}>
+                  <Icon name="trash" class="h-4 w-4" />
+                </Button>
+              {/if}
             {/if}
           </div>
         </li>
       {/each}
     </ul>
+
+    <div class="mt-4 rounded-xl border border-dashed border-line-strong p-4">
+      {#if addMode === null}
+        <div class="flex flex-wrap items-center gap-3">
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-medium text-fg">Add a model</p>
+            <p class="mt-0.5 text-xs text-subtle">
+              Any GGUF model from Hugging Face, or a .gguf file already on this computer.
+            </p>
+          </div>
+          <Button variant="secondary" size="sm" onclick={() => resetAdd('link')}>
+            <Icon name="link" class="h-3.5 w-3.5" /> From Hugging Face
+          </Button>
+          <Button variant="secondary" size="sm" onclick={() => resetAdd('file')}>
+            <Icon name="folder-open" class="h-3.5 w-3.5" /> From a file
+          </Button>
+        </div>
+      {:else if addMode === 'link'}
+        <form onsubmit={lookUp} class="flex flex-col gap-3">
+          <p class="text-sm font-medium text-fg">Add from Hugging Face</p>
+          <div class="flex flex-col gap-2 sm:flex-row">
+            <div class="flex-1">
+              <TextInput
+                placeholder="https://huggingface.co/org/model-GGUF"
+                bind:value={link}
+                aria-label="Hugging Face link"
+              />
+            </div>
+            <Button type="submit" variant="secondary" loading={adding && !found} disabled={!link.trim()}>
+              Look up
+            </Button>
+          </div>
+          {#if found}
+            {@const current = found}
+            <fieldset class="flex flex-col gap-1">
+              <legend class="mb-1.5 text-xs text-subtle">
+                Files in {current.repo}. Smaller files are faster; Q4_K_M is a good balance.
+              </legend>
+              {#each current.files as file (file.file)}
+                <label
+                  class={`flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors ${
+                    pickedFile === file.file ? 'border-accent bg-accent-soft' : 'border-line hover:border-line-strong'
+                  }`}
+                >
+                  <input type="radio" bind:group={pickedFile} value={file.file} />
+                  <span class="min-w-0 flex-1 truncate text-fg">{file.file}</span>
+                  <span class="shrink-0 text-xs text-subtle">{formatBytes(file.size_bytes)}</span>
+                </label>
+              {/each}
+            </fieldset>
+            <div class="flex gap-2">
+              <Button
+                size="sm"
+                loading={adding}
+                onclick={() => addModel({ url: link.trim(), file: pickedFile })}
+                disabled={!pickedFile}
+              >
+                <Icon name="download" class="h-3.5 w-3.5" /> Add and download
+              </Button>
+              <Button variant="ghost" size="sm" onclick={() => resetAdd(null)}>Cancel</Button>
+            </div>
+          {:else}
+            <div><Button variant="ghost" size="sm" onclick={() => resetAdd(null)}>Cancel</Button></div>
+          {/if}
+        </form>
+      {:else}
+        <div class="flex flex-col gap-3">
+          <p class="text-sm font-medium text-fg">Add a file from this computer</p>
+          {#if isTauri()}
+            <div class="flex flex-wrap items-center gap-2">
+              <Button variant="secondary" size="sm" onclick={chooseFile}>
+                <Icon name="folder-open" class="h-3.5 w-3.5" /> Choose a .gguf file…
+              </Button>
+              {#if filePath}
+                <code class="min-w-0 truncate rounded bg-surface-2 px-2 py-1 text-xs text-muted">{filePath}</code>
+              {/if}
+            </div>
+          {:else}
+            <TextInput placeholder="Full path to a .gguf file" bind:value={filePath} aria-label="Path to a .gguf file" />
+          {/if}
+          <p class="text-xs text-subtle">
+            The file stays where it is; Stacks checks it once so it knows if it changes.
+          </p>
+          <div class="flex gap-2">
+            <Button size="sm" loading={adding} onclick={() => addModel({ path: filePath })} disabled={!filePath}>
+              Add model
+            </Button>
+            <Button variant="ghost" size="sm" onclick={() => resetAdd(null)}>Cancel</Button>
+          </div>
+        </div>
+      {/if}
+      {#if addError}<div class="mt-3"><ErrorBanner error={addError} /></div>{/if}
+      <p class="mt-3 text-[11px] leading-relaxed text-subtle">
+        Stacks runs GGUF models with its bundled llama.cpp. A model with a newer architecture may
+        not start yet; if so, the message says why.
+      </p>
+    </div>
   {/if}
 </Card>

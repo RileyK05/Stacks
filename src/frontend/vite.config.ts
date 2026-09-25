@@ -13,6 +13,9 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // The Rust shell and its build output live under src-tauri/; watching
+    // them only burns time (and trips over files the compiler has locked).
+    watch: { ignored: ['**/src-tauri/**'] },
     proxy: {
       '/api': { target: proxyTarget, changeOrigin: true }
     }

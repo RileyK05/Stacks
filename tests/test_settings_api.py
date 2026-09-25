@@ -107,7 +107,10 @@ def test_connection_test_reports_failures(
 
     monkeypatch.setattr(httpx, "get", refuse)
     result = client.post("/settings/providers/interactive/test").json()
-    assert result["ok"] is False and "refused" in result["error"]
+    assert result["ok"] is False
+    assert result["error"] == (
+        "nothing is answering at http://127.0.0.1:8081/v1. Is the server running?"
+    )
 
 
 def test_usage_and_budget(client: TestClient) -> None:

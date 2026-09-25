@@ -213,16 +213,32 @@ travel in the `.course` export.
 
 ## 7. Phases
 
-### Phase A — conversations and models
+### Phase A — conversations and models ✅
 
-- [ ] Saved conversations (tables, API, sidebar), traces and citations
-      reopen from history; titles from the first question
-- [ ] Rolling summary + recent turns as the model's chat context
-- [ ] Connections: many providers/endpoints with one key each; migrate
-      existing keys
-- [ ] Model picker in chat; per-model profiles
-- [ ] Add a model from a Hugging Face GGUF link or a local file
-- [ ] Source selection per conversation
+- [x] Saved conversations (migration 003, `api/conversations.py`,
+      `tutor/chat.py`): chat list per course, titles from the first
+      question, the open chat in the URL, traces and citations reopen from
+      history; "nothing relevant" is recorded as the reply; a provider that
+      is down is not (the question can be re-sent)
+- [x] Rolling summary + the last two exchanges as the model's chat
+      context, inside the fence; short follow-ups search with the two
+      previous questions (a chain like "why?" → "an example?" keeps its
+      topic). Chat answers skip the answer cache
+- [x] Connections (`providers.py`): any number of endpoints from presets
+      (OpenAI, Anthropic, Google, OpenRouter, Groq, LM Studio, Ollama,
+      custom), one keychain key each; pre-connection choices and keys
+      carry over unchanged. Settings: Default models / Local model /
+      Connections
+- [x] Model picker in chat (`provider.generate(choice=...)`, no silent
+      fallback for a picked model); per-model profiles in `configs/models/`
+      (MiniCPM5-2B reasoning off, K2 Horizon on)
+- [x] Add a model from a Hugging Face GGUF link (published sha256 + size;
+      pick a quant) or a local `.gguf` used in place (Tauri file dialog)
+- [x] Source selection per conversation (retrieval narrowed per seam,
+      over-fetching so chosen sources still fill the set)
+- [x] Bug found on the way: the citation list was ordered by file, not by
+      the model's numbering, so "[1]" could open the wrong excerpt. Fixed
+      in the query, regression-tested
 
 ### Phase B — artifacts
 
@@ -236,6 +252,10 @@ travel in the `.course` export.
 
 ### Phase C — course knowledge
 
+- [ ] Table-aware PDF extraction. Measured on the owner's syllabus: the
+      two-column grading table extracts row-interleaved ("93 - 100%A
+      73 - 76%C"), and MiniCPM5-2B then misreads it (wrong B+/B rows;
+      "the material doesn't say" for a B). Add it as an eval case first
 - [ ] Decomposed concept extraction, verbatim-verified; measured
 - [ ] Concept merge + prerequisites; concept pages; concept map
 - [ ] Study pack at ingestion; Generate menu (study guide, summary, FAQ,

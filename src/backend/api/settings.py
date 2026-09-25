@@ -302,10 +302,23 @@ def _list_models(base_url: str, api_key: str | None) -> ConnectionTest:
             headers=headers,
             timeout=httpx.Timeout(15.0),
         )
+        if response.status_code in (401, 403):
+            return ConnectionTest(ok=False, error="the key was not accepted")
         response.raise_for_status()
         body: Any = response.json()
         models = sorted(
             str(item["id"]) for item in body.get("data", []) if "id" in item
+        )
+    except httpx.ConnectError:
+        return ConnectionTest(
+            ok=False,
+            error=f"nothing is answering at {base_url}. Is the server running?",
+        )
+    except httpx.TimeoutException:
+        return ConnectionTest(ok=False, error=f"{base_url} did not answer in time")
+    except httpx.HTTPStatusError as err:
+        return ConnectionTest(
+            ok=False, error=f"the server answered {err.response.status_code}"
         )
     except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as err:
         return ConnectionTest(ok=False, error=str(err))

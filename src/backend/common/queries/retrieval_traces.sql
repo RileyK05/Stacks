@@ -16,7 +16,8 @@ WHERE trace_id = :trace_id AND course_id = :course_id;
 -- The citation view: what the tutor read and where it came from
 -- (golden rule 1). One row per chunk: the chunk's PRIMARY locator plus
 -- its source's filename — enough to say "page 3 of lecture2.pdf" and
--- show the excerpt.
+-- show the excerpt. Rows come back in the order of :chunk_ids — the order
+-- the model numbered the material — so citation n is the n-th row.
 SELECT chunk.chunk_id,
        chunk.chunk_index,
        chunk.text,
@@ -24,11 +25,11 @@ SELECT chunk.chunk_id,
        locator.label,
        locator.description,
        source.filename
-FROM chunks AS chunk
+FROM json_each(:chunk_ids) AS wanted
+JOIN chunks AS chunk ON chunk.chunk_id = wanted.value
 JOIN locators AS locator ON locator.locator_id = chunk.locator_id
 JOIN sources AS source ON source.source_id = chunk.source_id
-WHERE chunk.chunk_id IN (SELECT value FROM json_each(:chunk_ids))
-ORDER BY chunk.source_id, chunk.chunk_index;
+ORDER BY wanted.key;
 
 -- name: course_by_tag
 -- Deterministic eval-course resolution: exact-name match first, then the
