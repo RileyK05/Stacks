@@ -167,6 +167,23 @@ def get_source(course_id: UUID, source_id: UUID) -> Source | None:
     return _to_source(row) if row else None
 
 
+def reindex_source(course_id: UUID, source_id: UUID) -> bool:
+    """Queue fresh extraction while keeping every existing citation readable."""
+    with connection() as conn:
+        params = {"course_id": course_id, "source_id": source_id}
+        row = conn.execute(get(_FILE, "get_source"), params).fetchone()
+        if row is None or row["status"] != "indexed":
+            return False
+        conn.execute(get(_FILE, "snapshot_citations_before_reindex"), params)
+        changed = conn.execute(get(_FILE, "mark_for_reindex"), params)
+        if changed.rowcount != 1:
+            conn.rollback()
+            return False
+        conn.execute(get(_FILE, "enqueue_reindex"), params)
+        conn.commit()
+    return True
+
+
 def delete_source(course_id: UUID, source_id: UUID) -> bool:
     """Remove one source: its rows cascade, then its stored file goes."""
     with connection() as conn:

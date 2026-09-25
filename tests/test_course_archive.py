@@ -4,10 +4,16 @@ import hashlib
 import json
 import zipfile
 from pathlib import Path
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from src.backend.common import course_archive, courses_repo
+from src.backend.common import (
+    artifacts_repo,
+    conversations_repo,
+    course_archive,
+    courses_repo,
+)
 from src.backend.common.db import connection
 
 NOTES = b"# Eigenvalues\n\nAn eigenvalue scales its eigenvector.\n" * 50
@@ -56,6 +62,8 @@ def test_export_then_import_round_trips_the_files(client: TestClient) -> None:
     with zipfile.ZipFile(path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["format"] == "stacks/course"
+        assert manifest["format_version"] == 2
+        assert "notebook.json" in archive.namelist()
         names = [s["filename"] for s in manifest["sources"]]
         assert names == ["notes.md", "week 2.txt"]
         assert archive.read(manifest["sources"][0]["path"]) == NOTES
@@ -80,6 +88,104 @@ def test_export_then_import_round_trips_the_files(client: TestClient) -> None:
             (new_id,),
         ).fetchone()["n"]
     assert queued == 2, "imported sources are re-derived by ingestion"
+
+
+def test_v2_round_trips_notebook_and_citations(client: TestClient) -> None:
+    course_id = _course_with_sources(client)
+    source_id = UUID(
+        next(
+            source["source_id"]
+            for source in client.get(f"/courses/{course_id}/sources").json()
+            if source["filename"] == "notes.md"
+        )
+    )
+    locator_id, chunk_id, trace_id = uuid4(), uuid4(), uuid4()
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO locators (locator_id, source_id, locator_type, start, label) "
+            "VALUES (?, ?, 'line_range', '0', 'lines 1-3')",
+            (locator_id, source_id),
+        )
+        conn.execute(
+            "INSERT INTO chunks (chunk_id, source_id, locator_id, chunk_index, text) "
+            "VALUES (?, ?, ?, 0, 'An eigenvalue scales its eigenvector.')",
+            (chunk_id, source_id, locator_id),
+        )
+        conn.execute(
+            "INSERT INTO retrieval_traces "
+            "(trace_id, course_id, query, retrieved_chunk_ids) VALUES (?, ?, ?, ?)",
+            (
+                trace_id,
+                UUID(course_id),
+                "What is an eigenvalue?",
+                json.dumps({"chunk_ids": [str(chunk_id)]}),
+            ),
+        )
+        conn.commit()
+    conversation = conversations_repo.create(UUID(course_id), "Eigenvalues")
+    with connection() as conn:
+        conversations_repo.add_turn(
+            conn,
+            conversation.conversation_id,
+            question="What is an eigenvalue?",
+            answer="It scales a vector [1].",
+            trace_id=trace_id,
+            payload={
+                "trace_id": str(trace_id),
+                "chunk_ids": [str(chunk_id)],
+                "workspace": [],
+                "withheld": [],
+                "model": "local-demo",
+            },
+        )
+        conn.commit()
+    artifact = artifacts_repo.create(
+        UUID(course_id),
+        kind="doc",
+        title="Eigenvalue notes",
+        content={"markdown": "An eigenvalue scales a vector [1]."},
+        sources=[chunk_id],
+    )
+    artifacts_repo.save(
+        UUID(course_id),
+        artifact.artifact_id,
+        expected_version=1,
+        title="Eigenvalue notes",
+        content={"markdown": "Revised [1]."},
+        sources=[chunk_id],
+        author="you",
+    )
+
+    path = Path(client.post(f"/courses/{course_id}/export").json()["path"])
+    new_id = _import(client, path).json()["course"]["course_id"]
+    chats = client.get(f"/courses/{new_id}/conversations").json()
+    assert len(chats) == 1 and chats[0]["title"] == "Eigenvalues"
+    thread = client.get(
+        f"/courses/{new_id}/conversations/{chats[0]['conversation_id']}"
+    ).json()
+    reply = thread["messages"][1]
+    assert reply["text"] == "It scales a vector [1]."
+    assert reply["answer"]["model"] == "local-demo"
+    cited = client.get(
+        f"/courses/{new_id}/traces/{reply['answer']['trace_id']}/citations"
+    ).json()
+    assert len(cited) == 1
+    assert cited[0]["text"] == "An eigenvalue scales its eigenvector."
+    assert (
+        client.get(
+            f"/courses/{new_id}/sources/{cited[0]['source_id']}/chunks/{cited[0]['chunk_id']}"
+        ).json()["label"]
+        == "lines 1-3"
+    )
+    artifacts = client.get(f"/courses/{new_id}/artifacts").json()
+    assert len(artifacts) == 1 and artifacts[0]["version"] == 2
+    artifact_id = artifacts[0]["artifact_id"]
+    versions = client.get(f"/courses/{new_id}/artifacts/{artifact_id}/versions").json()
+    assert [version["version"] for version in versions] == [2, 1]
+    citations = client.get(
+        f"/courses/{new_id}/artifacts/{artifact_id}/citations"
+    ).json()
+    assert citations[0]["citation"]["text"] == "An eigenvalue scales its eigenvector."
 
 
 def test_export_unknown_course_is_404(client: TestClient) -> None:
@@ -156,6 +262,26 @@ def test_import_rejects_non_zip(client: TestClient, tmp_path: Path) -> None:
     assert "unreadable zip" in response.json()["detail"]
 
 
+def test_v2_rejects_tampered_notebook_before_creating_course(
+    client: TestClient, tmp_path: Path
+) -> None:
+    manifest = _manifest()
+    manifest["format_version"] = 2
+    manifest["notebook_sha256"] = "0" * 64
+    source = manifest["sources"]
+    assert isinstance(source, list)
+    source[0]["source_id"] = str(uuid4())
+    path = _archive(
+        tmp_path,
+        manifest,
+        {**GOOD_FILES, "notebook.json": b'{"conversations":[]}'},
+    )
+    response = _import(client, path)
+    assert response.status_code == 422
+    assert "notebook does not match" in response.json()["detail"]
+    assert _count("courses") == 0
+
+
 def test_import_enforces_the_size_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -178,6 +304,24 @@ def test_duplicate_files_inside_an_archive_are_skipped(tmp_path: Path) -> None:
     path = _archive(tmp_path, manifest, {**GOOD_FILES, "sources/0002-copy.md": NOTES})
     result = course_archive.import_course(path)
     assert (result.imported, result.duplicates_skipped) == (1, 1)
+
+
+def test_duplicate_file_still_checks_its_manifest_hash(tmp_path: Path) -> None:
+    manifest = _manifest()
+    sources = manifest["sources"]
+    assert isinstance(sources, list)
+    sources.append(
+        {
+            **sources[0],
+            "path": "sources/0002-copy.md",
+            "filename": "copy.md",
+            "sha256": "0" * 64,
+        }
+    )
+    path = _archive(tmp_path, manifest, {**GOOD_FILES, "sources/0002-copy.md": NOTES})
+    with pytest.raises(course_archive.InvalidArchiveError, match="checksum"):
+        course_archive.import_course(path)
+    assert _count("courses") == 0
 
 
 def test_data_folder_and_reveal_are_scoped(client: TestClient, tmp_path: Path) -> None:

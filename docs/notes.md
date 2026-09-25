@@ -2400,3 +2400,29 @@ local only; writing misses into the student model is decision 009's
 
 Gates at close: 348 tests, ruff, mypy green; svelte-check 0/0, build
 clean; UI flow verified in both themes with a mocked API (Playwright).
+
+## Portable notebook citations and source reindex (2026-09-25)
+
+- `.course` format v2 carries saved chats, artifact versions, and only the
+  cited passage text/locator records. On import, new source and citation
+  IDs are assigned, traces and artifact citation lists are remapped, and
+  the cited passages become `citation_snapshots`. Source ingestion then
+  rebuilds the current search index without changing an old answer's
+  evidence. Format v1 remains importable.
+- An explicit source Reindex action applies extraction improvements to an
+  existing upload. Before the index is replaced it snapshots passages
+  referenced by traces and artifact versions. The citation query prefers
+  a live chunk while it exists, then the snapshot. Source deletion still
+  removes both; an artifact keeps a visible missing-citation slot.
+- A v2 archive is limited to 64 MiB of notebook JSON at import to bound
+  decompression and validation memory. If a very long-lived course hits
+  this limit, the archive format needs a streaming notebook member before
+  the cap can be raised safely.
+- Review fix: the first PDF table detector took any three lines with wide
+  gaps as a table, which split justified prose into word "cells" (17 of
+  18 pages of a book chapter). A table now needs its cells to start at the
+  same columns on every row; on the local PDFs only the syllabus grading
+  scale and one census table qualify.
+- Review fix: saving an artifact re-checked every source it cites, so
+  deleting a source made its artifacts unsavable (422). Only newly added
+  sources are checked now.

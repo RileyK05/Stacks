@@ -3,6 +3,8 @@
 agreement, not just shape."""
 
 import io
+import json
+from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -16,6 +18,7 @@ from src.backend.ingest.extract import (
     _join_pages,
     _line_locators,
     _markdown_locators,
+    _normalize_layout_tables,
     _pdf_locators,
     extract,
     ocr_extracted_source,
@@ -54,6 +57,29 @@ def test_pdf_locators_align_with_joined_text() -> None:
     assert spans[1].label == "page 2"
     assert spans[2].end == len(text)
     assert spans[1].start == spans[0].end + 1
+
+
+def test_two_column_grading_table_eval() -> None:
+    cases = json.loads(Path("data/eval/extraction/table_cases.json").read_text())
+    for case in cases["cases"]:
+        normalized, has_table = _normalize_layout_tables(case["layout"])
+        assert has_table, case["id"]
+        for expected in case["expected"]:
+            assert expected in normalized, (case["id"], expected)
+        assert "100%A 73" not in normalized
+
+
+def test_justified_prose_is_not_a_table() -> None:
+    """Layout mode pads justified lines with wide gaps. The first version
+    split every such line into word "cells" (17 of 18 pages of a book
+    chapter); gaps that don't line up across rows are not columns."""
+    layout = (
+        "pinta   de   acuerdo   su   propio   punto   de   vista.\n"
+        "Todas  las   perspectivas,  la   abundancia   de   rostros\n"
+        "y   figuras    forman   el   caracter   de   lo    que   es\n"
+        "significa   ser  parte   de    una   comunidad   que   es\n"
+    )
+    assert _normalize_layout_tables(layout) == (layout, False)
 
 
 def test_pdf_locators_drift_regression_unequal_pages() -> None:
@@ -240,6 +266,7 @@ def test_pdf_roundtrip_pages_and_text() -> None:
     finally:
         path.unlink(missing_ok=True)
         path.parent.rmdir()
+
 
 def test_markdown_without_headings_is_still_grounded() -> None:
     """A .md of notes with no '#' headings yielded ZERO locators, so every

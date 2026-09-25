@@ -2,8 +2,8 @@
 
 A study tool that runs on your own laptop. Add your course materials
 (syllabi, readings, slides, notes) and ask questions about them. Every
-answer cites the passages it came from, and you can open them without
-leaving the answer.
+answer cites the passages it came from, and you can open the original
+source at a cited passage.
 
 - **Local by default.** A small open model (MiniCPM5-2B) runs on your
   machine through a bundled llama.cpp server, so no account or API key is
@@ -16,11 +16,14 @@ leaving the answer.
   course's table of contents, concept links, and embeddings, then reranks
   the results. Answers must cite the material they draw on, and the app
   says so when the material doesn't cover a question.
-- **More than Q&A.** Ask for a quiz, notes, a table, or slides, and the
-  output is built from your course and cited. Requests to do graded work
-  get steered toward help with learning it.
-- **Portable courses.** Export a course as one `.course` file and import
-  it on another machine.
+- **A course notebook.** Keep multiple saved chats and editable docs,
+  sheets, slides, quizzes, and flashcards in each course. Artifact versions
+  let you review and restore earlier work; citations open the source file
+  at the passage used. Requests to do graded work get steered toward help
+  with learning it.
+- **Portable courses.** Export a course as one `.course` file with its
+  sources, chats, artifacts, versions, and cited passages. Older source-only
+  `.course` files still import.
 
 This is an early build. The student model (diagnostics, mastery, "what to
 study next") is designed but not built yet; see [docs/project.md](docs/project.md).
@@ -90,10 +93,9 @@ catalog, optionally against your own course files:
 ## Docs
 
 - [docs/project.md](docs/project.md): what the product is and where it's going
-- [docs/plan-local-first.md](docs/plan-local-first.md): the desktop plan and its progress
+- [docs/plan-notebook.md](docs/plan-notebook.md): the course notebook plan and its progress
 - [docs/system.md](docs/system.md): architecture
 - [docs/AGENTS.md](docs/AGENTS.md): conventions for contributors and coding agents
-- [docs/decisions/](docs/decisions/): design decisions (012 covers the move to local-first)
 - [src/frontend/README.md](src/frontend/README.md): the desktop app's frontend and Tauri shell
 
 ## License

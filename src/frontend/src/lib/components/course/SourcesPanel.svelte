@@ -96,6 +96,20 @@
     }
   }
 
+  async function reindex(sourceId: string) {
+    actionError = null;
+    try {
+      const { error: err } = await api.POST('/courses/{course_id}/sources/{source_id}/reindex', {
+        params: { path: { course_id: courseId, source_id: sourceId } }
+      });
+      if (err) throw err;
+      await onchanged();
+      toast('Reindexing source with the latest extraction.');
+    } catch (caught) {
+      actionError = caught;
+    }
+  }
+
   async function removeSource(sourceId: string, filename: string) {
     if (
       !(await confirmDialog({
@@ -183,7 +197,7 @@
               <Icon name="file-text" class="h-[18px] w-[18px]" />
             </span>
             <div class="min-w-0 flex-1">
-              <p class="truncate text-sm font-medium text-fg">{source.filename}</p>
+              <a href={`/courses/${courseId}/sources/${source.source_id}`} class="truncate text-sm font-medium text-accent-text hover:underline">{source.filename}</a>
               <p class="mt-0.5 text-xs text-subtle">
                 {humanize(source.source_type)} · {formatBytes(source.size_bytes ?? 0)}
               </p>
@@ -196,6 +210,9 @@
                 <Button variant="secondary" size="sm" onclick={() => requeue(source.source_id)}>
                   <Icon name="refresh" class="h-3.5 w-3.5" /> Retry
                 </Button>
+              {/if}
+              {#if source.status === 'indexed'}
+                <button type="button" onclick={() => reindex(source.source_id)} class="text-xs text-muted hover:text-accent-text" title="Rebuild the search index with the latest extractor">Reindex</button>
               {/if}
               {#if pending}
                 <Badge tone="info"><Spinner class="h-3 w-3" /> Indexing</Badge>

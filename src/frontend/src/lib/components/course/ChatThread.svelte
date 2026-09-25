@@ -263,7 +263,7 @@
                               <span class="flex h-5 min-w-5 items-center justify-center rounded-md bg-accent-soft px-1 font-mono text-[11px] font-medium text-accent-text">
                                 {citeIndex + 1}
                               </span>
-                              <span class="truncate font-medium text-fg-soft">{citation.filename}</span>
+                              <a class="truncate font-medium text-accent-text hover:underline" href={`/courses/${chats.courseId}/sources/${citation.source_id}?chunk=${citation.chunk_id}`} title="Open cited passage">{citation.filename}</a>
                               <span class="shrink-0 text-subtle">{citation.label}</span>
                             </div>
                             {#if citation.description}

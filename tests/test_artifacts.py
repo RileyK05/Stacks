@@ -263,6 +263,19 @@ def test_citations_follow_source_order_and_report_removed_sources(
     ).json()
     assert after[0]["citation"] is None and after[1]["citation"] is not None
 
+    # The doc stays editable with its missing slot; only new sources are checked.
+    current = client.get(f"/courses/{course_id}/artifacts/{doc['artifact_id']}").json()
+    kept = _save(client, course_id, current, content={"markdown": "a [1] b [2] c"})
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["sources"] == [str(chunks[1]), str(chunks[0])]
+    gone = _save(
+        client,
+        course_id,
+        kept.json(),
+        sources=[str(chunks[1]), str(chunks[0]), str(uuid4())],
+    )
+    assert gone.status_code == 422
+
 
 # --- model edits ---
 

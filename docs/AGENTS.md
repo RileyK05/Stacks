@@ -80,11 +80,12 @@ src/
     ingest/        # parse, locators, token-bounded chunks, embeddings, OCR
     retrieval/     # four-seam funnel + traces
     memory/        # concept/dependency store + table of contents
+    artifacts/     # typed content, cited model edits, Office exports
     student_model/ # attempts, mastery, error model (schema live; subsystem M3-4)
-    tutor/         # task framing (compose.py) + source-grounded answers
+    tutor/         # task framing, saved-chat context, grounded answers
     evals/         # answer eval harness (retrieval evals live in retrieval/)
-    runtime/       # bundled llama.cpp server, model catalog, verified downloads
-    api/           # FastAPI routers (courses/trash, sources, tutor, settings, runtime)
+    runtime/       # bundled llama.cpp server, model catalog, user GGUF models
+    api/           # FastAPI routers including conversations and artifacts
     main.py        # ASGI app: the API mounted at /api (CORS for the Tauri webview)
     serve.py       # the backend process the desktop shell runs
     version.py     # app name + version (scripts/set_version.py)
@@ -97,6 +98,8 @@ src/
       queries/       # named SQL blocks loaded via common.queries.get
       provider.py    # the single model-call seam (generate + embed + rerank)
       providers.py   # which endpoint serves which task class (user settings)
+      model_profiles.py # per-model runtime and prompt limits
+      archive_notebook.py # portable chat/artifact history + cited passages
       encoders.py    # ONNX Runtime embedder + cross-encoder (pinned, verified)
       prompt_registry.py  # prompt loading + untrusted-material fencing
       repos          # per-aggregate SQL callers (courses_repo, sources_repo, ...)

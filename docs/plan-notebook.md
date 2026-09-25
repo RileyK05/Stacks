@@ -269,15 +269,20 @@ travel in the `.course` export.
 - [~] Live-verified in the app: create doc → "Draft a short study guide
       on the course grading policy" → proposal in ~19 s with citations →
       Accept. **Not yet re-verified after the last fixes** (§10.2)
-- [ ] Source viewer at the cited passage
-- [ ] `.course` format version 2 carries chats and artifacts
+- [x] Source viewer at the cited passage (original PDF at its page;
+      text/Markdown with line navigation; links from chats and artifacts)
+- [x] `.course` format version 2 carries chats, artifacts, versions and
+      source-scoped cited-passage snapshots; importer accepts v1 and v2
 
 ### Phase C — course knowledge
 
-- [ ] Table-aware PDF extraction. Measured on the owner's syllabus: the
+- [x] Table-aware PDF extraction. Measured on the owner's syllabus: the
       two-column grading table extracts row-interleaved ("93 - 100%A
       73 - 76%C"), and MiniCPM5-2B then misreads it (wrong B+/B rows;
-      "the material doesn't say" for a B). Add it as an eval case first
+      "the material doesn't say" for a B). A committed extraction eval
+      case now pins the split rows; local PDF page 4 yields explicit
+      "83 - 86% B | 63 - 66% D". Reindex an existing source from Sources
+      to apply the new extractor while preserving old cited passages
 - [ ] Decomposed concept extraction, verbatim-verified; measured
 - [ ] Concept merge + prerequisites; concept pages; concept map
 - [ ] Study pack at ingestion; Generate menu (study guide, summary, FAQ,
@@ -422,3 +427,27 @@ original author review the result afterwards.
   tables, adds chatty preambles (stripped for docs), forgets citations
   (attributed by overlap), and pastes material back (stripped). Measure
   prompt changes with `scripts/eval_models.py` before trusting them.
+
+### 10.6 Continuation after the handoff
+
+- Phase B's remaining source viewer, `.course` v2 archive, and artifact-card
+  rename/delete are implemented. Format v2 includes the original source
+  bytes plus chats, artifacts, all versions, and snapshots of cited
+  passages. Import accepts v1, validates v2 before creating a course,
+  then reindexes sources while old citations remain readable.
+- PDF table extraction now detects repeated visual columns and separates
+  the grading-scale cells. The committed eval case covers the two-column
+  syllabus table; the owner's local PDF extracted the expected B+/B rows.
+  Sources has a Reindex action for existing uploads; it snapshots cited
+  chunks before replacing the search index.
+- Backend tests, Ruff, mypy, frontend check/build passed. An isolated local
+  browser run also verified doc autosave/versioning after reload, artifact
+  rename, the original text/PDF source viewer with PDF page navigation, and
+  a cited doc whose source link reopens the exact passage after an edit and
+  reload. The packaged backend exported valid .docx and .pptx files from
+  that isolated course, and the Windows installer built. The
+  model-dependent checks in §10.2 still need the owner's model; the
+  installer itself has not been installed and run.
+- Next implementation work: Phase C concept extraction and study pack,
+  then Phase D practice/memory and Phase E course home. The rest of §10.3
+  records the original handoff and should be read as historical context.

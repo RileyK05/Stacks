@@ -1,15 +1,18 @@
 """Course export/import as one `.course` file (plan §12, decisions log §14).
 
-Format v1 is a zip holding:
+Format v2 is a zip holding:
 
 - `manifest.json` — format id and version, the course name, and one entry
   per source (archive path, display filename, MIME type, source type,
   sha256 of the original bytes);
 - `sources/<n>-<filename>` — each source's original bytes.
+- `notebook.json` — chats, artifacts, versions, and the passages they cite.
 
-Derived data (chunks, locators, embeddings, TOC, course memory) is not
-carried: ingestion rebuilds it locally and deterministically on import, so
-the format stays small and survives schema changes.
+The importer also accepts source-only format v1.
+
+The full search index, embeddings, TOC, and course memory are rebuilt on
+import. Cited passages have small snapshots so old answers and artifact
+citations stay readable even after the search index is rebuilt.
 
 Import treats the archive as untrusted input. Only members the manifest
 names are read, by exact name (nothing is extracted by path); declared and
@@ -20,8 +23,10 @@ nothing behind.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import sqlite3
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -30,7 +35,7 @@ from typing import BinaryIO, Literal, cast
 from uuid import UUID
 
 from pydantic import BaseModel, Field, ValidationError
-from src.backend.common import courses_repo, sources_repo, storage
+from src.backend.common import archive_notebook, courses_repo, sources_repo, storage
 from src.backend.common.db import connection
 from src.backend.common.lifecycle_config import load_lifecycle_policy
 from src.backend.common.queries import get
@@ -39,10 +44,12 @@ from src.backend.common.schemas.identity import Course
 from src.backend.ingest.extract import INGESTABLE_MIME_TYPES
 
 FORMAT_ID: Literal["stacks/course"] = "stacks/course"
-FORMAT_VERSION: Literal[1] = 1
+FORMAT_VERSION: Literal[2] = 2
 EXTENSION = ".course"
 MANIFEST_NAME = "manifest.json"
+NOTEBOOK_NAME = "notebook.json"
 MAX_MANIFEST_BYTES = 1024 * 1024
+MAX_NOTEBOOK_BYTES = 64 * 1024 * 1024
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^\w\-. ()]+")
 
 
@@ -56,14 +63,16 @@ class ArchiveSource(BaseModel):
     mime_type: str
     source_type: SourceType
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_id: UUID | None = None
 
 
 class Manifest(BaseModel):
     format: Literal["stacks/course"]
-    format_version: Literal[1]
+    format_version: Literal[1, 2]
     name: str = Field(min_length=1, max_length=200)
     exported_at: str
     sources: list[ArchiveSource]
+    notebook_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -133,14 +142,21 @@ def export_course(course_id: UUID, directory: Path) -> ExportResult:
                         mime_type=row["mime_type"],
                         source_type=SourceType(row["source_type"]),
                         sha256=row["file_hash"],
+                        source_id=row["source_id"],
                     )
                 )
+            notebook = archive_notebook.export_notebook(course_id)
+            notebook_bytes = notebook.model_dump_json().encode("utf-8")
+            archive.writestr(
+                NOTEBOOK_NAME, notebook_bytes, compress_type=zipfile.ZIP_DEFLATED
+            )
             manifest = Manifest(
                 format=FORMAT_ID,
                 format_version=FORMAT_VERSION,
                 name=course.name,
                 exported_at=datetime.now(UTC).isoformat(timespec="seconds"),
                 sources=entries,
+                notebook_sha256=hashlib.sha256(notebook_bytes).hexdigest(),
             )
             archive.writestr(
                 MANIFEST_NAME,
@@ -167,7 +183,7 @@ def _read_manifest(archive: zipfile.ZipFile) -> Manifest:
         raw = json.loads(archive.read(info))
     except (ValueError, zipfile.BadZipFile) as err:
         raise InvalidArchiveError("the manifest is not valid JSON") from err
-    if isinstance(raw, dict) and raw.get("format_version", 1) != FORMAT_VERSION:
+    if isinstance(raw, dict) and raw.get("format_version", 1) not in (1, 2):
         raise InvalidArchiveError(
             f"this .course file uses format version {raw.get('format_version')}; "
             "update the app to open it"
@@ -176,6 +192,43 @@ def _read_manifest(archive: zipfile.ZipFile) -> Manifest:
         return Manifest.model_validate(raw)
     except ValidationError as err:
         raise InvalidArchiveError(f"the manifest is malformed: {err}") from err
+
+
+def _read_notebook(
+    archive: zipfile.ZipFile, manifest: Manifest
+) -> archive_notebook.Notebook | None:
+    if manifest.format_version == 1:
+        return None
+    if not manifest.notebook_sha256:
+        raise InvalidArchiveError("format v2 is missing the notebook checksum")
+    if any(entry.source_id is None for entry in manifest.sources):
+        raise InvalidArchiveError("format v2 is missing a source id")
+    try:
+        info = archive.getinfo(NOTEBOOK_NAME)
+    except KeyError:
+        raise InvalidArchiveError("format v2 is missing notebook.json") from None
+    if info.file_size > MAX_NOTEBOOK_BYTES:
+        raise InvalidArchiveError("the notebook is too large")
+    with archive.open(info) as stream:
+        data = stream.read(MAX_NOTEBOOK_BYTES + 1)
+    if len(data) > MAX_NOTEBOOK_BYTES:
+        raise InvalidArchiveError("the notebook is too large")
+    if hashlib.sha256(data).hexdigest() != manifest.notebook_sha256:
+        raise InvalidArchiveError("the notebook does not match its checksum")
+    try:
+        notebook = archive_notebook.Notebook.model_validate_json(data)
+    except ValidationError as err:
+        raise InvalidArchiveError(f"the notebook is malformed: {err}") from err
+    source_ids = {entry.source_id for entry in manifest.sources}
+    if len(source_ids) != len(manifest.sources):
+        raise InvalidArchiveError("the notebook has duplicate source ids")
+    if any(citation.source_id not in source_ids for citation in notebook.citations):
+        raise InvalidArchiveError("a cited passage names a source outside this course")
+    if len({c.chunk_id for c in notebook.citations}) != len(notebook.citations):
+        raise InvalidArchiveError("the notebook has duplicate cited passages")
+    if len({t.trace_id for t in notebook.traces}) != len(notebook.traces):
+        raise InvalidArchiveError("the notebook has duplicate traces")
+    return notebook
 
 
 def _checked_members(
@@ -231,8 +284,10 @@ def import_course(archive_path: Path) -> ImportResult:
     with archive:
         manifest = _read_manifest(archive)
         members = _checked_members(archive, manifest)
+        notebook = _read_notebook(archive, manifest)
         course = courses_repo.create_course(manifest.name.strip() or "Imported course")
         imported = duplicates = 0
+        source_map: dict[UUID, UUID] = {}
         try:
             for entry, info in members:
                 with archive.open(info) as stream:
@@ -244,8 +299,17 @@ def import_course(archive_path: Path) -> ImportResult:
                             source_type=entry.source_type,
                             stream=cast(BinaryIO, stream),
                         )
-                    except sources_repo.DuplicateSourceError:
+                    except sources_repo.DuplicateSourceError as err:
+                        existing = sources_repo.get_source(
+                            course.course_id, err.source_id
+                        )
+                        if existing is None or existing.file_hash != entry.sha256:
+                            raise InvalidArchiveError(
+                                f"{entry.filename} does not match its checksum"
+                            ) from None
                         duplicates += 1
+                        if entry.source_id is not None:
+                            source_map[entry.source_id] = err.source_id
                         continue
                     except storage.EmptyUploadError:
                         raise InvalidArchiveError(
@@ -256,9 +320,21 @@ def import_course(archive_path: Path) -> ImportResult:
                         f"{entry.filename} does not match its checksum"
                     )
                 imported += 1
+                if entry.source_id is not None:
+                    source_map[entry.source_id] = stored.source_id
+            if notebook is not None:
+                with connection() as conn:
+                    archive_notebook.import_notebook(
+                        conn, course.course_id, notebook, source_map
+                    )
+                    conn.commit()
         except BaseException as err:
             _discard(course.course_id)
             if isinstance(err, (zipfile.BadZipFile, EOFError)):
                 raise InvalidArchiveError("the .course file is corrupt") from err
+            if isinstance(err, sqlite3.IntegrityError):
+                raise InvalidArchiveError(
+                    "the notebook has conflicting records"
+                ) from err
             raise
     return ImportResult(course=course, imported=imported, duplicates_skipped=duplicates)

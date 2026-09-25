@@ -198,9 +198,12 @@ def _checked(
     kind: str,
     raw: dict[str, Any],
     sources: list[UUID] | tuple[UUID, ...],
+    kept: tuple[UUID, ...] = (),
 ) -> dict[str, Any]:
     """Valid content whose every citation names one of `sources`, all of
-    them chunks of this course."""
+    them chunks of this course. Sources the artifact already had (`kept`)
+    are not re-checked: once their file is deleted they are a visible
+    missing slot, and the artifact must stay editable."""
     try:
         content = artifact_content.validate_content(kind, raw)
     except (ValidationError, ValueError) as err:
@@ -212,7 +215,8 @@ def _checked(
         raise _unprocessable(
             f"citation [{min(outside)}] doesn't match any of this {kind}'s sources"
         )
-    foreign = set(sources) - artifacts_repo.chunks_in_course(course_id, tuple(sources))
+    new = tuple(dict.fromkeys(s for s in sources if s not in kept))
+    foreign = set(new) - artifacts_repo.chunks_in_course(course_id, new)
     if foreign:
         raise _unprocessable("a cited source isn't part of this course")
     return content
@@ -290,7 +294,9 @@ def save_artifact(
 ) -> ArtifactView:
     current = _require_artifact(course_id, artifact_id)
     sources = tuple(payload.sources) if payload.sources is not None else current.sources
-    content = _checked(course_id, current.kind, payload.content, sources)
+    content = _checked(
+        course_id, current.kind, payload.content, sources, kept=current.sources
+    )
     try:
         saved = artifacts_repo.save(
             course_id,
@@ -390,6 +396,7 @@ def _citations(
                 chunk_id=str(chunk_id),
                 citation=CitationView(
                     chunk_id=str(row["chunk_id"]),
+                    source_id=str(row["source_id"]),
                     chunk_index=row["chunk_index"],
                     text=row["text"],
                     locator_type=row["locator_type"],

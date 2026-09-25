@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import io
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel
 from src.backend.common import courses_repo, sources_repo, storage
 from src.backend.common.db import connection
+from src.backend.common.lifecycle_config import load_lifecycle_policy
+from src.backend.common.queries import get
 from src.backend.common.schemas.base import SourceStatus, SourceType
 from src.backend.ingest import worker as worker_module
 from src.backend.ingest.extract import INGESTABLE_MIME_TYPES
@@ -39,6 +42,13 @@ class SourceView(BaseModel):
     error_message: str | None
     size_bytes: int | None
     created_at: datetime
+
+
+class PassageView(BaseModel):
+    text: str
+    locator_type: str
+    label: str
+    description: str | None
 
 
 def _require_course(course_id: UUID) -> None:
@@ -102,6 +112,94 @@ def list_sources(course_id: UUID) -> list[SourceView]:
     ]
 
 
+@router.get("/{course_id}/sources/{source_id}/content")
+def source_content(course_id: UUID, source_id: UUID) -> Response:
+    """Original source bytes for the in-app viewer, scoped to this course."""
+    _require_course(course_id)
+    with connection() as conn:
+        row = conn.execute(
+            get("sources", "viewer_source"),
+            {"course_id": course_id, "source_id": source_id},
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    data = storage.read_stored(
+        course_id,
+        source_id,
+        row["stored_encoding"],
+        max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+    )
+    return Response(
+        content=data,
+        media_type=row["mime_type"],
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.get("/{course_id}/sources/{source_id}/pages/{page_number}")
+def source_pdf_page(course_id: UUID, source_id: UUID, page_number: int) -> Response:
+    """Render one original PDF page for the cited-passage viewer."""
+    import pypdfium2 as pdfium
+
+    _require_course(course_id)
+    with connection() as conn:
+        row = conn.execute(
+            get("sources", "viewer_source"),
+            {"course_id": course_id, "source_id": source_id},
+        ).fetchone()
+    if row is None or row["mime_type"] != "application/pdf":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "PDF source not found")
+    raw = storage.read_stored(
+        course_id,
+        source_id,
+        row["stored_encoding"],
+        max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+    )
+    pdf = pdfium.PdfDocument(io.BytesIO(raw))
+    try:
+        if page_number < 1 or page_number > len(pdf):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "page not found")
+        page = pdf[page_number - 1]
+        try:
+            width, height = page.get_size()
+            scale = min(1.5, 4096 / max(width, 1), 4096 / max(height, 1))
+            image = page.render(scale=scale).to_pil()
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+        finally:
+            page.close()
+        return Response(
+            content=buffer.getvalue(),
+            media_type="image/png",
+            headers={
+                "X-Page-Count": str(len(pdf)),
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, no-store",
+            },
+        )
+    finally:
+        pdf.close()
+
+
+@router.get(
+    "/{course_id}/sources/{source_id}/chunks/{chunk_id}",
+    response_model=PassageView,
+)
+def source_passage(course_id: UUID, source_id: UUID, chunk_id: UUID) -> PassageView:
+    _require_course(course_id)
+    with connection() as conn:
+        row = conn.execute(
+            get("sources", "viewer_passage"),
+            {"course_id": course_id, "source_id": source_id, "chunk_id": chunk_id},
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "passage not found")
+    return PassageView.model_validate(row)
+
+
 @router.post("/{course_id}/sources/{source_id}/requeue")
 def requeue_source(course_id: UUID, source_id: UUID) -> dict[str, str]:
     """Retry a failed source: failed → uploaded + re-enqueued. 409 when the
@@ -112,6 +210,17 @@ def requeue_source(course_id: UUID, source_id: UUID) -> dict[str, str]:
         conn.commit()
     if not requeued:
         raise HTTPException(status.HTTP_409_CONFLICT, "source is not in a failed state")
+    worker_module.wakeup()
+    return {"source_id": str(source_id), "status": "uploaded"}
+
+
+@router.post("/{course_id}/sources/{source_id}/reindex")
+def reindex_source(course_id: UUID, source_id: UUID) -> dict[str, str]:
+    _require_course(course_id)
+    if not sources_repo.reindex_source(course_id, source_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "source is not indexed or does not exist"
+        )
     worker_module.wakeup()
     return {"source_id": str(source_id), "status": "uploaded"}
 

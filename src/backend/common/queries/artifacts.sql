@@ -54,4 +54,8 @@ SELECT chunk.chunk_id
 FROM chunks AS chunk
 JOIN sources AS source ON source.source_id = chunk.source_id
 WHERE source.course_id = :course_id
-  AND chunk.chunk_id IN (SELECT value FROM json_each(:chunk_ids));
+  AND chunk.chunk_id IN (SELECT value FROM json_each(:chunk_ids))
+UNION ALL
+SELECT chunk_id FROM citation_snapshots
+WHERE course_id = :course_id
+  AND chunk_id IN (SELECT value FROM json_each(:chunk_ids));

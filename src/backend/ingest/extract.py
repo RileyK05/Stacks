@@ -38,6 +38,11 @@ _TEXT_MIME_EXACT = {
     "application/yaml",
 }
 _PDF_MIME = "application/pdf"
+# Layout-mode table detection: how far (in characters) a cell may drift
+# between rows and still count as the same column, and the most cells a
+# row may have before it looks like spaced-out prose rather than a table.
+_TABLE_COLUMN_SLACK = 2
+_TABLE_MAX_COLUMNS = 6
 
 # The upload boundary (api/sources.py) rejects anything outside this set
 # BEFORE storage and quota charge — a zip charged against quota then
@@ -174,9 +179,7 @@ def _mask_code_fences(text: str) -> str:
     masked: list[str] = []
     for line in lines:
         stripped_line = line.lstrip()
-        is_fence = stripped_line.startswith("```") or stripped_line.startswith(
-            "~~~"
-        )
+        is_fence = stripped_line.startswith("```") or stripped_line.startswith("~~~")
         if is_fence:
             if not in_fence:
                 in_fence = True
@@ -217,9 +220,7 @@ def _markdown_locators(text: str) -> tuple[LocatorSpan, ...]:
     first_start = headings[0].start()
     if text[:first_start].strip():
         spans.extend(
-            span
-            for span in _line_locators(text[:first_start])
-            if span.end > span.start
+            span for span in _line_locators(text[:first_start]) if span.end > span.start
         )
     for index, match in enumerate(headings):
         char_start = match.start()
@@ -340,7 +341,66 @@ def _pdf_page_texts(
             max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
         )
         reader = pypdf.PdfReader(io.BytesIO(raw))
-    return [page.extract_text() or "" for page in reader.pages]
+    page_texts: list[str] = []
+    for page in reader.pages:
+        plain = page.extract_text() or ""
+        if not plain.strip():
+            page_texts.append(plain)
+            continue
+        layout = page.extract_text(extraction_mode="layout") or ""
+        normalized, has_table = _normalize_layout_tables(layout)
+        page_texts.append(normalized if has_table else plain)
+    return page_texts
+
+
+def _normalize_layout_tables(layout: str) -> tuple[str, bool]:
+    """Make repeated visual columns explicit before chunking PDF text.
+
+    pypdf's plain mode joins adjacent table cells (``100%A 73% C``).
+    Layout mode preserves their horizontal gap. A table is a run of at
+    least three rows with the same few cells starting at the same columns.
+    Justified prose also has wide gaps, but they fall in different places
+    on every line, so it stays untouched.
+    """
+    lines = [line.rstrip() for line in layout.splitlines()]
+    cells: list[list[str]] = []
+    starts: list[list[int]] = []
+    for line in lines:
+        found = list(re.finditer(r"\S+(?: {1,2}\S+)*", line))
+        cells.append([match.group() for match in found])
+        starts.append([match.start() for match in found])
+
+    def aligned(first: int, other: int) -> bool:
+        return len(starts[other]) == len(starts[first]) and all(
+            abs(a - b) <= _TABLE_COLUMN_SLACK
+            for a, b in zip(starts[first], starts[other], strict=True)
+        )
+
+    table_rows: set[int] = set()
+    start = 0
+    while start < len(lines):
+        if not 2 <= len(cells[start]) <= _TABLE_MAX_COLUMNS:
+            start += 1
+            continue
+        end = start + 1
+        while end < len(lines) and aligned(start, end):
+            end += 1
+        if end - start >= 3:
+            table_rows.update(range(start, end))
+            start = end
+        else:
+            start += 1
+    if not table_rows:
+        return layout, False
+    normalized: list[str] = []
+    for index, line in enumerate(lines):
+        if index in table_rows:
+            fields = [re.sub(r"%(?=[A-Za-z])", "% ", cell) for cell in cells[index]]
+            normalized.append(re.sub(r" {2,}", " ", " | ".join(fields)))
+        else:
+            # Layout mode pads words to their printed positions.
+            normalized.append(re.sub(r" {2,}", " ", line.strip()))
+    return "\n".join(normalized), True
 
 
 def rasterize_pages(

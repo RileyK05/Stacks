@@ -67,15 +67,16 @@ that can be evaluated on real courses. The target is an ordinary laptop
 ## Core system model
 
 The system has six layers (mirrored by `src/backend/common/schemas/`). The
-SQLite baseline (migration 001) holds layers 1–3 and 6; the student model
-and chat history are designed below and land with Milestones 3–4.
+SQLite baseline (migration 001) holds layers 1–3 and 6. Saved chats and
+typed artifacts have their own migrations; the student model remains planned.
 
 ### 1. Courses
 
 Courses and their uploaded sources. `kind` is a free string;
 `content_type` routes storage/serving. A course can be exported to a
-`.course` file (the original files plus a manifest) and imported on
-another machine, where normal ingestion rebuilds everything else.
+`.course` file (sources, chats, artifacts, versions, and cited passages)
+and imported on another machine. Search indexes rebuild there; cited
+passages stay readable in saved work.
 
 Tutor preferences change presentation, not truth or retrieval.
 Presentation is a user-memory (root) concern per decision 007 and may not
@@ -144,13 +145,16 @@ A single-course MVP for one student on their own laptop.
 ### MVP user stories
 
 1. I can install the app, create a course, and upload PDFs, Markdown notes, and text.
-2. I can ask a question and receive an answer with citations to the uploaded material — and see the cited passages ("sources used") without leaving the answer.
-3. I can view a concept page containing a course-specific definition, prerequisite links, examples, and source evidence.
-4. I can request a short closed-notes diagnostic constrained to selected topics.
-5. I can answer the diagnostic, state my confidence beforehand, and receive feedback.
-6. The system stores my errors by concept and displays the evidence behind any recommendation.
-7. I can ask, "What should I work on next?" and get a transparent answer grounded in my attempts and the course's current material.
-8. I can delete a course (30 days in the trash; its course memory survives the purge) and export or import a course as one file.
+2. I can keep separate saved conversations in a course, choose their
+   sources and model, and open an answer's cited passage in the source.
+3. I can create and edit cited docs, sheets, slides, quizzes, and flashcards,
+   review model edits, and restore an earlier version.
+4. I can view a concept page containing a course-specific definition, prerequisite links, examples, and source evidence.
+5. I can request a short closed-notes diagnostic constrained to selected topics.
+6. I can answer the diagnostic, state my confidence beforehand, and receive feedback.
+7. The system stores my errors by concept and displays the evidence behind any recommendation.
+8. I can ask, "What should I work on next?" and get a transparent answer grounded in my attempts and the course's current material.
+9. I can delete a course (30 days in the trash; its course memory survives the purge) and export or import a course as one file.
 
 ### MVP success criteria
 

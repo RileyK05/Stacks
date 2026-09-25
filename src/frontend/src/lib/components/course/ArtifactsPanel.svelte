@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { api } from '$lib/api/client';
   import { goto } from '$app/navigation';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
@@ -12,17 +13,22 @@
     type ArtifactSummary
   } from '$lib/stores/artifact.svelte';
   import { timeAgo } from '$lib/utils/format';
+  import { confirmDialog } from '$lib/stores/confirm.svelte';
+  import { toast } from '$lib/stores/toast.svelte';
 
   interface Props {
     courseId: string;
     artifacts: ArtifactSummary[];
     loading: boolean;
+    onchanged: () => Promise<void>;
   }
 
-  let { courseId, artifacts, loading }: Props = $props();
+  let { courseId, artifacts, loading, onchanged }: Props = $props();
 
   let creating = $state<ArtifactKind | null>(null);
   let error = $state<unknown>(null);
+  let renaming = $state<string | null>(null);
+  let newTitle = $state('');
 
   const newKinds: { kind: ArtifactKind; hint: string }[] = [
     { kind: 'doc', hint: 'Notes, study guides, summaries' },
@@ -43,6 +49,40 @@
     } finally {
       creating = null;
     }
+  }
+
+  async function rename(artifactId: string) {
+    const title = newTitle.trim();
+    if (!title) return;
+    error = null;
+    try {
+      const { data: current, error: loadError } = await api.GET('/courses/{course_id}/artifacts/{artifact_id}', {
+        params: { path: { course_id: courseId, artifact_id: artifactId } }
+      });
+      if (loadError || !current) throw loadError ?? new Error('Artifact unavailable');
+      if (title !== current.title) {
+        const { error: saveError } = await api.PUT('/courses/{course_id}/artifacts/{artifact_id}', {
+          params: { path: { course_id: courseId, artifact_id: artifactId } },
+          body: { base_version: current.version, title, content: current.content, sources: current.sources, author: 'you', note: 'Renamed' }
+        });
+        if (saveError) throw saveError;
+        await onchanged();
+      }
+      renaming = null;
+    } catch (caught) { error = caught; }
+  }
+
+  async function remove(artifactId: string, title: string) {
+    if (!(await confirmDialog({ title: 'Delete this artifact?', message: `Delete “${title}” and its version history from this course?`, confirmLabel: 'Delete', danger: true }))) return;
+    error = null;
+    try {
+      const { error: deleteError } = await api.DELETE('/courses/{course_id}/artifacts/{artifact_id}', {
+        params: { path: { course_id: courseId, artifact_id: artifactId } }
+      });
+      if (deleteError) throw deleteError;
+      await onchanged();
+      toast('Artifact deleted.');
+    } catch (caught) { error = caught; }
   }
 </script>
 
@@ -83,10 +123,7 @@
     {:else}
       <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {#each artifacts as artifact (artifact.artifact_id)}
-          <a
-            href={`/courses/${courseId}/artifacts/${artifact.artifact_id}`}
-            class="group flex flex-col gap-3 rounded-2xl border border-line bg-surface p-4 shadow-card transition-all hover:-translate-y-px hover:border-accent-line hover:shadow-lift"
-          >
+          <div class="group flex flex-col gap-3 rounded-2xl border border-line bg-surface p-4 shadow-card transition-all hover:border-accent-line hover:shadow-lift">
             <div class="flex items-center gap-2.5">
               <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-accent-soft text-accent-text ring-1 ring-accent-line/40">
                 <Icon name={KIND_ICONS[artifact.kind]} class="h-[18px] w-[18px]" />
@@ -96,9 +133,20 @@
                 <span class="ml-auto rounded-md bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">from a chat</span>
               {/if}
             </div>
-            <p class="line-clamp-2 font-display text-lg font-medium leading-snug tracking-tight text-fg">{artifact.title}</p>
+            {#if renaming === artifact.artifact_id}
+              <form onsubmit={(event) => { event.preventDefault(); void rename(artifact.artifact_id); }} class="flex gap-2">
+                <input aria-label="Artifact title" bind:value={newTitle} maxlength="200" class="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-2 py-1 text-sm text-fg" />
+                <button type="submit" class="text-xs font-medium text-accent-text">Save</button>
+              </form>
+            {:else}
+              <a href={`/courses/${courseId}/artifacts/${artifact.artifact_id}`} class="line-clamp-2 font-display text-lg font-medium leading-snug tracking-tight text-fg hover:text-accent-text">{artifact.title}</a>
+            {/if}
             <p class="mt-auto text-xs text-subtle">Edited {timeAgo(artifact.updated_at)} · v{artifact.version}</p>
-          </a>
+            <div class="flex gap-3 border-t border-line pt-2 text-xs">
+              <button type="button" onclick={() => { renaming = artifact.artifact_id; newTitle = artifact.title; }} class="text-muted hover:text-fg">Rename</button>
+              <button type="button" onclick={() => remove(artifact.artifact_id, artifact.title)} class="text-muted hover:text-danger-text">Delete</button>
+            </div>
+          </div>
         {/each}
       </div>
     {/if}

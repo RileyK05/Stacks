@@ -1,4 +1,4 @@
-pipeline_version = "3"
+pipeline_version = "4"
 max_attempts = 2
 chunk_max_tokens = 512
 # The ingestion worker's own poll interval (review catch #7: it was
@@ -18,7 +18,7 @@ scale = 2.0
 
 [[stages]]
 name = "extract_text"
-handler_version = "1"
+handler_version = "2"
 
 [[stages]]
 name = "ocr"

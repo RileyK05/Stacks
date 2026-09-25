@@ -468,7 +468,7 @@
         {/if}
       </div>
     {:else if activeTab === 'artifacts'}
-      <ArtifactsPanel {courseId} {artifacts} loading={artifactsLoading} />
+      <ArtifactsPanel {courseId} {artifacts} loading={artifactsLoading} onchanged={loadArtifacts} />
     {:else}
       <SourcesPanel {courseId} {sources} onchanged={loadSources} />
     {/if}

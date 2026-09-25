@@ -352,7 +352,7 @@
                   <div class="flex items-center gap-2 text-xs">
                     <span class="flex h-5 min-w-5 items-center justify-center rounded-md bg-accent-soft px-1 font-mono text-[11px] font-medium text-accent-text">{cited.number}</span>
                     {#if cited.citation}
-                      <span class="truncate font-medium text-fg-soft">{cited.citation.filename}</span>
+                      <a href={`/courses/${courseId}/sources/${cited.citation.source_id}?chunk=${cited.citation.chunk_id}`} class="truncate font-medium text-accent-text hover:underline">{cited.citation.filename}</a>
                       <span class="shrink-0 text-subtle">{cited.citation.label}</span>
                     {:else}
                       <span class="text-subtle">Source removed from the course</span>

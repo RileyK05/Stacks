@@ -73,6 +73,7 @@ class CitationView(BaseModel):
     sources)."""
 
     chunk_id: str
+    source_id: str
     chunk_index: int
     text: str
     locator_type: str
@@ -142,6 +143,7 @@ def trace_citations(course_id: UUID, trace_id: UUID) -> list[CitationView]:
     return [
         CitationView(
             chunk_id=str(row["chunk_id"]),
+            source_id=str(row["source_id"]),
             chunk_index=row["chunk_index"],
             text=row["text"],
             locator_type=row["locator_type"],

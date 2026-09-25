@@ -1,4 +1,6 @@
-from uuid import UUID
+import io
+import json
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -84,6 +86,136 @@ def test_duplicate_content_is_rejected(client: TestClient) -> None:
     assert _upload(client, course_id, "one.txt", payload).status_code == 201
     assert _upload(client, course_id, "two.txt", payload).status_code == 409
     assert _count_sources(course_id) == 1
+
+
+def test_source_viewer_returns_original_bytes_only_within_course(
+    client: TestClient,
+) -> None:
+    owner = _course(client)
+    other = _course(client, "Other")
+    body = b"Original notes with a cited passage.\n" * 200
+    uploaded = _upload(client, owner, "notes.txt", body).json()
+    source_id = uploaded["source_id"]
+    own = client.get(f"/courses/{owner}/sources/{source_id}/content")
+    assert own.status_code == 200
+    assert own.content == body
+    assert own.headers["content-type"].startswith("text/plain")
+    assert own.headers["x-content-type-options"] == "nosniff"
+    assert (
+        client.get(f"/courses/{other}/sources/{source_id}/content").status_code == 404
+    )
+
+
+def test_reindex_keeps_old_citations_readable(client: TestClient) -> None:
+    course_id = _course(client)
+    uploaded = _upload(client, course_id, "notes.txt", b"A useful passage.")
+    source_id = UUID(uploaded.json()["source_id"])
+    locator_id, chunk_id, trace_id = uuid4(), uuid4(), uuid4()
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO locators (locator_id, source_id, locator_type, start, label) "
+            "VALUES (?, ?, 'line_range', '0', 'lines 1-1')",
+            (locator_id, source_id),
+        )
+        conn.execute(
+            "INSERT INTO chunks (chunk_id, source_id, locator_id, chunk_index, text) "
+            "VALUES (?, ?, ?, 0, 'A useful passage.')",
+            (chunk_id, source_id, locator_id),
+        )
+        conn.execute(
+            "INSERT INTO retrieval_traces "
+            "(trace_id, course_id, query, retrieved_chunk_ids) "
+            "VALUES (?, ?, 'question', ?)",
+            (trace_id, course_id, json.dumps({"chunk_ids": [str(chunk_id)]})),
+        )
+        conn.execute("DELETE FROM pending_ingestion WHERE source_id = ?", (source_id,))
+        conn.execute(
+            "UPDATE sources SET status = 'indexed' WHERE source_id = ?",
+            (source_id,),
+        )
+        conn.commit()
+    response = client.post(f"/courses/{course_id}/sources/{source_id}/reindex")
+    assert response.status_code == 200, response.text
+    with connection() as conn:
+        snapshot = conn.execute(
+            "SELECT text FROM citation_snapshots WHERE chunk_id = ?", (chunk_id,)
+        ).fetchone()
+        assert snapshot["text"] == "A useful passage."
+        conn.execute("DELETE FROM chunks WHERE chunk_id = ?", (chunk_id,))
+        conn.commit()
+    citations = client.get(f"/courses/{course_id}/traces/{trace_id}/citations").json()
+    assert len(citations) == 1 and citations[0]["text"] == "A useful passage."
+    passage = client.get(
+        f"/courses/{course_id}/sources/{source_id}/chunks/{chunk_id}"
+    ).json()
+    assert passage["label"] == "lines 1-1"
+
+
+def test_trace_citations_preserve_chunk_order_past_ten(client: TestClient) -> None:
+    course_id = _course(client)
+    uploaded = _upload(client, course_id, "notes.txt", b"twelve passages")
+    source_id = UUID(uploaded.json()["source_id"])
+    chunk_ids: list[UUID] = []
+    with connection() as conn:
+        for index in range(12):
+            locator_id, chunk_id = uuid4(), uuid4()
+            chunk_ids.append(chunk_id)
+            conn.execute(
+                "INSERT INTO locators "
+                "(locator_id, source_id, locator_type, start, label) "
+                "VALUES (?, ?, 'line_range', '0', ?)",
+                (locator_id, source_id, f"lines {index + 1}"),
+            )
+            conn.execute(
+                "INSERT INTO chunks "
+                "(chunk_id, source_id, locator_id, chunk_index, text) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (chunk_id, source_id, locator_id, index, f"passage {index:02d}"),
+            )
+        conn.execute(
+            "INSERT INTO retrieval_traces "
+            "(trace_id, course_id, query, retrieved_chunk_ids) "
+            "VALUES (?, ?, 'question', ?)",
+            (
+                uuid4(),
+                course_id,
+                json.dumps({"chunk_ids": [str(chunk_id) for chunk_id in chunk_ids]}),
+            ),
+        )
+        trace_id = conn.execute(
+            "SELECT trace_id FROM retrieval_traces WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()["trace_id"]
+        conn.commit()
+    citations = client.get(f"/courses/{course_id}/traces/{trace_id}/citations").json()
+    assert [citation["text"] for citation in citations] == [
+        f"passage {index:02d}" for index in range(12)
+    ]
+
+
+def test_pdf_viewer_renders_a_scoped_page(client: TestClient) -> None:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=300, height=400)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    course_id = _course(client)
+    other = _course(client, "Other")
+    source_id = _upload(
+        client, course_id, "reading.pdf", buffer.getvalue(), "application/pdf"
+    ).json()["source_id"]
+    page = client.get(f"/courses/{course_id}/sources/{source_id}/pages/1")
+    assert page.status_code == 200, page.text if page.status_code != 200 else ""
+    assert page.content.startswith(b"\x89PNG")
+    assert page.headers["x-page-count"] == "1"
+    assert (
+        client.get(f"/courses/{course_id}/sources/{source_id}/pages/2").status_code
+        == 404
+    )
+    assert (
+        client.get(f"/courses/{other}/sources/{source_id}/pages/1").status_code == 404
+    )
 
 
 def test_upload_into_unknown_or_trashed_course_is_404(client: TestClient) -> None:

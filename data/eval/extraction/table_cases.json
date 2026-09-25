@@ -1,0 +1,10 @@
+{
+  "version": "1",
+  "cases": [
+    {
+      "id": "syllabus-two-column-grade-scale",
+      "layout": "Use the following grading scale:\n\n                                 93 - 100%A             73 - 76%C\n                                 90 - 92%A-             70 - 72%C-\n                                 87 - 89%B+             67 - 69%D+\n                                 83 - 86%B              63 - 66%D\n                                 80 - 82%B-             60 - 62%D-\n                                 77 - 79%C+             < 60%F\nOther Course Policies",
+      "expected": ["93 - 100% A | 73 - 76% C", "87 - 89% B+ | 67 - 69% D+", "83 - 86% B | 63 - 66% D", "77 - 79% C+ | < 60% F"]
+    }
+  ]
+}
