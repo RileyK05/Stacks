@@ -7,11 +7,13 @@ should be questioned, not the file ignored.
 ## Project
 
 Academic assistant that accumulates a source-grounded course memory and a student
-error model, then recommends what to study next. Deployed for a small user base;
-data is owned by the operator, inference goes to hosted model APIs that do not
-retain data (generation) and a self-hosted in-process embedding model (granite
-R2 — course text never leaves the machine). See `docs/project.md` for the plan,
-`docs/system.md` for architecture. Read both before making structural decisions.
+error model, then recommends what to study next. **A local-first desktop tool**
+(decision 012, `docs/plan-local-first.md`): one user per SQLite file on their
+own machine, a bundled llama.cpp server running a small open model by default,
+and optional cloud providers the user chooses. Encoders (embeddings, reranker)
+run in-process on ONNX Runtime. See `docs/project.md` for the product plan,
+`docs/system.md` for architecture (its hosted-era sections are superseded by
+decision 012). Read them before making structural decisions.
 
 > All three docs (this file, `docs/project.md`, `docs/system.md`) live in
 > `docs/` — paths in code/tests refer to them as `docs/...`.
@@ -26,14 +28,15 @@ R2 — course text never leaves the machine). See `docs/project.md` for the plan
 3. **Evaluation is the center, not an afterthought.** No feature ships without a
    way to measure whether it regressed. Prefer boring, verifiable baselines over
    clever-but-unverifiable ones.
-4. **Data ownership.** Course data and study history live in our own Postgres.
-   Generation goes to a hosted model API that does not retain data; embeddings
-   are self-hosted in-process (no data leaves). No auto-solving graded work.
+4. **The user owns their data.** Everything lives in their local database and
+   data folder. The default model runs on their machine; a cloud provider is
+   used only if they choose one (with a one-time disclosure). No auto-solving
+   graded work.
 5. **ML earns its role.** Begin with retrieval, structure, and simple baselines.
    Add models/fine-tuning only for a documented, versioned baseline failure.
-6. **Destruction leaves a distilled record.** Deletes archive a compressed
-   summary first (course memory, citation snapshot); account deletion has a
-   7-day grace period. Never silently destroy evidence.
+6. **Destruction leaves a distilled record.** A deleted course sits in the
+   trash for 30 days; its course-memory keepsake survives the purge. Never
+   silently destroy evidence.
 
 ## Memory vocabulary (read before touching anything named "memory")
 
@@ -43,10 +46,9 @@ any other doc or code name. Summary:
 - **User memory (root)** — per-user, lifelong, behavioral ("teach THIS
   person with visuals/analogies") + cross-course history. The ONLY layer
   that may change how the model behaves.
-- **Course memory (child)** — per-user per-course focus record ("what THIS
-  person struggles with in THIS course"). Main user of the course (its
-  owner) only. Facts about understanding; never behavior instructions;
-  never shared with other users. Survives course deletion.
+- **Course memory (child)** — per-course focus record ("what this student
+  struggles with in THIS course"). One local user per database. Facts about
+  understanding; never behavior instructions. Survives course deletion.
 - **Course knowledge / TOC** — what the course SAYS (concepts, evidence)
   and the index for FINDING it. Shared per-course state. Not memory.
   Lives in tables like `concepts`/`memory_objects`/`toc_entries` and the
@@ -56,9 +58,7 @@ any other doc or code name. Summary:
 
 If a task says "course memory," it means the child node above. The
 `course_memories` table IS that node. `MemoryObject` is NOT memory — it is
-a course-knowledge note. Do not write course-memory rows for any user
-other than the course owner; the only write seam is
-`course_memory.refresh_for_owner`.
+a course-knowledge note. The only write seam is `course_memory.refresh`.
 
 ## Engineering tradeoff
 
@@ -70,7 +70,7 @@ Prioritize correctness, clear seams, and future extensibility over brevity.
 ## Structure
 
 ```
-configs/         # ingestion/retrieval/tutor/tiers/prompts/embeddings configs (versioned)
+configs/         # ingestion/retrieval/prompts/models/runtime/lifecycle configs (versioned)
 data/
   raw/           # original course files — GITIGNORED
   processed/     # extracted text, chunks — GITIGNORED
@@ -81,17 +81,22 @@ src/
     retrieval/     # four-seam funnel + traces
     memory/        # concept/dependency store + table of contents
     student_model/ # attempts, mastery, error model (schema live; subsystem M3-4)
-    tutor/         # source-grounded answers + cold probes
+    tutor/         # task framing (compose.py) + source-grounded answers
     evals/         # answer eval harness (retrieval evals live in retrieval/)
-    api/           # FastAPI routers (auth, courses, sources, tutor, archives)
+    runtime/       # bundled llama.cpp server, model catalog, verified downloads
+    api/           # FastAPI routers (courses/trash, sources, tutor, settings, runtime)
+    main.py        # ASGI app: SPA at /, API mounted at /api
+    desktop.py     # desktop entry point (native window + backend)
     common/
       schemas/       # Pydantic models, one module per storage layer
       config.py      # .env loading + settings
-      db.py          # the single Postgres connection seam
+      db.py          # the single SQLite connection seam
       migrate.py     # versioned migration runner
       migrations/    # 00X_*.sql, append-only, applied in order
       queries/       # named SQL blocks loaded via common.queries.get
-      provider.py    # the single model-call seam (generate + embed)
+      provider.py    # the single model-call seam (generate + embed + rerank)
+      providers.py   # which endpoint serves which task class (user settings)
+      encoders.py    # ONNX Runtime embedder + cross-encoder (pinned, verified)
       prompt_registry.py  # prompt loading + untrusted-material fencing
       repos          # per-aggregate SQL callers (courses_repo, sources_repo, ...)
   frontend/        # SvelteKit + TS SPA; talks to backend only via its API
@@ -113,17 +118,21 @@ frontend are separate codebases; frontend talks to backend only via its API.
   self-documenting names. Follow existing patterns; match surrounding code.
 - **Language:** Python. Use Pydantic for validated schema objects, especially
   anything persisted or crossing a boundary.
-- **Database:** Postgres via raw SQL (no ORM). Queries live in
-  `common/queries/*.sql`; schema changes are new numbered files in
-  `common/migrations/` — never edit an applied migration (currently 001–032).
+- **Database:** SQLite via raw SQL (no ORM), `:name` parameters. Queries live
+  in `common/queries/*.sql`; schema changes are new numbered files in
+  `common/migrations/` — never edit an applied migration (baseline: 001).
+  Never hold a write transaction across a slow step (model call, parsing):
+  SQLite has one writer.
 - **Config:** tunable/versioned parameters in `configs/`, not hardcoded.
-  Credentials in `.env` (gitignored), loaded via `common/config.py`. System
+  API keys live in the OS keychain (`common/secrets.py`), never in files or
+  the database; `.env` holds only optional development settings. System
   prompts live in `configs/prompts.toml` (versioned) — never inline prompt
   text in code; uploaded course text must pass through
   `prompt_registry.grounded_prompt` so it is fenced as untrusted data.
 - **Models:** every model call goes through `common/provider.py` —
-  `generate` (hosted chat APIs, gated + billed) or `embed` (self-hosted,
-  in-process). No SDK objects or keys outside that module.
+  `generate` (routed to the user's chosen endpoint, recorded in the usage
+  ledger) or the in-process `embed_*` / `rerank_scores` seams. Every prompt
+  or model change is measured with `scripts/eval_models.py`.
 - **Extensibility:** `kind`, `locator_type`, `content_type`, `claim_type`, and
   `target_type` are free strings so new types need no schema change. Known
   values are documented in `schemas/base.py` (`KNOWN_*` constants).
@@ -138,14 +147,17 @@ frontend are separate codebases; frontend talks to backend only via its API.
 Run from the project root, using the venv:
 
 ```
-.venv/Scripts/python -m pytest                        # tests (needs PYTEST_ALLOW_ANY_DB=1 + dev DB)
+.venv/Scripts/python -m pytest                        # tests (fresh SQLite per test)
 .venv/Scripts/python -m ruff check .                  # lint
 .venv/Scripts/python -m mypy src                      # typecheck
-.venv/Scripts/python -m src.backend.common.migrate    # apply DB migrations
+.venv/Scripts/python -m uvicorn src.backend.main:app  # dev server (SPA + /api)
+.venv/Scripts/python -m src.backend.desktop           # the desktop app
+.venv/Scripts/python -m scripts.eval_models --help    # model bake-off / eval
+.venv/Scripts/python -m scripts.build_desktop         # package dist/CourseAssistant
 ```
 
-All three checks must pass before declaring work done. `.env` must exist with
-Postgres credentials for DB work (see `config.py` for expected keys).
+All three checks must pass before declaring work done. Tests never start
+llama-server, download models, or read other apps' model folders.
 
 Frontend (see `src/frontend/README.md` — separate npm codebase, run from
 `src/frontend/`):
@@ -158,7 +170,8 @@ npm run gen:api  # regenerate API types from the backend's OpenAPI schema
 
 `src/frontend/src/lib/api/schema.d.ts` is generated from the backend — never
 hand-edit it; re-run `npm run gen:api` after backend route/schema changes
-(it needs a live backend on `localhost:8000`).
+(from a live backend, or `python -m scripts.dump_openapi` +
+`OPENAPI_FILE=...`).
 
 Eval harness (answer-side; `src/backend/evals/answer.py`, cases in
 `data/eval/answer/cases.json`): run via tests or in code — cases have five

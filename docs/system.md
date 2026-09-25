@@ -7,36 +7,44 @@
 
 ## 0. TL;DR
 
+> **Local-first since 2026-09-25 (decision 012).** The app is a desktop tool:
+> one user, one SQLite file, on their own machine. Sections below that
+> describe accounts, tiers, spend pools, enrollment, sharing, archives-for-
+> learners or a hosted deployment are **superseded** by decision 012 and
+> `docs/plan-local-first.md`; the retrieval, citation, memory and workspace
+> design they sit beside still holds.
+
 An academic assistant that ingests course materials, extracts structured text and
 course knowledge (concepts, evidence, TOC), learns a per-student error model
 from attempts, and serves source-grounded answers + "what to study next"
-recommendations through a small web UI. Deployed for a small user base; data
-owned by the operator in Postgres. Memory vocabulary (user memory root,
-course-memory child, course knowledge, TOC-as-index) is defined in
+recommendations. Memory vocabulary (user memory root, course-memory child,
+course knowledge, TOC-as-index) is defined in
 `docs/decisions/007_memory_model.md` and controls wherever the word "memory"
 appears below.
 
-- **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem
-- **Frontend:** `src/frontend/`, talks to backend only via API
-- **Database:** Postgres via raw SQL (no ORM); versioned migrations applied by
-  `common/migrate.py` (currently 001–032)
-- **Auth:** email + password accounts, per-user isolation, password-change
-  session invalidation, login throttling, 7-day deletion grace
-- **Inference — two seams in `common/provider.py`:** generation through a
-  **hosted chat API provider that does not retain data** (not self-hosted;
-  OpenAI-style contract, still failing closed until the key lands), and
-  **embeddings self-hosted in-process** (`sentence-transformers` +
-  `ibm-granite/granite-embedding-english-r2` — no key, no spend gate, course
-  text never leaves the machine).
-- **Retrieval:** **hybrid four-seam** (decision 008) — keyword, TOC routing,
-  dependency walk, and embeddings as candidate generators, fused, citation
-  contract as the harness; every surviving chunk carries its locator. Seams
-  activate as their data arrives; fusion must beat the best single seam on
-  the eval set.
-- **Data ownership:** course material and study history live in our Postgres.
-- **Deletion:** an exact course archive provides a 90-day copy grace period;
-  expiry leaves only per-user evidence-bearing course memories. Account deletion
-  retains its separate grace period.
+- **Shape:** one process (`src/backend/desktop.py`) serves the SvelteKit SPA
+  at `/` and the FastAPI API at `/api` on a random 127.0.0.1 port, shown in a
+  native OS-webview window; a per-launch token guards the API
+- **Database:** SQLite (WAL, foreign keys on, FTS5) in the per-user data
+  directory; raw SQL; baseline migration `001_local_baseline.sql`; every FK
+  cascades; deleted courses sit in a 30-day trash
+- **Generation — `common/provider.py` `generate`:** routed per task class
+  (answers / background) to the user's choice: the **bundled llama.cpp
+  server** (default MiniCPM5-2B, reasoning disabled server-side, Vulkan or
+  CPU), OpenRouter, OpenAI, or any OpenAI-compatible endpoint; keys in the
+  OS keychain; a usage ledger and optional monthly cloud token budget
+- **Encoders — in-process on ONNX Runtime:** granite-embedding-english-r2
+  embeddings and an ms-marco MiniLM cross-encoder reranker (pinned,
+  sha256-verified downloads; no torch)
+- **Harness:** `tutor/compose.py` frames the task before generation (plain
+  answer / graded-work steer / constrained workspace item); the reranker
+  picks and orders the chunks the model reads; the citation gate has the
+  last word
+- **Retrieval:** hybrid four-seam funnel (decision 008) — FTS5 keyword, TOC
+  (from the author's headings/bookmarks), dependency walk, numpy embeddings —
+  fused, then reranked
+- **Deletion:** course → trash (30 days) → purge; the course-memory keepsake
+  survives
 
 ---
 
@@ -1191,48 +1199,32 @@ shared course knowledge neutral.
 
 ---
 
-## 8. Deployment topology (small user count)
+## 8. Deployment topology (local desktop)
 
 ```mermaid
-flowchart TB
-    U1["User 1 (browser)"]
-    U2["User 2 (browser)"]
-    U3["User 3 (browser)"]
-
-    subgraph Web["Web server"]
-        FE["Frontend (static)"]
-        BE["Backend (FastAPI)"]
+flowchart LR
+    subgraph App["Course Assistant (one process)"]
+        WIN["native window<br/>(WebView2 / WebKit)"]
+        API["FastAPI: SPA at /, API at /api<br/>127.0.0.1, per-launch token"]
+        ENC["ONNX encoders<br/>(embeddings, reranker)"]
+        WRK["ingestion worker +<br/>maintenance loop"]
     end
+    LLM["llama-server (supervised child)<br/>bundled local model"]
+    DATA[("per-user data dir<br/>SQLite · uploads · models")]
+    CLOUD["optional cloud providers<br/>(user's choice + key)"]
 
-    subgraph Data["Data layer"]
-        PG[("Postgres")]
-        STORE["object/file storage (raw)"]
-    end
-
-    subgraph AI["Model providers"]
-        GEN["generative model (deepseek v4 flash) —<br/>hosted API, no data retention"]
-        TOC["small stable TOC-writer model — hosted"]
-        OCR["OCR model (only if scans) — hosted"]
-        EMB["embedding model —<br/>self-hosted in-process"]
-    end
-
-    U1 --> FE
-    U2 --> FE
-    U3 --> FE
-    FE --> BE
-    BE --> PG
-    BE --> STORE
-    BE --> GEN
-    BE --> TOC
-    BE --> OCR
-    BE --> EMB
+    WIN --> API
+    API --> ENC
+    API --> DATA
+    WRK --> DATA
+    API --> LLM
+    API -.-> CLOUD
 ```
 
-Small scale → no microservices, no k8s. A single web process + Postgres + object
-storage. Generation goes out to a **hosted model API** (no data retention) —
-that keeps cost low and avoids running inference servers for the generative
-tasks. Embeddings are the exception: a 149M encoder runs in-process on CPU
-(milliseconds per chunk), so embeddings need no provider at all.
+No server, no hosting bill. Model files and the llama.cpp runtime download
+on first use (checksummed). Closing the window stops everything; on Windows
+a job object guarantees the model server cannot outlive the app. Packaging:
+`scripts/build_desktop.py` (PyInstaller, ~235 MB without models).
 
 ---
 
