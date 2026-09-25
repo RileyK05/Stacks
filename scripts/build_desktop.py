@@ -67,23 +67,17 @@ def build_app(frontend_build: Path) -> Path:
         "webview",
         "--collect-data",
         "webview",
-        # The in-process encoders (embeddings, reranker) until Phase 5
-        # replaces them with ONNX Runtime.
+        # In-process encoders run on ONNX Runtime; the torch stack is only a
+        # dev-time parity reference and must never be bundled.
         "--collect-all",
-        "sentence_transformers",
-        "--copy-metadata",
-        "torch",
-        "--copy-metadata",
-        "tqdm",
-        "--copy-metadata",
-        "regex",
-        "--copy-metadata",
-        "safetensors",
-        "--copy-metadata",
+        "onnxruntime",
+        "--collect-submodules",
         "tokenizers",
-        "--copy-metadata",
-        "huggingface-hub",
-        "--copy-metadata",
+        "--exclude-module",
+        "torch",
+        "--exclude-module",
+        "sentence_transformers",
+        "--exclude-module",
         "transformers",
     ]
     for source, target in datas:

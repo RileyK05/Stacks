@@ -575,9 +575,13 @@ Found and fixed along the way:
 
 ### Phase 5 — encoders and local OCR
 
-- [ ] Embeddings on ONNX Runtime; torch and sentence-transformers out
-      of the runtime dependencies
-- [ ] Reranker and chunk classifiers (Ettin base) on ONNX Runtime
+- [x] Embeddings on ONNX Runtime; torch and sentence-transformers out
+      of the runtime dependencies (`common/encoders.py`, pinned revisions,
+      sha256-verified). Parity with torch: min cosine 1.000000, reranker
+      score diff 0.00000 (`scripts/check_encoders.py`) — no re-embedding.
+      Cold load 0.9 s (was ~6 s); desktop build 699 → 235 MB
+- [x] Reranker on ONNX Runtime
+- [ ] Chunk classifiers (Ettin base) on ONNX Runtime
 - [ ] Fine-tune T5Gemma 2 270M on harvested headings, if it passed its
       Phase 0 gates
 - [ ] Local OCR choice (§10, compute management) implemented as a background stage

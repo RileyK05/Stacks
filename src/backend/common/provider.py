@@ -34,15 +34,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from src.backend.common import providers, usage_repo
 from src.backend.common.embeddings_config import EmbeddingPolicy, load_embedding_policy
 from src.backend.common.providers import ResolvedProvider
-
-if TYPE_CHECKING:
-    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -271,12 +268,24 @@ class EmbeddingDimensionError(RuntimeError):
     cardinality guard would otherwise rank garbage silently."""
 
 
+class _EmbeddingModel(Protocol):
+    def get_embedding_dimension(self) -> int: ...
+
+    def encode(
+        self,
+        texts: list[str],
+        batch_size: int = ...,
+        normalize_embeddings: bool = ...,
+        show_progress_bar: bool = ...,
+    ) -> Any: ...
+
+
 @dataclass(frozen=True)
 class _EmbedBackend:
-    """The loaded sentence-transformers model plus its contract. Built
-    once per process (model load is ~seconds; embedding is per-chunk)."""
+    """The loaded embedding model plus its contract. Built once per process
+    (model load is ~seconds; embedding is per-chunk)."""
 
-    model: SentenceTransformer
+    model: _EmbeddingModel
     policy: EmbeddingPolicy
 
 
@@ -284,24 +293,25 @@ _EMBEDDING_BACKEND: _EmbedBackend | None = None
 
 
 def _load_embedding_backend() -> _EmbedBackend:
-    """Idempotent model load. Import is deferred so the whole test suite
-    (and any code path that never touches the embedding seam) never pays
-    the torch/sentence-transformers import cost."""
+    """Idempotent model load, deferred so code paths that never embed never
+    pay for it. The model runs on ONNX Runtime (common/encoders.py):
+    identical output to the sentence-transformers model it replaced
+    (scripts/check_encoders.py), without shipping torch."""
     global _EMBEDDING_BACKEND
     if _EMBEDDING_BACKEND is not None:
         return _EMBEDDING_BACKEND
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as err:
-        raise ProviderUnavailableError(
-            "sentence-transformers not installed — embeddings unavailable"
-        ) from err
+    from src.backend.common.encoders import EMBEDDING_SPECS, OnnxEmbedder
+
     policy = load_embedding_policy()
-    model = SentenceTransformer(policy.model, device="cpu")
-    # Recent transformers load weights in their stored dtype (bf16 for
-    # this model). CPUs without native bf16 run that many times slower
-    # than fp32 (measured on a 1-vCPU AVX2 box), so force fp32.
-    model = model.float()
+    spec = EMBEDDING_SPECS.get(policy.model)
+    if spec is None:
+        raise ProviderUnavailableError(
+            f"no ONNX build registered for embedding model {policy.model}"
+        )
+    try:
+        model = OnnxEmbedder(spec)
+    except Exception as err:
+        raise ProviderUnavailableError(f"embedding model unavailable: {err}") from err
     test_dimension = model.get_embedding_dimension()
     if test_dimension != policy.dimension:
         raise EmbeddingDimensionError(
@@ -351,8 +361,7 @@ def embed_texts(
     for vector in vectors_list:
         if len(vector) != policy.dimension:
             raise EmbeddingDimensionError(
-                f"model returned {len(vector)} dims, config says "
-                f"{policy.dimension}"
+                f"model returned {len(vector)} dims, config says {policy.dimension}"
             )
     return vectors_list
 
@@ -374,15 +383,12 @@ def rerank_scores(model_name: str, query: str, texts: Sequence[str]) -> list[flo
     if not texts:
         return []
     if _RERANKER is None or model_name != _RERANKER_NAME:
-        try:
-            from sentence_transformers import CrossEncoder
-        except ImportError as err:
-            raise ProviderUnavailableError(
-                "sentence-transformers not installed — reranker unavailable"
-            ) from err
-        model = CrossEncoder(model_name, device="cpu")
-        model.model.float()
-        _RERANKER, _RERANKER_NAME = model, model_name
+        from src.backend.common.encoders import RERANKER_SPECS, OnnxCrossEncoder
+
+        spec = RERANKER_SPECS.get(model_name)
+        if spec is None:
+            raise ProviderUnavailableError(f"no ONNX build registered for {model_name}")
+        _RERANKER, _RERANKER_NAME = OnnxCrossEncoder(spec), model_name
     scores = _RERANKER.predict([(query, text) for text in texts])
     return [float(score) for score in scores]
 
