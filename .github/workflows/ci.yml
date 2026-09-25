@@ -1,0 +1,80 @@
+# The gate: every push and pull request must pass these before it counts.
+# Windows runners, because Windows (NSIS installer) is the shipping target.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (pytest, ruff, mypy)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Ruff
+        run: python -m ruff check .
+      - name: Mypy
+        run: python -m mypy src
+      - name: Pytest
+        run: python -m pytest -q
+
+  frontend:
+    name: Frontend and shell (svelte-check, build, clippy)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/frontend/src-tauri
+      - name: Install
+        run: |
+          python -m pip install -e .
+          npm ci --prefix src/frontend
+      # schema.d.ts is generated, not committed: dump the backend's API
+      # spec and build the frontend types from it.
+      - name: API types
+        run: |
+          python -m scripts.dump_openapi runs/openapi.json
+          cd src/frontend && OPENAPI_FILE=../../runs/openapi.json npm run gen:api
+      - name: svelte-check
+        run: npm run check --prefix src/frontend
+      # The shell embeds the built SPA, so the build comes before clippy.
+      - name: Build SPA
+        run: npm run build --prefix src/frontend
+      - name: Clippy
+        working-directory: src/frontend/src-tauri
+        run: cargo clippy --all-targets --locked -- -D warnings

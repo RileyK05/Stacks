@@ -1,5 +1,7 @@
 # Stacks
 
+[![CI](https://github.com/RileyK05/Stacks/actions/workflows/ci.yml/badge.svg)](https://github.com/RileyK05/Stacks/actions/workflows/ci.yml)
+
 A study tool that runs on your own laptop. Add your course materials
 (syllabi, readings, slides, notes) and ask questions about them. Every
 answer cites the passages it came from, and you can open the original
@@ -80,8 +82,16 @@ cd src/frontend && npm run check            # frontend typecheck
 cd src/frontend/src-tauri && cargo clippy   # desktop shell lint
 ```
 
+GitHub Actions runs all five checks on every push and pull request
+([ci.yml](.github/workflows/ci.yml)); a change isn't done until CI is
+green.
+
 Releases: `python -m scripts.set_version X.Y.Z` sets the version in every
-manifest, and [CHANGELOG.md](CHANGELOG.md) gets the notes.
+manifest, and [CHANGELOG.md](CHANGELOG.md) gets the notes. Commit, then
+push a tag `vX.Y.Z`: [release.yml](.github/workflows/release.yml) runs the
+checks, builds the installer, and attaches it to a draft release to
+review and publish. Running the Release workflow by hand builds an
+installer without releasing it.
 
 `scripts/eval_models.py` measures answer quality for any model in the
 catalog, optionally against your own course files:
