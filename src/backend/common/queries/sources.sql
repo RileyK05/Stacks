@@ -38,3 +38,12 @@ WHERE source_id = :source_id AND course_id = :course_id;
 DELETE FROM sources
 WHERE source_id = :source_id AND course_id = :course_id
 RETURNING source_id;
+
+-- name: archive_sources
+-- Everything `.course` export needs to write each source's original bytes
+-- and describe it in the manifest. Oldest first, so an import recreates
+-- the course in the order it was built.
+SELECT source_id, filename, mime_type, source_type, file_hash, stored_encoding
+FROM sources
+WHERE course_id = :course_id
+ORDER BY created_at, filename;

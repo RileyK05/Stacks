@@ -19,7 +19,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from src.backend.api import courses, runtime, settings, sources, tutor
+from src.backend.api import courses, data, runtime, settings, sources, tutor
 from src.backend.api.deps import require_app_token
 from src.backend.common import maintenance
 from src.backend.common.config import PROJECT_ROOT
@@ -44,6 +44,7 @@ def create_api() -> FastAPI:
     api.include_router(tutor.router)
     api.include_router(settings.router)
     api.include_router(runtime.router)
+    api.include_router(data.router)
 
     @api.get("/health")
     def health() -> dict[str, str]:

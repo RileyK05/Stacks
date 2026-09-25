@@ -1,5 +1,5 @@
 [version]
-lifecycle_config_version = "4"
+lifecycle_config_version = "5"
 
 [trash]
 # A deleted course stays restorable for this long, then is purged (its
@@ -17,6 +17,13 @@ max_tokens = 5000
 # Largest single upload accepted. Local disk is the only cost; this bound
 # keeps one mistaken drag-and-drop from filling it.
 max_raw_upload_bytes = 1073741824
+
+[archive]
+# `.course` import bounds: the archive itself, the sum of its files once
+# unzipped (each file is also held to max_raw_upload_bytes), and how many
+# files one course may carry.
+max_import_bytes = 4294967296
+max_import_sources = 1000
 
 [decompression]
 # Hard ceiling on unzipped bytes per stored source. MUST stay >=

@@ -13,6 +13,7 @@
   import TextInput from '$lib/components/TextInput.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
   import { toast } from '$lib/stores/toast.svelte';
+  import { formatBytes } from '$lib/utils/format';
 
   type ProvidersView =
     paths['/settings/providers']['get']['responses'][200]['content']['application/json'];
@@ -65,6 +66,9 @@
   let tests = $state<Partial<Record<TaskClass, ConnectionTest>>>({});
   let freeOnly = $state(true);
   let budgetDraft = $state('');
+  type DataFolderView =
+    paths['/settings/data']['get']['responses'][200]['content']['application/json'];
+  let dataFolder = $state<DataFolderView | null>(null);
 
   const DISCLOSED_KEY = 'course_assistant_disclosed_providers';
 
@@ -78,10 +82,12 @@
   async function load() {
     loading = true;
     try {
-      const [providersRes, usageRes] = await Promise.all([
+      const [providersRes, usageRes, dataRes] = await Promise.all([
         api.GET('/settings/providers'),
-        api.GET('/settings/usage')
+        api.GET('/settings/usage'),
+        api.GET('/settings/data')
       ]);
+      dataFolder = dataRes.data ?? null;
       if (providersRes.error || !providersRes.data) {
         throw providersRes.error ?? new Error('empty response');
       }
@@ -103,6 +109,11 @@
         baseUrl: choice?.base_url ?? ''
       };
     }
+  }
+
+  async function revealData(path: string) {
+    const { error: err } = await api.POST('/settings/reveal', { body: { path } });
+    if (err) toast('Could not open the folder.', 'error');
   }
 
   function preset(name: string): Preset | undefined {
@@ -476,6 +487,30 @@
           {:else}
             <p class="text-sm text-subtle">No model calls yet this month.</p>
           {/if}
+        </div>
+      </Card>
+    {/if}
+
+    {#if dataFolder}
+      <Card
+        title="Your data"
+        description="Everything the app keeps lives in one folder on this computer. Back up a single course with Export on its page."
+      >
+        <div class="flex flex-col gap-4">
+          <div class="flex flex-wrap items-center gap-3">
+            <code class="min-w-0 flex-1 truncate rounded-lg bg-surface-2 px-3 py-2 text-xs text-muted">{dataFolder.data_dir}</code>
+            <Button variant="secondary" size="sm" onclick={() => dataFolder && revealData(dataFolder.data_dir)}>
+              <Icon name="hard-drive" class="h-4 w-4" /> Open folder
+            </Button>
+          </div>
+          <dl class="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            {#each [['Courses database', dataFolder.database_bytes], ['Uploaded files', dataFolder.uploads_bytes], ['Local models', dataFolder.models_bytes], ['Model runtime', dataFolder.runtime_bytes]] as [label, bytes] (label)}
+              <div>
+                <dt class="text-xs uppercase tracking-wide text-subtle">{label}</dt>
+                <dd class="mt-0.5 text-fg">{formatBytes(Number(bytes))}</dd>
+              </div>
+            {/each}
+          </dl>
         </div>
       </Card>
     {/if}

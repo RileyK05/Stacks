@@ -29,6 +29,7 @@ def _isolated_data_dir(
     monkeypatch.setenv("APP_DATA_DIR", str(data_dir))
     monkeypatch.setenv("DATABASE_PATH", str(data_dir / "test.db"))
     monkeypatch.setenv("STORAGE_ROOT", str(data_dir / "raw"))
+    monkeypatch.setenv("APP_EXPORT_DIR", str(tmp_path / "exports"))
     migrate()
     yield data_dir
 

@@ -24,6 +24,32 @@
   let creating = $state(false);
   let createError = $state<unknown>(null);
   let showCreate = $state(false);
+  let importing = $state(false);
+  let importInput = $state<HTMLInputElement | null>(null);
+
+  type ImportBody = NonNullable<
+    paths['/courses/import']['post']['requestBody']
+  >['content']['multipart/form-data'];
+
+  async function importCourse(file: File) {
+    importing = true;
+    createError = null;
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const { data, error: err } = await api.POST('/courses/import', {
+        body: form as unknown as ImportBody
+      });
+      if (err || !data) throw err ?? new Error('unexpected empty response');
+      await goto(`/courses/${data.course.course_id}`);
+    } catch (caught) {
+      createError = caught;
+      showCreate = true;
+    } finally {
+      importing = false;
+      if (importInput) importInput.value = '';
+    }
+  }
 
   onMount(() => {
     load().catch((err) => {
@@ -93,6 +119,19 @@
 >
   {#snippet actions()}
     {#if !loading && !error}
+      <input
+        bind:this={importInput}
+        type="file"
+        accept=".course"
+        class="hidden"
+        onchange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (file) void importCourse(file);
+        }}
+      />
+      <Button variant="secondary" loading={importing} onclick={() => importInput?.click()} title="Open a .course file exported from this app">
+        <Icon name="upload-cloud" class="h-4 w-4" /> Import
+      </Button>
       <Button onclick={() => (showCreate = !showCreate)} variant={showCreate ? 'secondary' : 'primary'}>
         <Icon name={showCreate ? 'x' : 'plus'} class="h-4 w-4" />
         {showCreate ? 'Cancel' : 'New course'}

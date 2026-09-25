@@ -611,7 +611,11 @@ Found and fixed along the way:
       699 MB, mostly torch until Phase 5); llama.cpp and models download
       on first use. Verified packaged: upload → ingest → local model →
       cited answer (7 s) → clean shutdown with no process left behind
-- [ ] Tray option, data folder / export
+- [x] Data folder (Settings → Your data: location, sizes, open) and
+      `.course` export/import. Export writes to Downloads with "Show in
+      folder"; import treats the file as untrusted (manifest-named members
+      only, size/count caps, MIME check, sha256 check, all-or-nothing)
+- [ ] Tray option
 - [ ] Windows installer first (the owner's platform), then macOS, Linux
 - [ ] GitHub Releases + updater; signing decision
 
@@ -643,8 +647,12 @@ Decided 2026-09-25:
 - **Phase 1 first**, then Phase 2; Phase 0 when the owner has time.
 - Ingestion design: §10a. TOC without the chat model.
 - Trash keeps deleted courses **30 days**, user-configurable.
-- Export format: a documented **`.course` zip** (sources + derived data),
-  so a course can move between machines or be shared by hand.
+- Export format: a documented **`.course` zip**, so a course can move
+  between machines or be shared by hand. As built (format v1,
+  `common/course_archive.py`): `manifest.json` + the original source files
+  with their sha256. Derived data is deliberately *not* carried: ingestion
+  rebuilds it locally and deterministically, which keeps the file small and
+  immune to schema changes.
 
 No open questions remain for Phase 1.
 

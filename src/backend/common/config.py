@@ -46,6 +46,8 @@ class Settings(BaseModel):
     # Per-launch secret the desktop shell passes to the backend; when set,
     # every API request must carry it (plan §4). Empty in development.
     api_token: str = Field(default="")
+    # Where `.course` exports are written (the user's Downloads folder).
+    export_dir: str = Field(default="")
 
 
 def get_settings() -> Settings:
@@ -65,4 +67,10 @@ def get_settings() -> Settings:
         llm_base_url=os.getenv("LLM_BASE_URL", ""),
         llm_model=os.getenv("LLM_MODEL", ""),
         api_token=os.getenv("APP_API_TOKEN", ""),
+        export_dir=os.getenv("APP_EXPORT_DIR", str(_downloads_dir())),
     )
+
+
+def _downloads_dir() -> Path:
+    downloads = Path.home() / "Downloads"
+    return downloads if downloads.is_dir() else Path.home()

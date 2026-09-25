@@ -361,6 +361,30 @@
     }
   }
 
+  let exporting = $state(false);
+  let exported = $state<{ path: string; filename: string } | null>(null);
+
+  async function exportCourse() {
+    exporting = true;
+    actionError = null;
+    try {
+      const { data, error: err } = await api.POST('/courses/{course_id}/export', {
+        params: { path: { course_id: courseId } }
+      });
+      if (err || !data) throw err ?? new Error('unexpected empty response');
+      exported = { path: data.path, filename: data.filename };
+    } catch (caught) {
+      actionError = caught;
+    } finally {
+      exporting = false;
+    }
+  }
+
+  async function reveal(path: string) {
+    const { error: err } = await api.POST('/settings/reveal', { body: { path } });
+    if (err) toast('Could not open the folder.', 'error');
+  }
+
   async function moveToTrash() {
     if (!(await confirmDialog({
       title: 'Move this course to the trash?',
@@ -437,6 +461,9 @@
         <Button variant="ghost" size="sm" onclick={startRename}>
           <Icon name="file-pen" class="h-4 w-4" /> Rename
         </Button>
+        <Button variant="ghost" size="sm" onclick={exportCourse} loading={exporting} title="Save this course as one .course file you can back up or share">
+          <Icon name="download" class="h-4 w-4" /> Export
+        </Button>
         <Button variant="ghost" size="sm" onclick={moveToTrash} class="text-danger-text hover:bg-danger-soft hover:text-danger-text">
           <Icon name="trash" class="h-4 w-4" /> Delete
         </Button>
@@ -444,6 +471,14 @@
     </header>
 
     {#if actionError}<ErrorBanner error={actionError} />{/if}
+    {#if exported}
+      <div class="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-sm text-muted">
+        <Icon name="check" class="h-4 w-4 text-success-text" />
+        <span class="min-w-0 flex-1">Saved <span class="font-medium text-fg">{exported.filename}</span> to your Downloads folder. Open it with Import on My courses, on this or another computer.</span>
+        <Button variant="secondary" size="sm" onclick={() => exported && reveal(exported.path)}>Show in folder</Button>
+        <Button variant="ghost" size="sm" onclick={() => (exported = null)} aria-label="Dismiss"><Icon name="x" class="h-4 w-4" /></Button>
+      </div>
+    {/if}
 
     <div class="flex gap-1 border-b border-line" role="tablist">
         {#each tabs as { id: tab, label, icon } (tab)}

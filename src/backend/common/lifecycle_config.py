@@ -18,6 +18,8 @@ class LifecyclePolicy(BaseModel):
     memory_max_tokens: int = Field(ge=1)
     max_raw_upload_bytes: int = Field(ge=1)
     max_decompressed_bytes: int = Field(ge=1)
+    max_import_bytes: int = Field(ge=1)
+    max_import_sources: int = Field(ge=1)
     orphan_min_age_seconds: int = Field(default=3600, ge=60)
 
     @model_validator(mode="after")
@@ -41,6 +43,8 @@ def load_lifecycle_policy(path: Path = DEFAULT_LIFECYCLE_PATH) -> LifecyclePolic
         memory_max_tokens=raw["memory"]["max_tokens"],
         max_raw_upload_bytes=raw["uploads"]["max_raw_upload_bytes"],
         max_decompressed_bytes=raw["decompression"]["max_decompressed_bytes"],
+        max_import_bytes=raw["archive"]["max_import_bytes"],
+        max_import_sources=raw["archive"]["max_import_sources"],
         orphan_min_age_seconds=raw.get("cleanup", {}).get(
             "orphan_min_age_seconds", 3600
         ),
