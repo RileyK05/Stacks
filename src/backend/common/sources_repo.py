@@ -1,26 +1,24 @@
 from __future__ import annotations
 
-import json
+import sqlite3
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO
 from uuid import UUID, uuid4
 
-from psycopg import Connection
-from psycopg.rows import dict_row
-from src.backend.common import budget, storage
-from src.backend.common.db import connection
+from src.backend.common import storage
+from src.backend.common.db import Connection, connection
+from src.backend.common.lifecycle_config import load_lifecycle_policy
 from src.backend.common.queries import get
-from src.backend.common.schemas.base import SourceStatus, SourceType, UserTier
+from src.backend.common.schemas.base import SourceStatus, SourceType
 from src.backend.common.schemas.source_content import Source
-from src.backend.common.tiers import TierPolicy
 from src.backend.ingest import runs as _ingest_runs
 
 _FILE = "sources"
 
 
-class UnknownOwnedCourseError(RuntimeError):
+class UnknownCourseError(RuntimeError):
     pass
 
 
@@ -61,113 +59,71 @@ def _stored_source(row: dict[str, Any], raw_size_bytes: int) -> StoredSource:
 
 def upload_source(
     course_id: UUID,
-    owner_user_id: UUID,
-    tier: UserTier,
-    policy: TierPolicy,
     *,
     filename: str,
     mime_type: str,
     source_type: SourceType,
     stream: BinaryIO,
 ) -> StoredSource:
+    """Stream the upload to disk (hashing as it goes), store it, insert
+    the row, and enqueue ingestion. The file write happens before the row
+    commits; on any failure the file is removed, and a crash in between
+    leaves only an orphan the maintenance sweep collects."""
     temp_path, file_hash, raw_size = storage.stream_to_temp(
-        stream, max_bytes=policy.max_raw_upload_bytes
+        stream, max_bytes=load_lifecycle_policy().max_raw_upload_bytes
     )
     stored_temp: Path = temp_path
     source_id = uuid4()
     final_written = False
     try:
-        stored_temp, stored_encoding, stored_size = (
-            storage.compress_temp_for_storage(temp_path, mime_type)
+        stored_temp, stored_encoding, stored_size = storage.compress_temp_for_storage(
+            temp_path, mime_type
         )
-        with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            user_row = cur.execute(
-                get(_FILE, "lock_user_for_quota"), {"user_id": owner_user_id}
-            ).fetchone()
-            if user_row is None:
-                raise UnknownOwnedCourseError("course not found")
-            course = cur.execute(
-                get(_FILE, "lock_owned_active_course"),
-                {"course_id": course_id, "owner_user_id": owner_user_id},
-            ).fetchone()
-            if course is None:
-                raise UnknownOwnedCourseError("course not found")
-            duplicate = cur.execute(
+        with connection() as conn:
+            if conn.execute(
+                get(_FILE, "active_course_exists"), {"course_id": course_id}
+            ).fetchone() is None:
+                raise UnknownCourseError("course not found")
+            duplicate = conn.execute(
                 get(_FILE, "find_by_hash"),
                 {"course_id": course_id, "file_hash": file_hash},
             ).fetchone()
             if duplicate is not None:
                 raise DuplicateSourceError(duplicate["source_id"])
-            course_size_row = cur.execute(
-                get(_FILE, "course_storage"), {"course_id": course_id}
-            ).fetchone()
-            owner_size_row = cur.execute(
-                get(_FILE, "owner_storage"),
-                {"owner_user_id": owner_user_id},
-            ).fetchone()
-            assert course_size_row is not None and owner_size_row is not None
-            course_size = int(course_size_row["stored"])
-            owner_size = int(owner_size_row["stored"])
-            if course_size + stored_size > policy.max_course_storage_bytes:
-                raise budget.StorageLimitExceededError(
-                    tier,
-                    course_size,
-                    stored_size,
-                    policy.max_course_storage_bytes,
-                    "per course",
-                )
-            if owner_size + stored_size > policy.max_total_storage_bytes:
-                raise budget.StorageLimitExceededError(
-                    tier,
-                    owner_size,
-                    stored_size,
-                    policy.max_total_storage_bytes,
-                    "total",
-                )
-            object_id = uuid4()
             final_path = storage.write_stored_from_temp(
                 course_id, source_id, stored_temp
             )
             final_written = True
-            cur.execute(
-                get(_FILE, "insert_source_object"),
-                {
-                    "object_id": object_id,
-                    "course_id": course_id,
-                    "owner_user_id": owner_user_id,
-                    "mime_type": mime_type,
-                    "content": json.dumps({"source_id": str(source_id)}),
-                },
-            )
-            row = cur.execute(
-                get(_FILE, "insert_source"),
-                {
-                    "source_id": source_id,
-                    "object_id": object_id,
-                    "owner_user_id": owner_user_id,
-                    "course_id": course_id,
-                    "filename": storage.sanitize_display_name(filename),
-                    "mime_type": mime_type,
-                    "source_type": source_type.value,
-                    "uri": str(final_path),
-                    "file_hash": file_hash,
-                    "size_bytes": stored_size,
-                    "stored_encoding": stored_encoding,
-                },
-            ).fetchone()
+            try:
+                row = conn.execute(
+                    get(_FILE, "insert_source"),
+                    {
+                        "source_id": source_id,
+                        "course_id": course_id,
+                        "filename": storage.sanitize_display_name(filename),
+                        "mime_type": mime_type,
+                        "source_type": source_type.value,
+                        "uri": str(final_path),
+                        "file_hash": file_hash,
+                        "size_bytes": stored_size,
+                        "stored_encoding": stored_encoding,
+                    },
+                ).fetchone()
+            except sqlite3.IntegrityError:
+                # A concurrent upload of the same bytes won the unique
+                # (course_id, file_hash) index between our check and insert.
+                conn.rollback()
+                duplicate = conn.execute(
+                    get(_FILE, "find_by_hash"),
+                    {"course_id": course_id, "file_hash": file_hash},
+                ).fetchone()
+                if duplicate is None:
+                    raise
+                raise DuplicateSourceError(duplicate["source_id"]) from None
             assert row is not None
-            cur.execute(
-                get("ingestion", "enqueue_pending"),
-                {
-                    "source_id": source_id,
-                    "course_id": course_id,
-                    "reason": "uploaded_new_source",
-                },
+            _ingest_runs.enqueue_pending(
+                conn, source_id, course_id, "uploaded_new_source"
             )
-            # Course-memory refresh moved off the upload path (ratified
-            # fix #9): the ingestion worker refreshes once per successful
-            # batch, instead of rebuilding the same summary inside every
-            # upload's quota-locked transaction.
             conn.commit()
         return _stored_source(row, raw_size)
     except BaseException:
@@ -179,47 +135,59 @@ def upload_source(
         raise
 
 
+def _to_source(row: dict[str, Any]) -> Source:
+    return Source(
+        source_id=row["source_id"],
+        course_id=row["course_id"],
+        filename=row["filename"],
+        mime_type=row["mime_type"],
+        source_type=row["source_type"],
+        status=row["status"],
+        size_bytes=row["size_bytes"],
+        file_hash=row["file_hash"],
+        error_message=row["error_message"],
+        created_at=row["created_at"],
+    )
+
+
 def list_sources(course_id: UUID) -> list[Source]:
-    """The course's source rows (owner-facing; includes failure reasons).
-    Review catch #6: the API was write-only, so a user never learned
-    their upload failed."""
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute(
+    with connection() as conn:
+        rows = conn.execute(
             get(_FILE, "list_sources"), {"course_id": course_id}
         ).fetchall()
-    return [
-        Source(
-            source_id=row["source_id"],
-            object_id=row["source_id"],
-            uploaded_by_user_id=row["uploaded_by_user_id"],
-            course_id=course_id,
-            filename=row["filename"],
-            mime_type=row["mime_type"],
-            source_type=row["source_type"],
-            status=row["status"],
-            size_bytes=row["size_bytes"],
-            error_message=row["error_message"],
-            created_at=row["created_at"],
-        )
-        for row in rows
-    ]
+    return [_to_source(row) for row in rows]
 
 
-def requeue_failed(
-    conn: Connection, source_id: UUID, course_id: UUID, owner_user_id: UUID
-) -> bool:
-    """Owner-facing requeue: verify the caller owns the source's course,
-    then run the same deliberate failed→uploaded transition the
-    orchestrator describes. Returns False when the source is not in a
-    failed state."""
-    with conn.cursor(row_factory=dict_row) as cur:
-        row = cur.execute(
-            get(_FILE, "verify_owner_source"),
-            {
-                "source_id": source_id,
-                "owner_user_id": owner_user_id,
-            },
+def get_source(course_id: UUID, source_id: UUID) -> Source | None:
+    with connection() as conn:
+        row = conn.execute(
+            get(_FILE, "get_source"),
+            {"course_id": course_id, "source_id": source_id},
         ).fetchone()
+    return _to_source(row) if row else None
+
+
+def delete_source(course_id: UUID, source_id: UUID) -> bool:
+    """Remove one source: its rows cascade, then its stored file goes."""
+    with connection() as conn:
+        row = conn.execute(
+            get(_FILE, "delete_source"),
+            {"course_id": course_id, "source_id": source_id},
+        ).fetchone()
+        conn.commit()
     if row is None:
+        return False
+    with suppress(OSError):
+        storage.remove_stored(course_id, source_id)
+    return True
+
+
+def requeue_failed(conn: Connection, source_id: UUID, course_id: UUID) -> bool:
+    """The deliberate retry path: failed → uploaded + re-enqueued. Returns
+    False when the source is not in a failed state (or not in this
+    course)."""
+    if conn.execute(
+        get(_FILE, "get_source"), {"course_id": course_id, "source_id": source_id}
+    ).fetchone() is None:
         return False
     return _ingest_runs.requeue_failed_source(conn, source_id, course_id)

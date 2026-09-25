@@ -21,10 +21,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from psycopg import Connection
-from psycopg.rows import dict_row
-from src.backend.common import users_repo
-from src.backend.common.db import connection
+from src.backend.common.db import Connection, connection
 from src.backend.common.queries import get
 from src.backend.ingest import runs
 from src.backend.ingest.config import load_ingestion_config
@@ -92,7 +89,7 @@ def _refresh_course_memory(course_id: UUID) -> None:
 
     try:
         with connection() as conn:
-            course_memory.refresh_for_owner(conn.cursor(), course_id)
+            course_memory.refresh(conn, course_id)
             conn.commit()
     except Exception:
         logger.exception(
@@ -106,19 +103,7 @@ def _ingest_claimed(source_id: UUID, course_id: UUID) -> bool:
     the claim is cleaned up so the row is not stranded."""
     try:
         with connection() as conn:
-            owner = _course_owner(conn, course_id)
-            if owner is None:
-                raise ValueError(
-                    f"course {course_id} no longer exists; dropping claim"
-                )
-            account = users_repo.get_by_id(owner)
-            if account is None:
-                raise ValueError(
-                    f"owner {owner} no longer exists; dropping claim"
-                )
-            tier = account.tier
-        with connection() as conn:
-            run_ingestion(conn, source_id, owner, tier)
+            run_ingestion(conn, source_id)
             return True
     except IngestionPipelineError:
         logger.warning(
@@ -132,29 +117,18 @@ def _ingest_claimed(source_id: UUID, course_id: UUID) -> bool:
         return False
 
 
-def _course_owner(conn: Connection, course_id: UUID) -> UUID | None:
-    with conn.cursor(row_factory=dict_row) as cur:
-        row = cur.execute(
-            get(_FILE, "course_owner"), {"course_id": course_id}
-        ).fetchone()
-    return row["owner_user_id"] if row else None
-
-
 def _release_stale_claims(conn: Connection) -> None:
     """Re-claim rows whose claim is older than the stale threshold (the
     previous worker crashed mid-run). The claimed_runs counter increments
     on the next claim, keeping the event inspectable."""
     threshold = datetime.now(UTC) - STALE_CLAIM_AFTER
-    with conn.cursor() as cur:
-        cur.execute(
-            get(_FILE, "release_stale_claims"), {"threshold": threshold}
+    cursor = conn.execute(get(_FILE, "release_stale_claims"), {"threshold": threshold})
+    if cursor.rowcount > 0:
+        logger.warning(
+            "released %s stale ingestion claim(s) older than %s",
+            cursor.rowcount,
+            STALE_CLAIM_AFTER,
         )
-        if cur.rowcount > 0:
-            logger.warning(
-                "released %s stale ingestion claim(s) older than %s",
-                cur.rowcount,
-                STALE_CLAIM_AFTER,
-            )
 
 
 def _cleanup_orphaned_claim(source_id: UUID) -> None:
@@ -173,43 +147,51 @@ def _cleanup_orphaned_claim(source_id: UUID) -> None:
 
 
 WAKEUP: asyncio.Event | None = None
+_LOOP: asyncio.AbstractEventLoop | None = None
 
 
 def wakeup() -> None:
     """Called by the upload path after enqueueing so the worker polls
-    immediately instead of waiting out the interval (review catch #7:
-    upload-to-ingestion latency was up to an hour on a knob named for
-    something else). Safe to call from sync context via loop.call_soon_
-    threadsafe by async callers; a no-op when no loop is running
-    (tests, worker entrypoint)."""
-    if WAKEUP is not None:
-        WAKEUP.set()
+    immediately instead of waiting out the interval (review catch #7).
+    Upload handlers run on FastAPI's threadpool, and asyncio.Event is not
+    thread-safe, so the set is scheduled onto the worker's loop. A no-op
+    when no worker loop is running (tests, the standalone entrypoint)."""
+    if WAKEUP is None or _LOOP is None or _LOOP.is_closed():
+        return
+    _LOOP.call_soon_threadsafe(WAKEUP.set)
 
 
 async def run_forever(stop: asyncio.Event) -> None:
-    global WAKEUP
+    global WAKEUP, _LOOP
     interval = load_ingestion_config().poll_interval_seconds
     WAKEUP = asyncio.Event()
+    _LOOP = asyncio.get_running_loop()
     while not stop.is_set():
+        # Clear BEFORE the pass: an upload that lands mid-pass sets the
+        # event again, so the next sleep ends immediately instead of
+        # losing the wakeup.
+        WAKEUP.clear()
         try:
             await asyncio.to_thread(process_batch, should_stop=stop.is_set)
         except Exception:
             logger.exception("ingestion worker pass failed")
-        WAKEUP.clear()
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(stop.wait(), WAKEUP.wait(),
-                               return_exceptions=True),
-                timeout=interval,
-            )
-        except TimeoutError:
-            continue
+        # Sleep until the poll interval passes, an upload wakes us, or
+        # shutdown begins, whichever comes first.
+        waiters = {
+            asyncio.ensure_future(stop.wait()),
+            asyncio.ensure_future(WAKEUP.wait()),
+        }
+        _done, pending = await asyncio.wait(
+            waiters, timeout=interval, return_when=asyncio.FIRST_COMPLETED
+        )
+        for waiter in pending:
+            waiter.cancel()
+
 
 def main() -> None:
     """Standalone worker process entrypoint (review catch #8): run with
     `.venv/Scripts/python -m src.backend.ingest.worker` to drain the
-    queue outside the API process — extraction CPU and deploy restarts
-    then never touch API replicas. Polls until Ctrl+C."""
+    queue outside the API process. Polls until Ctrl+C."""
     logging.basicConfig(level=logging.INFO)
     logger.info("ingestion worker starting (standalone)")
     try:

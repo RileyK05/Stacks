@@ -15,7 +15,6 @@ class RetrievalTrace(BaseRecord):
     """
 
     trace_id: UUID = Field(default_factory=_new_id)
-    user_id: UUID
     course_id: UUID
     conversation_id: UUID | None = None
     query: str
@@ -85,15 +84,6 @@ class ArtifactOrigin(BaseRecord):
     created_at: datetime = Field(default_factory=_now)
 
 
-class UserArtifactOrigin(BaseRecord):
-    artifact_id: UUID
-    source_ids: list[UUID] = Field(default_factory=list)
-    concept_ids: list[UUID] = Field(default_factory=list)
-    model: str | None = None
-    prompt_version: str | None = None
-    tutor_profile_version: str | None = None
-    created_at: datetime = Field(default_factory=_now)
-
 
 class ModelDecision(BaseRecord):
     """Records a model's storage/description decisions, so they can be audited
@@ -121,7 +111,6 @@ class CitationSnapshot(BaseRecord):
     source's citations are removed. Survives the source row being deleted."""
 
     snapshot_id: UUID = Field(default_factory=_new_id)
-    user_id: UUID
     course_id: UUID
     source_id: UUID
     source_name: str

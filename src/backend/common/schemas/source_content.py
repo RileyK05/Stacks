@@ -17,8 +17,6 @@ class Source(BaseRecord):
     """An uploaded course file, stored whole. Nothing is destroyed at ingest."""
 
     source_id: UUID = Field(default_factory=_new_id)
-    object_id: UUID
-    uploaded_by_user_id: UUID
     course_id: UUID
     filename: str
     mime_type: str

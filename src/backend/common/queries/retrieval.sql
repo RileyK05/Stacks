@@ -2,143 +2,121 @@
 -- retrieval module merges their outputs into one cited candidate set.
 
 -- name: keyword_candidates
--- The keyword seam: tsvector match with ranking. OR semantics — any term
--- overlap counts (AND semantics would miss chunks holding only part of
--- the query). Filter by course so retrieval never crosses courses.
+-- The keyword seam: porter-stemmed FTS5 match ranked by bm25. `:match`
+-- is built in Python from sanitized, stopword-filtered tokens joined with
+-- OR (any term overlap counts; AND would miss chunks holding only part of
+-- the query). bm25() is lower-is-better, so rank is its negation to keep
+-- every seam "higher is better". Filtered by course so retrieval never
+-- crosses courses.
 SELECT chunk.chunk_id,
        chunk.source_id,
        chunk.locator_id,
        chunk.chunk_index,
        chunk.text,
-       ts_rank(
-           chunk.search_vector,
-           to_tsquery('english', %(or_query)s)
-       ) AS rank
-FROM chunks AS chunk
+       -bm25(chunks_fts) AS rank
+FROM chunks_fts
+JOIN chunks AS chunk ON chunk.chunk_rowid = chunks_fts.rowid
 JOIN sources AS source ON source.source_id = chunk.source_id
-WHERE source.course_id = %(course_id)s
+WHERE chunks_fts MATCH :match
+  AND source.course_id = :course_id
   AND source.status = 'indexed'
-  AND chunk.search_vector @@ to_tsquery('english', %(or_query)s)
 ORDER BY rank DESC, chunk.chunk_index
-LIMIT %(limit)s;
+LIMIT :limit;
 
 -- name: toc_candidates
--- TOC seam (static matching): entries whose title/description full-text
--- match the query terms, plus the chunks under those entries' locators.
--- Uses tsvector (stemmed, stopword-filtered) for the same consistency the
--- keyword seam has; plain LIKE wildcards from user input never reach SQL.
--- Entries with a NULL locator_id drop out via the chunks join (no chunk can
--- match a NULL locator), which is also what bounds the seam to entries that
--- actually have text behind them.
+-- TOC seam (static matching): entries of the course's current TOC whose
+-- title/description match the query (same stemming as the keyword seam),
+-- plus the chunks under those entries' locators. Entries with a NULL
+-- locator drop out via the chunks join, which also bounds the seam to
+-- entries that actually have text behind them.
 WITH current_toc AS (
     SELECT toc_id
-    FROM tables_of_contents AS toc
-    WHERE toc.course_id = %(course_id)s
+    FROM tables_of_contents
+    WHERE course_id = :course_id
     ORDER BY version DESC
     LIMIT 1
+),
+matched_entries AS (
+    SELECT entry.entry_id, entry.title, entry.source_id, entry.locator_id,
+           entry.position
+    FROM toc_entries_fts
+    JOIN toc_entries AS entry ON entry.entry_rowid = toc_entries_fts.rowid
+    WHERE toc_entries_fts MATCH :match
+      AND entry.toc_id IN (SELECT toc_id FROM current_toc)
 )
 SELECT chunk.chunk_id,
        chunk.source_id,
        chunk.locator_id,
        chunk.chunk_index,
        chunk.text,
-       entry.entry_id,
-       entry.title
-FROM toc_entries AS entry
-JOIN current_toc ON current_toc.toc_id = entry.toc_id
-JOIN chunks AS chunk ON chunk.source_id = entry.source_id
-     AND chunk.locator_id = entry.locator_id
-WHERE chunk.source_id IN (
-          SELECT s.source_id FROM sources AS s
-          WHERE s.course_id = %(course_id)s AND s.status = 'indexed'
-      )
-  AND to_tsvector('english', entry.title || ' ' || entry.description)
-      @@ to_tsquery('english', %(or_query)s)
-ORDER BY entry.position, chunk.chunk_index
-LIMIT %(limit)s;
+       matched_entries.entry_id,
+       matched_entries.title
+FROM matched_entries
+JOIN chunks AS chunk ON chunk.source_id = matched_entries.source_id
+     AND chunk.locator_id = matched_entries.locator_id
+JOIN sources AS source ON source.source_id = chunk.source_id
+WHERE source.course_id = :course_id
+  AND source.status = 'indexed'
+ORDER BY matched_entries.position, chunk.chunk_index
+LIMIT :limit;
 
 -- name: dependency_expansion
 -- Graph-walk seam: given matched concept ids, return chunks attached to
--- prerequisite or dependent concepts (1-hop walk). UNION (not OR-join) so
--- each branch can use its index; deterministic ORDER BY because candidate
+-- prerequisite or dependent concepts (1-hop walk). UNION (not an OR
+-- join) so each branch uses its index and a chunk reachable both ways
+-- burns one LIMIT slot, not two. Deterministic ORDER BY because candidate
 -- order feeds reproducible retrieval runs.
--- KNOWN PRECISION GAP: memory_objects links concepts to sources, not
--- locators, so this returns every chunk of the source a concept's evidence
--- lives in. Until a locator link exists (schema gap, migration needed),
--- this seam is coarse by design; the limit bounds the flood. Dormant when
--- no edges exist — the caller passes only matched concept ids and edge
--- trust is enforced upstream.
--- The branches select identical columns (no via_concept_id) so UNION
--- deduplicates: a chunk reachable BOTH as a prereq and as a dependent would
--- otherwise survive as two rows, burn two LIMIT slots, and then collapse to
--- one in Python — returning fewer distinct chunks than dependency_limit.
-(
-    SELECT chunk.chunk_id,
-           chunk.source_id,
-           chunk.locator_id,
-           chunk.chunk_index,
-           chunk.text
-    FROM concepts AS matched
-    JOIN dependencies AS dep ON dep.prereq_id = matched.concept_id
-    JOIN memory_objects AS mo ON mo.concept_id = dep.dependent_id
-    JOIN chunks AS chunk ON chunk.source_id = mo.source_id
-    JOIN sources AS src ON src.source_id = chunk.source_id
-    WHERE matched.concept_id = ANY(%(concept_ids)s::uuid[])
-      AND matched.course_id = %(course_id)s
-      AND src.status = 'indexed'
-)
+-- KNOWN PRECISION GAP: memory_objects link concepts to sources, not
+-- locators, so this returns every chunk of the source a concept's
+-- evidence lives in; the limit bounds the flood. Dormant without edges.
+SELECT chunk.chunk_id,
+       chunk.source_id,
+       chunk.locator_id,
+       chunk.chunk_index,
+       chunk.text
+FROM concepts AS matched
+JOIN dependencies AS dep ON dep.prereq_id = matched.concept_id
+JOIN memory_objects AS mo ON mo.concept_id = dep.dependent_id
+JOIN chunks AS chunk ON chunk.source_id = mo.source_id
+JOIN sources AS src ON src.source_id = chunk.source_id
+WHERE matched.concept_id IN (SELECT value FROM json_each(:concept_ids))
+  AND matched.course_id = :course_id
+  AND src.status = 'indexed'
 UNION
-(
-    SELECT chunk.chunk_id,
-           chunk.source_id,
-           chunk.locator_id,
-           chunk.chunk_index,
-           chunk.text
-    FROM concepts AS matched
-    JOIN dependencies AS dep ON dep.dependent_id = matched.concept_id
-    JOIN memory_objects AS mo ON mo.concept_id = dep.prereq_id
-    JOIN chunks AS chunk ON chunk.source_id = mo.source_id
-    JOIN sources AS src ON src.source_id = chunk.source_id
-    WHERE matched.concept_id = ANY(%(concept_ids)s::uuid[])
-      AND matched.course_id = %(course_id)s
-      AND src.status = 'indexed'
-)
+SELECT chunk.chunk_id,
+       chunk.source_id,
+       chunk.locator_id,
+       chunk.chunk_index,
+       chunk.text
+FROM concepts AS matched
+JOIN dependencies AS dep ON dep.dependent_id = matched.concept_id
+JOIN memory_objects AS mo ON mo.concept_id = dep.prereq_id
+JOIN chunks AS chunk ON chunk.source_id = mo.source_id
+JOIN sources AS src ON src.source_id = chunk.source_id
+WHERE matched.concept_id IN (SELECT value FROM json_each(:concept_ids))
+  AND matched.course_id = :course_id
+  AND src.status = 'indexed'
 ORDER BY chunk_index, chunk_id
-LIMIT %(limit)s;
+LIMIT :limit;
 
--- name: embedding_candidates
--- Embedding seam: dot-product similarity over chunk embeddings (float8[]
--- now; the pgvector swap uses <=> cosine distance with the same shape).
--- The unnest zip computes dot products natively in SQL. Dimension guard:
--- unequal array lengths truncate silently in Postgres (a model swap would
--- rank garbage with no error), so cardinality() equality is enforced here.
-SELECT scored.chunk_id,
-       scored.source_id,
-       scored.locator_id,
-       scored.chunk_index,
-       scored.text,
-       scored.dot
-FROM (
-    SELECT chunk.chunk_id,
-           chunk.source_id,
-           chunk.locator_id,
-           chunk.chunk_index,
-           chunk.text,
-           SUM(emb_value * q_value) AS dot
-    FROM chunk_embeddings AS emb
-    JOIN chunks AS chunk ON chunk.chunk_id = emb.chunk_id
-    JOIN sources AS source ON source.source_id = chunk.source_id
-    CROSS JOIN LATERAL unnest(emb.embedding, %(query_embedding)s::float8[])
-        AS t(emb_value, q_value)
-    WHERE source.course_id = %(course_id)s
-      AND source.status = 'indexed'
-      AND emb.model = %(model)s
-      AND cardinality(emb.embedding) = cardinality(%(query_embedding)s::float8[])
-    GROUP BY chunk.chunk_id, chunk.source_id, chunk.locator_id,
-             chunk.chunk_index, chunk.text
-) AS scored
-ORDER BY scored.dot DESC
-LIMIT %(limit)s;
+-- name: embedding_rows
+-- Embedding seam input: every indexed chunk's vector under the current
+-- model for this course. Scoring (dot product) happens in numpy — a
+-- course's vectors fit in memory comfortably, and brute force over a few
+-- thousand chunks takes milliseconds.
+SELECT chunk.chunk_id,
+       chunk.source_id,
+       chunk.locator_id,
+       chunk.chunk_index,
+       chunk.text,
+       emb.dimension,
+       emb.embedding
+FROM chunk_embeddings AS emb
+JOIN chunks AS chunk ON chunk.chunk_id = emb.chunk_id
+JOIN sources AS source ON source.source_id = chunk.source_id
+WHERE source.course_id = :course_id
+  AND source.status = 'indexed'
+  AND emb.model = :model;
 
 -- name: locator_labels
 SELECT locator.locator_id,
@@ -150,34 +128,12 @@ SELECT locator.locator_id,
        source.filename
 FROM locators AS locator
 JOIN sources AS source ON source.source_id = locator.source_id
-WHERE locator.locator_id = ANY(%(locator_ids)s::uuid[]);
+WHERE locator.locator_id IN (SELECT value FROM json_each(:locator_ids));
 
--- name: concept_synonym_matches
--- Static concept matching for the dependency seam: concepts whose name or
--- synonyms appear in the query as whole words (word-boundary regex, case-
--- insensitive). Single-character names are rejected in SQL too (defense in
--- depth: 'f' or 'R' would match nearly every question).
--- Concept names are MODEL-EXTRACTED, so every regex metacharacter in them is
--- escaped before it reaches the regex engine. Unescaped, a name like 'f(x'
--- raises InvalidRegularExpression and takes down the whole retrieve() call,
--- and 'a+b' silently matches 'aaab'. Names like 'O(n)' and 'f(x)' are the
--- common case in a maths or CS course, not the tail. Same threat model the
--- keyword seam handles by tokenizing before to_tsquery.
-SELECT concept.concept_id, concept.name
-FROM concepts AS concept
-WHERE concept.course_id = %(course_id)s
-  AND (
-    (char_length(concept.name) >= 2
-     AND %(query_lower)s ~ ('(^|[^a-z0-9])'
-         || regexp_replace(lower(concept.name), '([\\^$.|?*+()[\]{}-])', '\\\1', 'g')
-         || '([^a-z0-9]|$)'))
-    OR EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements_text(concept.synonyms) AS syn
-        WHERE char_length(syn) >= 2
-          AND %(query_lower)s ~ ('(^|[^a-z0-9])'
-              || regexp_replace(lower(syn), '([\\^$.|?*+()[\]{}-])', '\\\1', 'g')
-              || '([^a-z0-9]|$)')
-    )
-  )
-LIMIT %(limit)s;
+-- name: course_concepts
+-- The dependency seam's matcher input. Matching itself happens in Python
+-- (whole-word, case-insensitive, regex-escaped model-extracted names).
+SELECT concept_id, name, synonyms
+FROM concepts
+WHERE course_id = :course_id
+ORDER BY name, concept_id;

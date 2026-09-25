@@ -1,29 +1,31 @@
 [version]
-lifecycle_config_version = "3"
+lifecycle_config_version = "4"
 
-[archive]
-grace_days = 90
+[trash]
+# A deleted course stays restorable for this long, then is purged (its
+# course-memory keepsake survives). User-configurable later via
+# app_settings; this is the default.
+retention_days = 30
 maintenance_interval_seconds = 3600
+
+[memory]
 summary_version = "deterministic-v1"
 summary_base_tokens = 800
+max_tokens = 5000
 
-[memory_tokens]
-free = 1000
-paid = 5000
+[uploads]
+# Largest single upload accepted. Local disk is the only cost; this bound
+# keeps one mistaken drag-and-drop from filling it.
+max_raw_upload_bytes = 1073741824
 
 [decompression]
-# Hard ceiling on unzipped bytes per stored source. Quota charges stored
-# (compressed) bytes, so a stored file may expand past its quota cost at
-# read time; this cap is the guard, never a quota replacement. MUST stay
-# >= every tier's max_raw_upload_bytes (paid ceiling is 1 GB): stored
-# files are our gzip of a body that already passed that ceiling, so the
-# legitimate expansion domain is 0..max_raw_upload_bytes. The invariant
-# is pinned by test_decompression_cap_covers_raw_upload_ceilings.
+# Hard ceiling on unzipped bytes per stored source. MUST stay >=
+# max_raw_upload_bytes: stored files are our gzip of a body that already
+# passed that ceiling, so legitimate expansion reaches at least that size.
+# The invariant is pinned by test_decompression_cap_covers_raw_upload_ceiling.
 max_decompressed_bytes = 1073741824
 
 [cleanup]
-max_attempts = 5
-retry_delay_seconds = 300
 # Files younger than this are never swept as orphans: an in-flight upload
 # holds its file open only for seconds, so a full hour is safely conservative.
 orphan_min_age_seconds = 3600

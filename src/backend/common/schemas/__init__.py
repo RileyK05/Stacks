@@ -5,15 +5,11 @@ helpers live in `base`.
 """
 
 from src.backend.common.schemas.base import (
+    INGESTION_TASKS,
     KNOWN_CITATION_TARGETS,
     KNOWN_CLAIM_TYPES,
     KNOWN_GENERATION_TASKS,
     AnalogyUsage,
-    CourseEnrollmentRole,
-    CourseLifecycleStatus,
-    CourseVisibility,
-    EnrollmentSource,
-    EnrollmentStatus,
     ErrorCategory,
     EvidenceLevel,
     IngestionStage,
@@ -21,14 +17,12 @@ from src.backend.common.schemas.base import (
     MasteryState,
     MemoryObjectKind,
     MessageRole,
-    ObjectAccessScope,
     PrereqKind,
     ResponseStructure,
     SourcePresentation,
     SourceStatus,
     SourceType,
     TutorVerbosity,
-    UserTier,
 )
 from src.backend.common.schemas.chat import ChatSummary, Conversation, ConversationTurn
 from src.backend.common.schemas.evidence import (
@@ -41,20 +35,11 @@ from src.backend.common.schemas.evidence import (
     ModelDecision,
     Response,
     RetrievalTrace,
-    UserArtifactOrigin,
 )
 from src.backend.common.schemas.identity import (
-    ArchivedCourse,
     Course,
-    CourseArchiveAccess,
-    CourseEnrollment,
     CourseMemory,
-    CourseObject,
-    StorageCleanupJob,
     StudyPeriod,
-    User,
-    UserAccount,
-    UserArtifact,
 )
 from src.backend.common.schemas.ingestion import IngestionRun, IngestionStageRun
 from src.backend.common.schemas.memory import (
@@ -65,11 +50,6 @@ from src.backend.common.schemas.memory import (
     TocEntry,
 )
 from src.backend.common.schemas.source_content import Chunk, Locator, Source
-from src.backend.common.schemas.spend import (
-    GenerationLedgerEntry,
-    PremiumCode,
-    UserSubscription,
-)
 from src.backend.common.schemas.student_model import (
     AssessmentItem,
     Attempt,
@@ -77,10 +57,10 @@ from src.backend.common.schemas.student_model import (
     Recommendation,
 )
 from src.backend.common.schemas.tutor import TutorProfile
+from src.backend.common.schemas.usage import UsageLedgerEntry
 
 __all__ = [
     "ArchivedCitation",
-    "ArchivedCourse",
     "AnalogyUsage",
     "ArtifactOrigin",
     "AssessmentItem",
@@ -95,25 +75,17 @@ __all__ = [
     "Conversation",
     "ConversationTurn",
     "Course",
-    "CourseArchiveAccess",
-    "CourseEnrollment",
-    "CourseEnrollmentRole",
-    "CourseLifecycleStatus",
-    "CourseVisibility",
     "CourseMemory",
-    "CourseObject",
     "Dependency",
     "ErrorCategory",
     "EvidenceLevel",
-    "EnrollmentSource",
-    "EnrollmentStatus",
-    "GenerationLedgerEntry",
     "IngestionRun",
     "IngestionStage",
     "IngestionStageRun",
     "IngestionStatus",
     "KNOWN_CLAIM_TYPES",
     "KNOWN_CITATION_TARGETS",
+    "INGESTION_TASKS",
     "KNOWN_GENERATION_TASKS",
     "Locator",
     "MasteryState",
@@ -122,9 +94,7 @@ __all__ = [
     "MemoryObjectKind",
     "MessageRole",
     "ModelDecision",
-    "ObjectAccessScope",
     "PrereqKind",
-    "PremiumCode",
     "Recommendation",
     "Response",
     "ResponseStructure",
@@ -134,15 +104,9 @@ __all__ = [
     "SourcePresentation",
     "SourceType",
     "StudyPeriod",
-    "StorageCleanupJob",
     "TableOfContents",
     "TocEntry",
     "TutorProfile",
     "TutorVerbosity",
-    "User",
-    "UserAccount",
-    "UserArtifact",
-    "UserArtifactOrigin",
-    "UserSubscription",
-    "UserTier",
+    "UsageLedgerEntry",
 ]

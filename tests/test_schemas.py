@@ -14,11 +14,9 @@ from src.backend.common.schemas import (
     ConceptMastery,
     Conversation,
     ConversationTurn,
-    CourseEnrollment,
+    Course,
     CourseMemory,
-    CourseObject,
     Dependency,
-    EnrollmentSource,
     EvidenceLevel,
     Locator,
     MasteryState,
@@ -36,24 +34,12 @@ from src.backend.common.schemas import (
     StudyPeriod,
     TableOfContents,
     TocEntry,
-    User,
-    UserAccount,
-    UserArtifact,
-    UserArtifactOrigin,
 )
-
-
-def test_user_defaults() -> None:
-    user = User(name="Ada")
-    assert user.user_id is not None
-    assert user.created_at is not None
 
 
 def test_source_rejects_invalid_source_type() -> None:
     with pytest.raises(ValidationError):
         Source(
-            object_id=uuid4(),
-            uploaded_by_user_id=uuid4(),
             course_id=uuid4(),
             filename="week1.pdf",
             mime_type="application/pdf",
@@ -63,8 +49,6 @@ def test_source_rejects_invalid_source_type() -> None:
 
 def test_source_status_defaults_uploaded() -> None:
     source = Source(
-        object_id=uuid4(),
-        uploaded_by_user_id=uuid4(),
         course_id=uuid4(),
         filename="week1.pdf",
         mime_type="application/pdf",
@@ -133,36 +117,10 @@ def test_chunk_has_no_embedding() -> None:
     assert not hasattr(chunk, "embedding")
 
 
-def test_course_object_new_kind() -> None:
-    obj = CourseObject(
-        course_id=uuid4(),
-        created_by_user_id=uuid4(),
-        kind="flashcard",
-        content_type="application/json",
-        content={"front": "What is sufficiency?", "back": "..."},
-    )
-    assert obj.content["front"] == "What is sufficiency?"
 
 
-def test_course_object_kind_is_free_string() -> None:
-    obj = CourseObject(
-        course_id=uuid4(),
-        created_by_user_id=uuid4(),
-        kind="holodeck",  # a kind we haven't thought of yet
-        content_type="application/json",
-        content={"scene": "..."},
-    )
-    assert obj.kind == "holodeck"
 
 
-def test_course_object_requires_content_or_uri() -> None:
-    with pytest.raises(ValidationError):
-        CourseObject(
-            course_id=uuid4(),
-            created_by_user_id=uuid4(),
-            kind="flashcard",
-            content_type="application/json",
-        )
 
 
 def test_memory_object_evidence_level() -> None:
@@ -196,7 +154,6 @@ def test_assessment_item_defaults() -> None:
 def test_attempt_confidence_bounds() -> None:
     with pytest.raises(ValidationError):
         Attempt(
-            user_id=uuid4(),
             course_id=uuid4(),
             item_id=uuid4(),
             concept_ids=[uuid4()],
@@ -207,14 +164,13 @@ def test_attempt_confidence_bounds() -> None:
 
 
 def test_concept_mastery_defaults_unseen() -> None:
-    mastery = ConceptMastery(user_id=uuid4(), concept_id=uuid4())
+    mastery = ConceptMastery(concept_id=uuid4())
     assert mastery.state == MasteryState.UNSEEN
 
 
 def test_recommendation_traces_to_concept() -> None:
     concept_id = uuid4()
     rec = Recommendation(
-        user_id=uuid4(),
         course_id=uuid4(),
         concept_id=concept_id,
         reason="Missed the factorization condition",
@@ -224,7 +180,7 @@ def test_recommendation_traces_to_concept() -> None:
 
 
 def test_conversation_and_summary() -> None:
-    conv = Conversation(user_id=uuid4(), course_id=uuid4(), title="Sufficiency")
+    conv = Conversation(course_id=uuid4(), title="Sufficiency")
     turn = ConversationTurn(
         conversation_id=conv.conversation_id, role="user", content="hi"
     )
@@ -237,7 +193,6 @@ def test_conversation_and_summary() -> None:
 
 def test_retrieval_trace_records_retrieved() -> None:
     trace = RetrievalTrace(
-        user_id=uuid4(),
         course_id=uuid4(),
         query="factorization",
         retrieved_chunk_ids=[uuid4()],
@@ -275,7 +230,6 @@ def test_model_decision_stores_decision() -> None:
 
 def test_course_memory_survives_course_deletion() -> None:
     memory = CourseMemory(
-        user_id=uuid4(),
         course_id=uuid4(),  # course row may be gone; memory outlives it
         course_ref="former-course-id",
         name="Statistical Inference",
@@ -289,7 +243,6 @@ def test_course_memory_survives_course_deletion() -> None:
 
 def test_citation_snapshot_preserves_evidence() -> None:
     snapshot = CitationSnapshot(
-        user_id=uuid4(),
         course_id=uuid4(),
         source_id=uuid4(),
         source_name="Week 3 slides",
@@ -308,66 +261,16 @@ def test_citation_snapshot_preserves_evidence() -> None:
     assert snapshot.source_name == "Week 3 slides"
 
 
-def test_user_soft_delete_marker() -> None:
-    from datetime import UTC, datetime
-
-    user = UserAccount(
-        name="Ada",
-        email="ada@example.com",
-        delete_requested_at=datetime.now(UTC),
-    )
-    assert user.delete_requested_at is not None
 
 
-def test_public_user_has_no_credential_fields() -> None:
-    user = User(name="Ada", email="ada@example.com")
-    assert not hasattr(user, "password_hash")
-    assert not hasattr(user, "delete_requested_at")
 
 
-def test_internal_password_hash_masks_if_accidentally_serialized() -> None:
-    account = UserAccount(
-        name="Ada", email="ada@example.com", password_hash="sensitive-hash"
-    )
-    assert "sensitive-hash" not in account.model_dump_json()
 
 
-def test_course_enrollment_defaults_to_active_learner() -> None:
-    enrollment = CourseEnrollment(
-        course_id=uuid4(),
-        user_id=uuid4(),
-        enrollment_source=EnrollmentSource.INVITATION,
-        invited_by_user_id=uuid4(),
-    )
-    assert enrollment.status == "active"
-    assert enrollment.role == "learner"
 
 
-def test_self_service_enrollment_cannot_have_inviter() -> None:
-    with pytest.raises(ValidationError):
-        CourseEnrollment(
-            course_id=uuid4(),
-            user_id=uuid4(),
-            enrollment_source=EnrollmentSource.SELF_SERVICE,
-            invited_by_user_id=uuid4(),
-        )
 
 
-def test_user_artifact_has_separate_private_identity() -> None:
-    artifact = UserArtifact(
-        user_id=uuid4(),
-        source_course_id=uuid4(),
-        source_course_label="MATH 361",
-        kind="study_guide",
-        content_type="application/json",
-        content={"body": "private"},
-    )
-    origin = UserArtifactOrigin(
-        artifact_id=artifact.artifact_id,
-        tutor_profile_version="generic-v1",
-    )
-    assert artifact.user_id is not None
-    assert origin.artifact_id == artifact.artifact_id
 
 
 def test_week_removed() -> None:
@@ -375,3 +278,10 @@ def test_week_removed() -> None:
 
     assert not hasattr(schemas, "Week")
     assert hasattr(schemas, "StudyPeriod")
+
+
+def test_course_trash_columns_move_together() -> None:
+    course = Course(name="Topology")
+    assert not course.in_trash
+    with pytest.raises(ValidationError, match="set together"):
+        Course(name="Half deleted", deleted_at=course.created_at)

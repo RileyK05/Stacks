@@ -1,7 +1,6 @@
 pipeline_version = "3"
 max_attempts = 2
 chunk_max_tokens = 512
-prompt_window_chars = 8000
 # The ingestion worker's own poll interval (review catch #7: it was
 # sharing lifecycle's maintenance_interval_seconds = 3600, so uploads
 # waited up to an hour). This knob is the ingestion loop's; the worker

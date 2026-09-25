@@ -1,203 +1,129 @@
-"""Tutor answer endpoint tests (M1 close-out).
+"""Tutor answer endpoint tests.
 
-Covers the four behaviors that make the endpoint trustworthy:
-enrollment gating (the retrieval-caller check), strict refusal when
-retrieval finds nothing (Fork B lean), honest 503 while no provider is
-configured, and the stubbed-provider happy path where the answer, its
-citations, and the retrieval trace are consistent.
+Covers what makes the endpoint trustworthy: strict refusal when
+retrieval finds nothing (Fork B lean), an honest 503 while no model is
+configured, a 402 once the user's cloud budget is spent, and the happy
+path where the answer, its citations, and the retrieval trace agree.
 """
 
-import uuid as uuid_module
-from uuid import uuid4
-
+import pytest
 from fastapi.testclient import TestClient
-from src.backend.common import provider
+from src.backend.common import usage_repo
 from src.backend.common.db import connection
-from tests.conftest import verify_email
+from tests.conftest import configure_test_provider
+from tests.factories import add_chunk
 
-PASSWORD = "correct-horse-battery"
-
-
-def _register(client: TestClient) -> tuple[str, str, dict]:
-    email = f"{uuid4().hex}@test.invalid"
-    response = client.post(
-        "/auth/register",
-        json={"name": "Tutor User", "email": email, "password": PASSWORD},
-    )
-    assert response.status_code == 201, response.text
-    login = client.post("/auth/login", json={"email": email, "password": PASSWORD})
-    token = login.json()["access_token"]
-    verify_email(client, token)
-    return token, email, response.json()
+GROUNDED_ANSWER = "linearity preserves structure [1]."
 
 
-def _headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
-def _verified_course(client: TestClient, token: str) -> str:
-    created = client.post(
-        "/courses", json={"name": "Tutor Course"}, headers=_headers(token)
-    )
+def _course(client: TestClient, name: str = "Tutor Course") -> str:
+    created = client.post("/courses", json={"name": name})
     assert created.status_code == 201, created.text
     return created.json()["course_id"]
 
 
-def _seed_chunks(course_id: str, user_id) -> None:
-    """Insert indexed chunks + locators directly so retrieval has
-    material without a provider (the ingestion model stages fail closed;
-    deterministic chunking of a text source is what the tutor tests
-    need)."""
-    locator_id = uuid_module.uuid4()
-    chunk_id = uuid_module.uuid4()
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO course_objects (course_id, created_by_user_id,"
-            " kind, content_type, content, access_scope)"
-            " VALUES (%s, %s, 'source', 'text/plain', '{}', 'enrolled')"
-            " RETURNING object_id",
-            (course_id, user_id),
-        )
-        object_id = cur.fetchone()[0]
-        cur.execute(
-            "INSERT INTO sources (source_id, object_id, uploaded_by_user_id,"
-            " course_id, filename, mime_type, source_type, uri, status,"
-            " file_hash, size_bytes, stored_encoding)"
-            " VALUES (%s, %s, %s, %s, 'notes.txt', 'text/plain', 'notes',"
-            " 'disk://x', 'indexed', %s, 10, 'identity')",
-            (
-                uuid_module.uuid4(),
-                object_id,
-                user_id,
-                course_id,
-                f"hash-{uuid_module.uuid4().hex}",
-            ),
-        )
-        cur.execute(
-            "INSERT INTO locators (locator_id, source_id, locator_type,"
-            " start, end_value, label)"
-            " VALUES (%s, (SELECT source_id FROM sources WHERE"
-            " course_id = %s LIMIT 1), 'page', '0', '100', 'page 1')",
-            (locator_id, course_id),
-        )
-        cur.execute(
-            "INSERT INTO chunks (chunk_id, source_id, locator_id,"
-            " chunk_index, text)"
-            " VALUES (%s, (SELECT source_id FROM sources WHERE"
-            " course_id = %s LIMIT 1), %s, 0,"
-            " 'linearity means preserving vector addition and scalar"
-            " multiplication under transformation.')",
-            (chunk_id, course_id, locator_id),
-        )
-        conn.commit()
-
-
-def test_ask_requires_enrollment(client: TestClient) -> None:
-    """The retrieval-caller check the review demanded: a user with no
-    relationship to the course gets 404 (not 403 — existence is not
-    disclosed), even though the course exists."""
-    token, _, _ = _register(client)
-    stranger_token, _, _ = _register(client)
-    course_id = _verified_course(client, token)
-    response = client.post(
-        f"/courses/{course_id}/ask",
-        json={"question": "what is linearity?"},
-        headers=_headers(stranger_token),
+def _seeded_course(client: TestClient) -> str:
+    course_id = _course(client)
+    add_chunk(
+        course_id,
+        "linearity means preserving vector addition and scalar multiplication"
+        " under transformation.",
     )
-    assert response.status_code == 404
+    return course_id
+
+
+def _ask(client: TestClient, course_id: str, question: str = "what is linearity"):
+    return client.post(f"/courses/{course_id}/ask", json={"question": question})
+
+
+def _trace_count(course_id: str) -> int:
+    with connection() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM retrieval_traces WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()["n"]
+
+
+def test_ask_unknown_or_trashed_course_is_404(client: TestClient) -> None:
+    course_id = _seeded_course(client)
+    client.delete(f"/courses/{course_id}")
+    assert _ask(client, course_id).status_code == 404
 
 
 def test_ask_refuses_when_nothing_found(client: TestClient) -> None:
     """Fork B lean, enforced: empty retrieval is a refusal (404 with the
-    reason), never an ungrounded answer. True for an owned course with
-    no material."""
-    token, _, _ = _register(client)
-    course_id = _verified_course(client, token)
-    response = client.post(
-        f"/courses/{course_id}/ask",
-        json={"question": "what is linearity"},
-        headers=_headers(token),
-    )
+    reason), never an ungrounded answer."""
+    response = _ask(client, _course(client))
     assert response.status_code == 404
     assert "nothing" in response.json()["detail"].lower()
 
 
 def test_ask_is_honest_about_missing_provider(client: TestClient) -> None:
-    """No provider picked yet: an answer attempt must 503 with the real
-    reason, never pretend. The retrieval trace must NOT survive a failed
-    generation (same transaction)."""
-    token, _, body = _register(client)
-    course_id = _verified_course(client, token)
-    _seed_chunks(course_id, body["user_id"])
-    response = client.post(
-        f"/courses/{course_id}/ask",
-        json={"question": "what is linearity"},
-        headers=_headers(token),
-    )
+    """No model configured: 503 with the real reason, and no trace for an
+    answer that never happened."""
+    course_id = _seeded_course(client)
+    response = _ask(client, course_id)
     assert response.status_code == 503, response.text
-    assert "provider" in response.json()["detail"].lower()
-
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM retrieval_traces WHERE course_id = %s",
-            (course_id,),
-        )
-        assert cur.fetchone()[0] == 0, "failed generation must roll back the trace"
+    assert "settings" in response.json()["detail"].lower()
+    assert _trace_count(course_id) == 0
 
 
-def test_ask_happy_path_stubbed_provider(client: TestClient, monkeypatch) -> None:
-    """With the provider stubbed, the full flow works: retrieval finds
-    the chunk, the answer comes back with citations, and the trace
-    records the same chunk set."""
-    token, _, body = _register(client)
-    user_id = body["user_id"]
-    course_id = _verified_course(client, token)
-    _seed_chunks(course_id, user_id)
-    monkeypatch.setattr(
-        provider,
-        "_call_provider",
-        lambda task, model, prompt, *, images=None: (
-            "linearity preserves structure [1].",
-            40,
-            12,
-        ),
+def test_ask_is_blocked_by_spent_cloud_budget(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    _memory_keyring: dict[str, str],
+) -> None:
+    course_id = _seeded_course(client)
+    configure_test_provider(monkeypatch, GROUNDED_ANSWER, preset="openrouter")
+    _memory_keyring["openrouter"] = "sk-or-test"
+    usage_repo.set_monthly_budget(10)
+    usage_repo.record(
+        task="tutor_answer",
+        provider="openrouter",
+        model="m",
+        input_tokens=10,
+        output_tokens=0,
     )
-    response = client.post(
-        f"/courses/{course_id}/ask",
-        json={"question": "what is linearity"},
-        headers=_headers(token),
-    )
+    response = _ask(client, course_id)
+    assert response.status_code == 402
+    assert "budget" in response.json()["detail"]
+    assert _trace_count(course_id) == 0
+
+
+def test_ask_happy_path_stubbed_provider(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retrieval finds the chunk, the answer comes back with citations,
+    and the trace records the same chunk set."""
+    course_id = _seeded_course(client)
+    calls = configure_test_provider(monkeypatch, GROUNDED_ANSWER)
+    response = _ask(client, course_id)
     assert response.status_code == 200, response.text
     payload = response.json()
     assert "[1]" in payload["text"]
     assert len(payload["chunk_ids"]) == 1
-    assert payload["trace_id"]
-    assert payload["workspace"] == []
-    assert payload["withheld"] == []
+    assert payload["workspace"] == [] and payload["withheld"] == []
+    assert payload["model"] == "minicpm5-2b"
+    assert payload["fell_back_to_local"] is False
+    assert "linearity means preserving" in calls[0]["prompt"]
 
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT retrieved_chunk_ids FROM retrieval_traces"
-            " WHERE trace_id = %s",
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT retrieved_chunk_ids FROM retrieval_traces WHERE trace_id = ?",
             (payload["trace_id"],),
-        )
-        row = cur.fetchone()
-        assert row is not None, "trace must exist"
-        trace_chunk_ids = row[0]["chunk_ids"]
-        assert trace_chunk_ids == payload["chunk_ids"], (
-            "the trace and the answer must cite the same evidence"
-        )
+        ).fetchone()
+    assert row["retrieved_chunk_ids"]["chunk_ids"] == payload["chunk_ids"], (
+        "the trace and the answer must cite the same evidence"
+    )
 
 
 def test_ask_lifts_cited_workspace_items_and_withholds_uncited(
-    client: TestClient, monkeypatch
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Workspace blocks leave the chat body; a cited quiz is returned
     structured, an uncited document is withheld with its reason
     (decision 009 hard gate at the endpoint)."""
-    token, _, body = _register(client)
-    course_id = _verified_course(client, token)
-    _seed_chunks(course_id, body["user_id"])
+    course_id = _seeded_course(client)
     answer = (
         "Linearity preserves structure [1].\n\n"
         "```workspace\n"
@@ -208,18 +134,8 @@ def test_ask_lifts_cited_workspace_items_and_withholds_uncited(
         '{"type": "document", "content": "Uncited notes", "sources": [5]}\n'
         "```"
     )
-    monkeypatch.setattr(
-        provider,
-        "_call_provider",
-        lambda task, model, prompt, *, images=None: (answer, 40, 12),
-    )
-    response = client.post(
-        f"/courses/{course_id}/ask",
-        json={"question": "what is linearity"},
-        headers=_headers(token),
-    )
-    assert response.status_code == 200, response.text
-    payload = response.json()
+    configure_test_provider(monkeypatch, answer)
+    payload = _ask(client, course_id).json()
     assert payload["text"] == "Linearity preserves structure [1]."
     assert [item["type"] for item in payload["workspace"]] == ["quiz"]
     assert payload["workspace"][0]["questions"][0]["sources"] == [1]
@@ -227,145 +143,31 @@ def test_ask_lifts_cited_workspace_items_and_withholds_uncited(
     assert "document cites [5]" in payload["withheld"][0]
 
 
-def test_ask_unauthenticated_rejected(client: TestClient) -> None:
-    token, _, _ = _register(client)
-    course_id = _verified_course(client, token)
-    response = client.post(
-        f"/courses/{course_id}/ask", json={"question": "linearity"}
-    )
-    assert response.status_code == 401
-
-
-def test_ask_learner_enrollment_granted(client: TestClient, monkeypatch) -> None:
-    """An enrolled (non-owner) learner can ask: the caller check is
-    ownership OR active enrollment."""
-    owner_token, _, owner_body = _register(client)
-    learner_token, _, learner_body = _register(client)
-    # Public course so the learner can self-enroll
-    created = client.post(
-        "/courses",
-        json={"name": "Public Tutor Course", "visibility": "public"},
-        headers=_headers(owner_token),
-    )
-    assert created.status_code == 201, created.text
-    course_id = created.json()["course_id"]
-    enrolled = client.post(
-        f"/courses/{course_id}/enroll", headers=_headers(learner_token)
-    )
-    assert enrolled.status_code == 201, enrolled.text
-    _seed_chunks(course_id, owner_body["user_id"])
-    monkeypatch.setattr(
-        provider,
-        "_call_provider",
-        lambda task, model, prompt, *, images=None: (
-            "linearity preserves structure [1].",
-            40,
-            12,
-        ),
-    )
-    response = client.post(
-        f"/courses/{course_id}/ask",
-        json={"question": "what is linearity"},
-        headers=_headers(learner_token),
-    )
+def test_trace_citations_happy_path(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Chunk ids resolve into readable evidence: text + locator label +
+    filename (golden rule 1)."""
+    course_id = _seeded_course(client)
+    configure_test_provider(monkeypatch, GROUNDED_ANSWER)
+    trace_id = _ask(client, course_id).json()["trace_id"]
+    response = client.get(f"/courses/{course_id}/traces/{trace_id}/citations")
     assert response.status_code == 200, response.text
-    assert response.json()["chunk_ids"]
-
-def test_trace_citations_happy_path(client: TestClient, monkeypatch) -> None:
-    """The citations endpoint resolves an answer's chunk_ids into
-    readable evidence: chunk text + locator label + filename (golden
-    rule 1 — the UI can show what the tutor read and where it came
-    from)."""
-    token, _, body = _register(client)
-    user_id = body["user_id"]
-    course_id = _verified_course(client, token)
-    _seed_chunks(course_id, user_id)
-    monkeypatch.setattr(
-        provider,
-        "_call_provider",
-        lambda task, model, prompt, *, images=None: (
-            "linearity preserves structure [1].",
-            40,
-            12,
-        ),
-    )
-    asked = client.post(
-        f"/courses/{course_id}/ask",
-        json={"question": "what is linearity"},
-        headers=_headers(token),
-    )
-    assert asked.status_code == 200, asked.text
-    trace_id = asked.json()["trace_id"]
-    response = client.get(
-        f"/courses/{course_id}/traces/{trace_id}/citations",
-        headers=_headers(token),
-    )
-    assert response.status_code == 200, response.text
-    citations = response.json()
-    assert len(citations) == 1
-    citation = citations[0]
+    [citation] = response.json()
     assert citation["filename"] == "notes.txt"
-    assert citation["label"] == "page 1"
-    assert citation["locator_type"] == "page"
+    assert (citation["label"], citation["locator_type"]) == ("page 1", "page")
     assert "linearity" in citation["text"].lower()
     assert citation["chunk_index"] == 0
 
 
-def test_trace_citations_rejects_foreign_trace(client: TestClient, monkeypatch) -> None:
-    """A trace id from another course must not read as this course's
-    citations — the WHERE pins trace to course; guessing ids 404s."""
-    token, _, body = _register(client)
-    user_id = body["user_id"]
-    course_id = _verified_course(client, token)
-    _seed_chunks(course_id, user_id)
-    monkeypatch.setattr(
-        provider,
-        "_call_provider",
-        lambda task, model, prompt, *, images=None: (
-            "linearity preserves structure [1].",
-            40,
-            12,
-        ),
-    )
-    asked = client.post(
-        f"/courses/{course_id}/ask",
-        json={"question": "what is linearity"},
-        headers=_headers(token),
-    )
-    trace_id = asked.json()["trace_id"]
-    other = _verified_course(client, token)
-    response = client.get(
-        f"/courses/{other}/traces/{trace_id}/citations",
-        headers=_headers(token),
-    )
-    assert response.status_code == 404
-
-
-def test_trace_citations_requires_enrollment(client: TestClient, monkeypatch) -> None:
-    """A stranger (not owner, not enrolled) gets 404 — existence not
-    disclosed."""
-    owner_token, _, owner_body = _register(client)
-    owner_course = _verified_course(client, owner_token)
-    _seed_chunks(owner_course, owner_body["user_id"])
-    monkeypatch.setattr(
-        provider,
-        "_call_provider",
-        lambda task, model, prompt, *, images=None: (
-            "linearity preserves structure [1].",
-            40,
-            12,
-        ),
-    )
-    asked = client.post(
-        f"/courses/{owner_course}/ask",
-        json={"question": "what is linearity"},
-        headers=_headers(owner_token),
-    )
-    assert asked.status_code == 200, asked.text
-    trace_id = asked.json()["trace_id"]
-    stranger_token, _, _ = _register(client)
-    response = client.get(
-        f"/courses/{owner_course}/traces/{trace_id}/citations",
-        headers=_headers(stranger_token),
-    )
+def test_trace_citations_rejects_foreign_trace(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trace id from another course 404s — the WHERE pins trace to
+    course, so guessing ids reads nothing."""
+    course_id = _seeded_course(client)
+    configure_test_provider(monkeypatch, GROUNDED_ANSWER)
+    trace_id = _ask(client, course_id).json()["trace_id"]
+    other = _course(client, "Other")
+    response = client.get(f"/courses/{other}/traces/{trace_id}/citations")
     assert response.status_code == 404

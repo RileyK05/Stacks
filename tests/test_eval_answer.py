@@ -215,86 +215,17 @@ class ScriptedGenerate:
         )
 
 def _harness_course():
-    """An indexed source named so cases.json's course_tag resolves, with
-    one chunk under locator label 'page 1'."""
-    from uuid import uuid4
+    """An indexed source in a course named so cases.json's course_tag
+    resolves, with one chunk under locator label 'page 1'."""
+    from tests.factories import add_chunk, make_course
 
-    from src.backend.common import courses_repo, users_repo
-
-    user = users_repo.create(
-        "Answer Eval Tester", f"{uuid4().hex}@test.invalid", "not-a-hash"
+    course = make_course("harness-course")
+    add_chunk(
+        course.course_id,
+        "A linear transformation preserves addition and scalar multiplication.",
+        label="page 1",
     )
-    course = courses_repo.create_course(user.user_id, "harness-course")
-    source_id = _insert_source_like_retrieval(user, course)
-    _insert_harness_chunks(source_id)
-    return user, course
-
-
-def _insert_source_like_retrieval(user, course) -> str:
-    import uuid as uuid_module
-
-    from psycopg.rows import dict_row
-    from src.backend.common.db import connection
-
-    source_id = uuid_module.uuid4()
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        object_id = cur.execute(
-            "INSERT INTO course_objects (course_id, created_by_user_id,"
-            " kind, content_type, content, access_scope)"
-            " VALUES (%s, %s, 'source', 'text/plain', '{}', 'enrolled')"
-            " RETURNING object_id",
-            (course.course_id, user.user_id),
-        ).fetchone()["object_id"]
-        cur.execute(
-            "INSERT INTO sources (source_id, object_id,"
-            " uploaded_by_user_id, course_id, filename, mime_type,"
-            " source_type, uri, status, file_hash, size_bytes,"
-            " stored_encoding)"
-            " VALUES (%s, %s, %s, %s, 'notes.txt', 'text/plain', 'notes',"
-            " 'disk://x', 'indexed', %s, 10, 'identity')",
-            (
-                source_id,
-                object_id,
-                user.user_id,
-                course.course_id,
-                f"hash-{uuid_module.uuid4().hex}",
-            ),
-        )
-        conn.commit()
-    return str(source_id)
-
-
-def _insert_harness_chunks(source_id) -> None:
-    import uuid as uuid_module
-
-    from src.backend.common.db import connection
-
-    with connection() as conn, conn.cursor() as cur:
-        locator_id = uuid_module.uuid4()
-        chunk_id = uuid_module.uuid4()
-        cur.execute(
-            "INSERT INTO locators (locator_id, source_id, locator_type,"
-            " start, end_value, label)"
-            " VALUES (%s, %s, 'page', '0', '100', 'page 1')",
-            (locator_id, source_id),
-        )
-        cur.execute(
-            "INSERT INTO chunks (chunk_id, source_id, locator_id,"
-            " chunk_index, text) VALUES (%s, %s, %s, 0, %s)",
-            (
-                chunk_id,
-                source_id,
-                locator_id,
-                "A linear transformation preserves addition and scalar"
-                " multiplication.",
-            ),
-        )
-        cur.execute(
-            "INSERT INTO chunk_locators (chunk_id, locator_id)"
-            " VALUES (%s, %s)",
-            (chunk_id, locator_id),
-        )
-        conn.commit()
+    return course
 
 
 def test_run_answer_eval_end_to_end(tmp_path) -> None:
@@ -334,15 +265,10 @@ def test_seed_label_typo_is_unresolved_not_a_model_failure(tmp_path) -> None:
     """Review catch #5: labels matching nothing must surface as
     UNRESOLVED, never as a citation regression. And review catch #4:
     a suite with unresolved cases must NOT read all_passed."""
-    from uuid import uuid4
-
-    from src.backend.common import courses_repo, users_repo
     from src.backend.common.db import connection
+    from tests.factories import make_course
 
-    user = users_repo.create(
-        "Answer Eval Tester", f"{uuid4().hex}@test.invalid", "not-a-hash"
-    )
-    courses_repo.create_course(user.user_id, "harness-course")
+    make_course("harness-course")
     with connection() as conn:
         summary = run_answer_eval(
             conn,

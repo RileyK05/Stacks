@@ -17,7 +17,6 @@ from src.backend.common.schemas.base import (
 
 class TutorProfile(BaseRecord):
     profile_id: UUID = Field(default_factory=_new_id)
-    user_id: UUID | None = None
     profile_version: str
     verbosity: TutorVerbosity = TutorVerbosity.BALANCED
     analogy_usage: AnalogyUsage = AnalogyUsage.WHEN_HELPFUL

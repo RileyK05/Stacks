@@ -31,8 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
 
-from psycopg import Connection
-from psycopg.rows import dict_row
+from src.backend.common.db import Connection, json_ids
 from src.backend.common.queries import get
 from src.backend.retrieval import funnel
 from src.backend.retrieval.config import RetrievalPolicy
@@ -109,10 +108,9 @@ def load_cases(path: Path = EVAL_DIR / "cases.json") -> list[EvalCase]:
 
 
 def _resolve_course(conn: Connection, course_tag: str) -> UUID | None:
-    with conn.cursor(row_factory=dict_row) as cur:
-        row = cur.execute(
-            get("retrieval_traces", "course_by_tag"), {"tag": course_tag}
-        ).fetchone()
+    row = conn.execute(
+        get("retrieval_traces", "course_by_tag"), {"tag": course_tag}
+    ).fetchone()
     return row["course_id"] if row else None
 
 
@@ -122,11 +120,9 @@ def _labels_for_candidates(
     locator_ids = [candidate.locator_id for candidate in candidates]
     if not locator_ids:
         return frozenset()
-    with conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute(
-            get("retrieval", "locator_labels"),
-            {"locator_ids": locator_ids},
-        ).fetchall()
+    rows = conn.execute(
+        get("retrieval", "locator_labels"), {"locator_ids": json_ids(locator_ids)}
+    ).fetchall()
     return frozenset(row["label"] for row in rows)
 
 

@@ -23,8 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from psycopg import Connection
-from psycopg.rows import dict_row
+from src.backend.common.db import Connection
 from src.backend.common.queries import get
 from src.backend.retrieval.funnel import Candidate
 from src.backend.tutor.workspace import extract_workspace_items
@@ -301,10 +300,9 @@ def _resolve_course(
     """Deterministic resolution (review catch #3): reuse the retrieval
     eval's `course_by_tag` block — exact-name match first, then oldest
     course_id; never an undefined pick between duplicate names."""
-    with conn.cursor(row_factory=dict_row) as cur:
-        row = cur.execute(
-            get("retrieval_traces", "course_by_tag"), {"tag": course_tag}
-        ).fetchone()
+    row = conn.execute(
+        get("retrieval_traces", "course_by_tag"), {"tag": course_tag}
+    ).fetchone()
     if row is None:
         return None
     return course_tag, row["course_id"]
@@ -325,23 +323,22 @@ def _seed_candidates(
     (review catch #6)."""
     if not labels:
         return ()
-    with conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute(
-            """
-            SELECT chunk.chunk_id, chunk.source_id, chunk.locator_id,
-                   chunk.chunk_index, chunk.text
-            FROM chunks AS chunk
-            JOIN locators AS locator
-              ON locator.locator_id = chunk.locator_id
-            JOIN sources AS source
-              ON source.source_id = chunk.source_id
-            WHERE source.course_id = %(course_id)s
-              AND source.status = 'indexed'
-              AND locator.label = ANY(%(labels)s::text[])
-            ORDER BY chunk.source_id, chunk.chunk_index, chunk.chunk_id
-            """,
-            {"course_id": course_id, "labels": list(labels)},
-        ).fetchall()
+    rows = conn.execute(
+        """
+        SELECT chunk.chunk_id, chunk.source_id, chunk.locator_id,
+               chunk.chunk_index, chunk.text
+        FROM chunks AS chunk
+        JOIN locators AS locator
+          ON locator.locator_id = chunk.locator_id
+        JOIN sources AS source
+          ON source.source_id = chunk.source_id
+        WHERE source.course_id = :course_id
+          AND source.status = 'indexed'
+          AND locator.label IN (SELECT value FROM json_each(:labels))
+        ORDER BY chunk.source_id, chunk.chunk_index, chunk.chunk_id
+        """,
+        {"course_id": course_id, "labels": json.dumps(list(labels))},
+    ).fetchall()
     if not rows:
         return None
     return tuple(

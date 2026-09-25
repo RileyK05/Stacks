@@ -9,23 +9,30 @@ description = "Local-first course memory and adaptive study system"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.7",
-    "psycopg[binary]>=3.1",
-    "bcrypt>=4.1",
-    "PyJWT>=2.8",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
     "pypdf>=5.0",
     "pypdfium2>=4.0",
+    # pypdf needs fontTools to decode CFF/Type1 font encodings; without it
+    # extracted text is full of U+FFFD replacement characters.
+    "fonttools>=4.50",
     "Pillow>=10.0",
+    "numpy>=1.26",
+    "httpx>=0.27",
+    "keyring>=25",
 ]
 
 [project.optional-dependencies]
+# Self-hosted embedding model (configs/embeddings.toml). Temporary: the
+# local-first plan moves encoders to ONNX Runtime (docs/plan-local-first.md).
+embeddings = [
+    "sentence-transformers>=5.0",
+]
 dev = [
     "pytest>=8.0",
     "ruff>=0.5",
     "mypy>=1.10",
-    "httpx>=0.27",
 ]
 
 [tool.setuptools.packages.find]

@@ -1,88 +1,74 @@
--- name: count_owned_courses
-SELECT COUNT(*) AS owned
+-- Courses on this machine. Active = not in the trash.
+
+-- name: get_active
+SELECT course_id, name, created_at, deleted_at, purge_after
 FROM courses
-WHERE owner_user_id = %(owner_user_id)s AND lifecycle_status = 'active';
+WHERE course_id = :course_id AND deleted_at IS NULL;
 
--- name: get_by_id
-SELECT course_id, owner_user_id, code, name, visibility,
-       lifecycle_status, archived_at, purge_after
+-- name: get_any
+SELECT course_id, name, created_at, deleted_at, purge_after
 FROM courses
-WHERE course_id = %(course_id)s AND lifecycle_status = 'active';
+WHERE course_id = :course_id;
 
--- name: get_any_by_id
-SELECT course_id, owner_user_id, code, name, visibility,
-       lifecycle_status, archived_at, purge_after
+-- name: list_active
+SELECT course_id, name, created_at, deleted_at, purge_after
 FROM courses
-WHERE course_id = %(course_id)s;
+WHERE deleted_at IS NULL
+ORDER BY name COLLATE NOCASE, course_id;
 
--- name: get_by_join_code
-SELECT course_id, owner_user_id, code, name, visibility,
-       lifecycle_status, archived_at, purge_after
+-- name: list_trash
+SELECT course_id, name, created_at, deleted_at, purge_after
 FROM courses
-WHERE code = %(code)s AND lifecycle_status = 'active';
-
--- name: list_owned
-SELECT course_id, owner_user_id, code, name, visibility,
-       lifecycle_status, archived_at, purge_after
-FROM courses
-WHERE owner_user_id = %(owner_user_id)s AND lifecycle_status = 'active'
-ORDER BY name;
-
--- name: list_enrolled
-SELECT c.course_id, c.owner_user_id, c.code, c.name, c.visibility,
-       c.lifecycle_status, c.archived_at, c.purge_after
-FROM courses AS c
-JOIN course_enrollments AS e ON e.course_id = c.course_id
-WHERE e.user_id = %(user_id)s AND e.status = 'active'
-  AND c.lifecycle_status = 'active'
-ORDER BY c.name;
-
--- name: list_public
-SELECT course_id, owner_user_id, code, name, visibility,
-       lifecycle_status, archived_at, purge_after
-FROM courses
-WHERE visibility = 'public' AND lifecycle_status = 'active'
-ORDER BY name
-LIMIT %(limit)s;
-
--- name: course_source_stats
-SELECT course_id, COUNT(*) AS source_count, COALESCE(SUM(size_bytes), 0) AS stored
-FROM sources
-WHERE course_id = ANY(%(course_ids)s)
-GROUP BY course_id;
-
--- name: update_course
-UPDATE courses
-SET name = COALESCE(%(name)s, name),
-    visibility = COALESCE(%(visibility)s, visibility)
-WHERE course_id = %(course_id)s AND lifecycle_status = 'active'
-RETURNING course_id, owner_user_id, code, name, visibility,
-          lifecycle_status, archived_at, purge_after;
-
--- name: rotate_join_code
-UPDATE courses
-SET code = %(code)s
-WHERE course_id = %(course_id)s AND lifecycle_status = 'active'
-RETURNING course_id, owner_user_id, code, name, visibility,
-          lifecycle_status, archived_at, purge_after;
-
--- name: total_storage_bytes
-SELECT COALESCE(SUM(size_bytes), 0) AS stored
-FROM sources
-WHERE course_id IN (
-    SELECT course_id FROM courses WHERE owner_user_id = %(owner_user_id)s
-);
-
--- name: course_storage_bytes
-SELECT COALESCE(SUM(size_bytes), 0) AS stored
-FROM sources
-WHERE course_id = %(course_id)s;
+WHERE deleted_at IS NOT NULL
+ORDER BY deleted_at DESC, course_id;
 
 -- name: insert_course
-INSERT INTO courses (owner_user_id, code, name, visibility)
-VALUES (%(owner_user_id)s, %(code)s, %(name)s, %(visibility)s)
-RETURNING course_id, owner_user_id, code, name, visibility,
-          lifecycle_status, archived_at, purge_after;
+INSERT INTO courses (course_id, name)
+VALUES (:course_id, :name)
+RETURNING course_id, name, created_at, deleted_at, purge_after;
 
--- name: delete_course_row
-DELETE FROM courses WHERE course_id = %(course_id)s;
+-- name: rename_course
+UPDATE courses
+SET name = :name
+WHERE course_id = :course_id AND deleted_at IS NULL
+RETURNING course_id, name, created_at, deleted_at, purge_after;
+
+-- name: move_to_trash
+UPDATE courses
+SET deleted_at = :deleted_at, purge_after = :purge_after
+WHERE course_id = :course_id AND deleted_at IS NULL
+RETURNING course_id, name, created_at, deleted_at, purge_after;
+
+-- name: restore_from_trash
+UPDATE courses
+SET deleted_at = NULL, purge_after = NULL
+WHERE course_id = :course_id AND deleted_at IS NOT NULL
+RETURNING course_id, name, created_at, deleted_at, purge_after;
+
+-- name: due_for_purge
+SELECT course_id
+FROM courses
+WHERE purge_after IS NOT NULL AND purge_after <= :now
+ORDER BY purge_after
+LIMIT :limit;
+
+-- name: purge_trashed_course
+-- Cascades to every derived row (sources, chunks, embeddings, runs,
+-- knowledge, traces). Only a trashed course can be purged: deleting an
+-- active course always goes through the trash first.
+DELETE FROM courses
+WHERE course_id = :course_id AND deleted_at IS NOT NULL
+RETURNING course_id;
+
+-- name: course_source_stats
+SELECT course_id, COUNT(*) AS source_count,
+       COALESCE(SUM(size_bytes), 0) AS stored
+FROM sources
+WHERE course_id IN (SELECT value FROM json_each(:course_ids))
+GROUP BY course_id;
+
+-- name: all_course_ids
+SELECT course_id FROM courses;
+
+-- name: all_source_ids
+SELECT source_id FROM sources;

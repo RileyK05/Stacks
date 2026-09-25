@@ -2,81 +2,71 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from psycopg.rows import dict_row
-from src.backend.common import courses_lifecycle
-from src.backend.common.config import get_settings
-from src.backend.common.db import connection
-from src.backend.main import create_app
+
+# The developer's .env must never leak into the suite: get_settings()
+# only loads .env keys that are ABSENT from the environment, so pinning
+# these here (before any settings read) keeps a configured LLM key or a
+# real data directory out of every test.
+for _name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "APP_API_TOKEN"):
+    os.environ[_name] = ""
+os.environ["APP_ENV"] = "test"
 
 
-def _require_test_database() -> None:
-    """Tests delete rows wholesale (all @test.invalid users, their courses,
-    and derived rows). Refuse to run against a database whose name does not
-    look like a test target, unless PYTEST_ALLOW_ANY_DB is set — so a stray
-    .env pointed at a real environment fails fast instead of shredding it.
-    Local dev DBs named without 'test' (e.g. course_assistant) opt in via
-    the environment variable; that is a deliberate operator action."""
-    dsn = get_settings().dsn
-    lowered = dsn.lower()
-    if "test" not in lowered and not os.environ.get("PYTEST_ALLOW_ANY_DB"):
-        raise RuntimeError(
-            "refusing to run tests against a database whose name does not "
-            "contain 'test'. Set PYTEST_ALLOW_ANY_DB=1 to run against this "
-            f"database deliberately ({lowered.split('dbname=')[-1].split()[0]!r})."
-        )
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Path]:
+    """Every test gets its own freshly migrated SQLite file and upload
+    directory. Migration is a single small script, so per-test isolation
+    costs milliseconds and no test can see another's rows."""
+    from src.backend.common.migrate import migrate
 
-
-_require_test_database()
+    data_dir = tmp_path / "app-data"
+    monkeypatch.setenv("APP_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("DATABASE_PATH", str(data_dir / "test.db"))
+    monkeypatch.setenv("STORAGE_ROOT", str(data_dir / "raw"))
+    migrate()
+    yield data_dir
 
 
 @pytest.fixture
 def client() -> TestClient:
-    return TestClient(create_app())
+    """The API app (what the desktop shell mounts at /api)."""
+    from src.backend.main import create_api
+
+    return TestClient(create_api())
 
 
-def verify_email(client: TestClient, token: str) -> None:
-    """Mark the account behind a login token as email-verified, the way the
-    real flow would (outbox token -> verify endpoint). Used by every API
-    test that needs to pass the resource-creation gate."""
-    from src.backend.common import email_repo, users_repo
-    from src.backend.common.auth import token_user_id
+@pytest.fixture(autouse=True)
+def _memory_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, str]]:
+    """Tests never touch the OS credential store."""
+    from src.backend.common import secrets
 
-    user_id = token_user_id(token)
-    account = users_repo.get_by_id(user_id)
-    assert account is not None and account.email is not None
-    with connection() as conn:
-        plaintext = email_repo.issue_token(
-            conn,
-            user_id=user_id,
-            kind=email_repo.VERIFICATION_KIND,
-            to_email=account.email,
-            subject="test verification",
-            body_template="{token}",
-        )
-        conn.commit()
-    response = client.post(
-        f"/auth/verify-email/{plaintext}",
-        headers={"Authorization": f"Bearer {token}"},
+    store: dict[str, str] = {}
+    monkeypatch.setattr(secrets, "get_api_key", lambda provider: store.get(provider))
+    monkeypatch.setattr(
+        secrets, "set_api_key", lambda provider, key: store.__setitem__(provider, key)
     )
-    assert response.status_code == 200, response.text
+    monkeypatch.setattr(
+        secrets, "delete_api_key", lambda provider: store.pop(provider, None)
+    )
+    yield store
 
 
 @pytest.fixture(autouse=True)
 def _no_live_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Tests never depend on the operator's .env: the generation seam is
-    stubbed fail-closed by default (same contract as the pre-provider
-    milestone), so a configured LLM_API_KEY on the dev machine cannot
-    leak live HTTP calls into the suite. Tests that need a working
-    provider monkeypatch `_call_provider` themselves; tests that assert
-    the unavailable-path behavior get it without extra setup."""
+    """No test makes a live HTTP model call: the transport is stubbed
+    fail-closed. Tests that need a working provider monkeypatch
+    `_call_provider` themselves (and configure an endpoint)."""
     from src.backend.common import provider
 
-    def _unavailable(task, model, prompt, *, images=None):
+    def _unavailable(task, endpoint, prompt, *, images=None, response_schema=None):
         raise provider.ProviderUnavailableError(
-            f"no provider client configured yet (task={task}, model={model})"
+            f"no live provider in tests (task={task}, model={endpoint.model})"
         )
 
     monkeypatch.setattr(provider, "_call_provider", _unavailable)
@@ -85,15 +75,12 @@ def _no_live_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest.fixture(autouse=True)
 def _fake_embedding_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """No test loads the real embedding model (600MB, seconds per load).
-    The autouse stub installs a deterministic fake backend whose dimension
-    matches the configured contract (the seam enforces the config's
-    dimension per call — the fake must satisfy it, not dodge it); tests
-    that need REAL vectors call the real seam explicitly."""
+    """No test loads the real embedding model (hundreds of MB, seconds per
+    load). The stub's dimension matches the configured contract — the seam
+    enforces the config's dimension per call, so the fake must satisfy it,
+    not dodge it."""
     from src.backend.common import provider
-    from src.backend.common.embeddings_config import (
-        load_embedding_policy,
-    )
+    from src.backend.common.embeddings_config import load_embedding_policy
 
     class _FakeBackend:
         def __init__(self, dimension: int) -> None:
@@ -102,8 +89,13 @@ def _fake_embedding_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         def get_embedding_dimension(self) -> int:
             return self._dimension
 
-        def encode(self, texts, batch_size=32, normalize_embeddings=True,
-                   show_progress_bar=False):
+        def encode(
+            self,
+            texts,
+            batch_size=32,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        ):
             return [
                 [1.0 / (len(text) or 1) for _ in range(self._dimension)]
                 for text in texts
@@ -111,77 +103,35 @@ def _fake_embedding_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
     policy = load_embedding_policy()
     monkeypatch.setattr(
-        provider, "_EMBEDDING_BACKEND",
-        provider._EmbedBackend(
-            model=_FakeBackend(policy.dimension), policy=policy
-        ),
+        provider,
+        "_EMBEDDING_BACKEND",
+        provider._EmbedBackend(model=_FakeBackend(policy.dimension), policy=policy),
     )
     yield
     provider.reset_embedding_backend()
 
 
-@pytest.fixture(autouse=True)
-def _clean_test_users() -> Iterator[None]:
-    yield
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        course_rows = cur.execute(
-            """
-            SELECT course_id FROM courses
-            WHERE owner_user_id IN (
-                SELECT user_id FROM users WHERE email LIKE '%@test.invalid'
-            )
-            """
-        ).fetchall()
-        for row in course_rows:
-            courses_lifecycle._delete_subtree(cur, row["course_id"])
-        conn.execute(
-            """
-            DELETE FROM generation_ledger
-            WHERE user_id IN (
-                SELECT user_id FROM users WHERE email LIKE '%@test.invalid'
-            )
-            """
+def configure_test_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    reply: str | None = "stub answer",
+    *,
+    preset: str = "local",
+) -> list[dict[str, object]]:
+    """Point both task classes at `preset` and stub the transport to return
+    `reply`. Returns the list of recorded calls for assertions."""
+    from src.backend.common import provider, providers
+    from src.backend.common.providers import ProviderChoice, TaskClass
+
+    providers.save_choice(TaskClass.INTERACTIVE, ProviderChoice(preset=preset))
+    calls: list[dict[str, object]] = []
+
+    def _reply(task, endpoint, prompt, *, images=None, response_schema=None):
+        calls.append(
+            {"task": task, "endpoint": endpoint, "prompt": prompt, "images": images}
         )
-        conn.execute(
-            """
-            DELETE FROM course_memories
-            WHERE user_id IN (
-                SELECT user_id FROM users WHERE email LIKE '%@test.invalid'
-            )
-            """
-        )
-        conn.execute(
-            """
-            DELETE FROM citation_snapshots
-            WHERE user_id IN (
-                SELECT user_id FROM users WHERE email LIKE '%@test.invalid'
-            )
-            """
-        )
-        # Login-throttle state: the per-IP key is shared by every request from
-        # the test client, so failures would otherwise accumulate across tests
-        # and lock the whole suite out. It is ephemeral security state (a reset
-        # at worst unlocks a key), unlike audit rows.
-        conn.execute("DELETE FROM login_throttle")
-        # Cleanup jobs have no user FK; delete test-owned courses' jobs plus
-        # jobs whose course row no longer exists (left over from earlier test
-        # purges). A real environment's pending purge jobs must never be
-        # destroyed by a test run that happens to share the database.
-        conn.execute(
-            """
-            DELETE FROM storage_cleanup_jobs
-            WHERE course_id IN (
-                SELECT course_id FROM courses
-                WHERE owner_user_id IN (
-                    SELECT user_id FROM users
-                    WHERE email LIKE '%@test.invalid'
-                )
-            )
-               OR NOT EXISTS (
-                   SELECT 1 FROM courses
-                   WHERE courses.course_id = storage_cleanup_jobs.course_id
-               )
-            """
-        )
-        conn.execute("DELETE FROM users WHERE email LIKE '%@test.invalid'")
-        conn.commit()
+        if reply is None:
+            raise provider.ProviderUnavailableError("stubbed failure")
+        return reply, 10, 5
+
+    monkeypatch.setattr(provider, "_call_provider", _reply)
+    return calls

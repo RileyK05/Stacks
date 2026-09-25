@@ -1,62 +1,44 @@
-from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 from src.backend.common import storage
 from src.backend.common.db import connection
 from src.backend.common.lifecycle_config import load_lifecycle_policy
-from src.backend.common.schemas.base import UserTier
-from src.backend.common.tiers import load_tier_policies
-from tests.conftest import verify_email
-
-PASSWORD = "correct-horse-battery"
 
 
-@pytest.fixture(autouse=True)
-def _storage_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    monkeypatch.setattr(
-        "src.backend.common.storage.get_settings",
-        lambda: type("S", (), {"storage_root": str(tmp_path)})(),
-    )
-    return tmp_path
-
-
-def _user(client: TestClient) -> tuple[str, UUID]:
-    email = f"{uuid4().hex}@test.invalid"
-    registered = client.post(
-        "/auth/register",
-        json={"name": "Uploader", "email": email, "password": PASSWORD},
-    )
-    login = client.post("/auth/login", json={"email": email, "password": PASSWORD})
-    token = login.json()["access_token"]
-    verify_email(client, token)
-    return token, UUID(registered.json()["user_id"])
-
-
-def _headers(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
-
-
-def _course(client: TestClient, token: str) -> UUID:
-    response = client.post(
-        "/courses", json={"name": "Uploads"}, headers=_headers(token)
-    )
+def _course(client: TestClient, name: str = "Uploads") -> UUID:
+    response = client.post("/courses", json={"name": name})
     return UUID(response.json()["course_id"])
+
+
+def _upload(
+    client: TestClient,
+    course_id: UUID,
+    filename: str,
+    body: bytes,
+    mime: str = "text/plain",
+):
+    return client.post(
+        f"/courses/{course_id}/sources",
+        data={"source_type": "notes"},
+        files={"file": (filename, body, mime)},
+    )
+
+
+def _count_sources(course_id: UUID) -> int:
+    with connection() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM sources WHERE course_id = ?", (course_id,)
+        ).fetchone()["n"]
 
 
 def test_upload_streams_compresses_and_accounts_stored_bytes(
     client: TestClient,
 ) -> None:
-    token, _ = _user(client)
-    course_id = _course(client, token)
+    course_id = _course(client)
     raw = b"source-grounded notes " * 10_000
-    uploaded = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={"file": ("../week-1.txt", raw, "text/plain")},
-        headers=_headers(token),
-    )
+    uploaded = _upload(client, course_id, "../week-1.txt", raw)
 
     assert uploaded.status_code == 201, uploaded.text
     body = uploaded.json()
@@ -76,253 +58,133 @@ def test_upload_streams_compresses_and_accounts_stored_bytes(
     )
     with connection() as conn:
         recorded = conn.execute(
-            "SELECT size_bytes, stored_encoding FROM sources WHERE source_id = %s",
+            "SELECT size_bytes, stored_encoding FROM sources WHERE source_id = ?",
             (source_id,),
         ).fetchone()
-    assert recorded == (body["stored_size_bytes"], "gzip")
+        queued = conn.execute(
+            "SELECT reason FROM pending_ingestion WHERE source_id = ?", (source_id,)
+        ).fetchone()
+    assert (recorded["size_bytes"], recorded["stored_encoding"]) == (
+        body["stored_size_bytes"],
+        "gzip",
+    )
+    assert queued["reason"] == "uploaded_new_source"
 
-    view = client.get(f"/courses/{course_id}", headers=_headers(token)).json()
+    view = client.get(f"/courses/{course_id}").json()
     assert view["source_count"] == 1
     assert view["stored_bytes"] == body["stored_size_bytes"]
-    # Course-memory refresh is per worker BATCH now (fix #9), not per
-    # upload: the summary updates after the worker's next pass, not
-    # synchronously inside the upload transaction.
-    memory = client.get("/course-memories", headers=_headers(token)).json()[0]
-    assert "week-1.txt" not in memory["summary"], (
-        "the upload must not rebuild the summary synchronously"
-    )
+    # Course-memory refresh is per worker BATCH (fix #9), not per upload.
+    memory = client.get("/course-memories").json()[0]
+    assert "week-1.txt" not in memory["summary"]
 
 
-def test_duplicate_content_is_rejected_without_double_charge(
-    client: TestClient,
-) -> None:
-    token, _ = _user(client)
-    course_id = _course(client, token)
+def test_duplicate_content_is_rejected(client: TestClient) -> None:
+    course_id = _course(client)
     payload = b"same content" * 100
-    first = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={"file": ("one.txt", payload, "text/plain")},
-        headers=_headers(token),
-    )
-    second = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={"file": ("two.txt", payload, "text/plain")},
-        headers=_headers(token),
-    )
-    assert first.status_code == 201
-    assert second.status_code == 409
-    with connection() as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM sources WHERE course_id = %s", (course_id,)
-        ).fetchone()[0] == 1
+    assert _upload(client, course_id, "one.txt", payload).status_code == 201
+    assert _upload(client, course_id, "two.txt", payload).status_code == 409
+    assert _count_sources(course_id) == 1
 
 
-def test_only_owner_can_upload(client: TestClient) -> None:
-    owner_token, _ = _user(client)
-    stranger_token, _ = _user(client)
-    course_id = _course(client, owner_token)
-    response = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={"file": ("notes.txt", b"notes", "text/plain")},
-        headers=_headers(stranger_token),
-    )
-    assert response.status_code == 404
+def test_upload_into_unknown_or_trashed_course_is_404(client: TestClient) -> None:
+    course_id = _course(client)
+    client.delete(f"/courses/{course_id}")
+    assert _upload(client, course_id, "late.txt", b"text").status_code == 404
+    assert client.get(f"/courses/{course_id}/sources").status_code == 404
+    assert not (storage.storage_root() / str(course_id)).exists() or not any(
+        (storage.storage_root() / str(course_id)).iterdir()
+    ), "a rejected upload must leave no file behind"
 
 
-def test_raw_body_ceiling_is_separate_from_stored_quota(
+def test_raw_body_ceiling_rejects_oversized_uploads(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    token, _ = _user(client)
-    course_id = _course(client, token)
-    base = load_tier_policies().policy_for(UserTier.FREE)
-    small_raw_policy = base.model_copy(update={"max_raw_upload_bytes": 10})
-    policies = type(
-        "Policies",
-        (),
-        {"policy_for": lambda self, tier: small_raw_policy},
-    )()
+    course_id = _course(client)
+    small = load_lifecycle_policy().model_copy(
+        update={"max_raw_upload_bytes": 10, "max_decompressed_bytes": 10}
+    )
     monkeypatch.setattr(
-        "src.backend.api.sources.tier_config.load_tier_policies",
-        lambda: policies,
+        "src.backend.common.sources_repo.load_lifecycle_policy", lambda: small
     )
-
-    response = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={"file": ("large.txt", b"x" * 11, "text/plain")},
-        headers=_headers(token),
-    )
+    response = _upload(client, course_id, "large.txt", b"x" * 11)
     assert response.status_code == 413
-    with connection() as conn:
-        assert conn.execute(
-            "SELECT COUNT(*) FROM sources WHERE course_id = %s", (course_id,)
-        ).fetchone()[0] == 0
+    assert _count_sources(course_id) == 0
 
 
-def test_archived_course_copy_recreates_stored_sources(
-    client: TestClient,
-) -> None:
-    token, _ = _user(client)
-    course_id = _course(client, token)
-    raw = b"copy this grounded source" * 500
-    uploaded = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={"file": ("copy.txt", raw, "text/plain")},
-        headers=_headers(token),
-    )
-    assert uploaded.status_code == 201
-    assert client.delete(
-        f"/courses/{course_id}", headers=_headers(token)
-    ).status_code == 204
-
-    copied = client.post(
-        f"/course-archives/{course_id}/copy",
-        json={"name": "Recovered"},
-        headers=_headers(token),
-    )
-    assert copied.status_code == 201, copied.text
-    copied_id = UUID(copied.json()["course_id"])
-    copied_view = client.get(
-        f"/courses/{copied_id}", headers=_headers(token)
-    ).json()
-    assert copied_view["source_count"] == 1
-    with connection() as conn:
-        source_id, encoding = conn.execute(
-            "SELECT source_id, stored_encoding FROM sources WHERE course_id = %s",
-            (copied_id,),
-        ).fetchone()
-    assert (
-        storage.read_stored(
-            copied_id,
-            source_id,
-            encoding,
-            max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
-        )
-        == raw
-    )
-
-
-def test_upload_rejects_uningestable_mime_before_charge(client) -> None:
-    """Review catch #12: a zip used to be stored + charged against quota,
-    then failed at extract_text — the quota ratchet. The boundary now
-    rejects before any storage write: 415, and nothing exists after."""
-    from src.backend.common.db import connection
-
-    owner_token, _owner_id = _user(client)
-    course_id = _course(client, owner_token)
-    response = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={
-            "file": ("archive.zip", b"PK\x03\x04 fake zip", "application/zip")
-        },
-        headers=_headers(owner_token),
+def test_upload_rejects_uningestable_mime_before_storing(client: TestClient) -> None:
+    """Review catch #12: an un-ingestable file used to be stored, then
+    failed at extract_text. The boundary rejects before any write."""
+    course_id = _course(client)
+    response = _upload(
+        client, course_id, "archive.zip", b"PK\x03\x04 fake zip", "application/zip"
     )
     assert response.status_code == 415, response.text
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*) FROM sources WHERE course_id = %s",
-            (course_id,),
-        )
-        assert cur.fetchone()[0] == 0, "rejected upload must store nothing"
+    assert _count_sources(course_id) == 0
 
 
-def test_source_list_shows_status_and_error(client) -> None:
-    """Review catch #6: the surface was write-only. The owner can now
-    list their files with live status — a failed upload is VISIBLE,
-    with its reason, instead of a silent 201 that was the last word."""
-    owner_token, _ = _user(client)
-    course_id = _course(client, owner_token)
-    ok = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={"file": ("good.txt", b"readable text", "text/plain")},
-        headers=_headers(owner_token),
-    )
-    assert ok.status_code == 201, ok.text
-    listed = client.get(
-        f"/courses/{course_id}/sources", headers=_headers(owner_token)
-    )
-    assert listed.status_code == 200, listed.text
-    rows = listed.json()
-    assert len(rows) == 1
-    assert rows[0]["filename"] == "good.txt"
-    assert rows[0]["status"] == "uploaded"
+def test_source_list_shows_status(client: TestClient) -> None:
+    course_id = _course(client)
+    assert _upload(client, course_id, "good.txt", b"readable text").status_code == 201
+    rows = client.get(f"/courses/{course_id}/sources").json()
+    assert [(row["filename"], row["status"]) for row in rows] == [
+        ("good.txt", "uploaded")
+    ]
 
 
-def test_source_list_is_owner_only(client) -> None:
-    """Failure reasons are owner-facing operational data; a learner or
-    stranger gets 404 (existence not disclosed)."""
-    owner_token, _ = _user(client)
-    stranger_token, _ = _user(client)
-    course_id = _course(client, owner_token)
-    response = client.get(
-        f"/courses/{course_id}/sources", headers=_headers(stranger_token)
-    )
-    assert response.status_code == 404
-
-
-def test_requeue_failed_source_roundtrip(client) -> None:
-    """The deliberate retry path is finally reachable (review catch #6):
-    a failed source requeues via the API, lands back in the queue with
-    the requeue reason, and the worker picks it up (wakeup is a no-op in
-    tests — the queue row is what matters)."""
-    owner_token, owner_id = _user(client)
-    course_id = _course(client, owner_token)
-    uploaded = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={"file": ("retry.txt", b"some text", "text/plain")},
-        headers=_headers(owner_token),
-    )
-    source_id = uploaded.json()["source_id"]
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE sources SET status = 'failed',"
-            " error_message = 'ingestion failed at update_toc'"
-            " WHERE source_id = %s",
+def test_requeue_failed_source_roundtrip(client: TestClient) -> None:
+    course_id = _course(client)
+    source_id = _upload(client, course_id, "retry.txt", b"some text").json()[
+        "source_id"
+    ]
+    with connection() as conn:
+        conn.execute(
+            "UPDATE sources SET status = 'failed', error_message = 'boom'"
+            " WHERE source_id = ?",
             (source_id,),
         )
-        cur.execute("DELETE FROM pending_ingestion WHERE source_id = %s", (source_id,))
+        conn.execute("DELETE FROM pending_ingestion WHERE source_id = ?", (source_id,))
         conn.commit()
 
-    requeued = client.post(
-        f"/courses/{course_id}/sources/{source_id}/requeue",
-        headers=_headers(owner_token),
-    )
+    listed = client.get(f"/courses/{course_id}/sources").json()
+    assert listed[0]["error_message"] == "boom"
+
+    requeued = client.post(f"/courses/{course_id}/sources/{source_id}/requeue")
     assert requeued.status_code == 200, requeued.text
-    with connection() as conn, conn.cursor() as cur:
-        status_row = cur.execute(
-            "SELECT status FROM sources WHERE source_id = %s",
+    with connection() as conn:
+        status_row = conn.execute(
+            "SELECT status, error_message FROM sources WHERE source_id = ?",
             (source_id,),
         ).fetchone()
-        assert status_row[0] == "uploaded"
-        queue_row = cur.execute(
-            "SELECT reason FROM pending_ingestion WHERE source_id = %s",
-            (source_id,),
+        queue_row = conn.execute(
+            "SELECT reason FROM pending_ingestion WHERE source_id = ?", (source_id,)
         ).fetchone()
-        assert queue_row is not None, "requeue must land back in the queue"
-        assert queue_row[0] == "requeue_after_failure"
+    assert status_row["status"] == "uploaded" and status_row["error_message"] is None
+    assert queue_row["reason"] == "requeue_after_failure"
 
 
-def test_requeue_rejects_non_failed_source(client) -> None:
-    """Requeue is the failed→uploaded transition only: 409 otherwise (a
-    queued/indexed source must not be double-enqueued)."""
-    owner_token, _ = _user(client)
-    course_id = _course(client, owner_token)
-    uploaded = client.post(
-        f"/courses/{course_id}/sources",
-        data={"source_type": "notes"},
-        files={"file": ("fine.txt", b"some text", "text/plain")},
-        headers=_headers(owner_token),
-    )
-    source_id = uploaded.json()["source_id"]
-    response = client.post(
-        f"/courses/{course_id}/sources/{source_id}/requeue",
-        headers=_headers(owner_token),
-    )
+def test_requeue_rejects_non_failed_source(client: TestClient) -> None:
+    course_id = _course(client)
+    source_id = _upload(client, course_id, "fine.txt", b"some text").json()["source_id"]
+    response = client.post(f"/courses/{course_id}/sources/{source_id}/requeue")
     assert response.status_code == 409
+
+
+def test_delete_source_removes_row_queue_and_file(client: TestClient) -> None:
+    course_id = _course(client)
+    source_id = UUID(
+        _upload(client, course_id, "drop.txt", b"delete me").json()["source_id"]
+    )
+    path = storage.source_disk_path(course_id, source_id)
+    assert path.exists()
+
+    assert client.delete(f"/courses/{course_id}/sources/{source_id}").status_code == 204
+    assert not path.exists()
+    assert _count_sources(course_id) == 0
+    with connection() as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) AS n FROM pending_ingestion").fetchone()["n"]
+            == 0
+        )
+    assert client.delete(f"/courses/{course_id}/sources/{source_id}").status_code == 404
+    # The same bytes can be uploaded again once the old copy is gone.
+    assert _upload(client, course_id, "drop.txt", b"delete me").status_code == 201

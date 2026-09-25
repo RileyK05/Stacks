@@ -3,8 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from psycopg.connection import Connection
-from src.backend.common.db import connection
+from src.backend.common.db import Connection, connect
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
@@ -16,7 +15,8 @@ def _ensure_tracking_table(conn: Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version     TEXT PRIMARY KEY,
-            applied_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            applied_at  TIMESTAMP NOT NULL
+                        DEFAULT (strftime('%Y-%m-%dT%H:%M:%f000Z', 'now'))
         )
         """
     )
@@ -24,7 +24,7 @@ def _ensure_tracking_table(conn: Connection) -> None:
 
 def _applied_versions(conn: Connection) -> set[str]:
     rows = conn.execute("SELECT version FROM schema_migrations").fetchall()
-    return {row[0] for row in rows}
+    return {row["version"] for row in rows}
 
 
 def _pending_migrations() -> list[tuple[str, Path]]:
@@ -36,21 +36,35 @@ def _pending_migrations() -> list[tuple[str, Path]]:
     return pending
 
 
-def migrate() -> list[str]:
-    """Apply any unapplied migrations in order. Returns applied versions."""
+def migrate(path: Path | None = None) -> list[str]:
+    """Apply any unapplied migrations in order. Returns applied versions.
+
+    Each migration runs as one script inside an explicit transaction, so a
+    failing migration leaves the database at the previous version rather
+    than half-applied. Safe to call on every startup."""
     applied: list[str] = []
-    with connection() as conn:
+    conn = connect(path)
+    try:
         _ensure_tracking_table(conn)
+        conn.commit()
         done = _applied_versions(conn)
-        for version, path in _pending_migrations():
+        for version, migration in _pending_migrations():
             if version in done:
                 continue
-            conn.execute(path.read_text(encoding="utf-8"))
-            conn.execute(
-                "INSERT INTO schema_migrations (version) VALUES (%s)", (version,)
+            script = migration.read_text(encoding="utf-8")
+            conn.executescript(
+                "BEGIN IMMEDIATE;\n"
+                f"{script}\n"
+                f"INSERT INTO schema_migrations (version) VALUES ('{version}');\n"
+                "COMMIT;"
             )
-            conn.commit()
             applied.append(version)
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
     return applied
 
 
@@ -59,4 +73,4 @@ if __name__ == "__main__":
     if applied:
         print(f"Applied: {', '.join(applied)}")
     else:
-        print("No pending migrations.")
+        print("Database is up to date.")

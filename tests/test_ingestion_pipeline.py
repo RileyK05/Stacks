@@ -3,6 +3,7 @@ from src.backend.common.schemas import IngestionStage, IngestionStatus
 from src.backend.ingest.pipeline import (
     PIPELINE_STAGES,
     IngestionPipelineError,
+    StageSkipped,
     execute_pipeline,
 )
 
@@ -59,14 +60,12 @@ def test_pipeline_stops_after_second_failure() -> None:
     assert transitions[-1][2] == IngestionStatus.FAILED
 
 
-def test_db_failure_is_rolled_back_recorded_and_retried() -> None:
-    """Review catch #3: a psycopg error inside a handler previously
-    aborted the transaction, so the observer's FAILED write raised
-    InFailedSqlTransaction (uncatchable by the orchestrator), the run
-    stayed 'running' forever, and the stage ledger recorded nothing —
-    the false state the ledger exists to prevent. With per-attempt
-    SAVEPOINTs the failure is rolled back, recorded in the ledger, the
-    retry runs clean, and the pipeline succeeds."""
+def test_failed_attempt_is_rolled_back_recorded_and_retried() -> None:
+    """A failed attempt's partial writes are rolled back before the
+    failure is recorded, so the retry starts clean and the ledger never
+    commits half a stage (review catch #3's invariant, SQLite edition:
+    the observer commits every transition, so the attempt's own writes
+    are the only uncommitted work)."""
     calls: list[IngestionStage] = []
     attempts: dict[str, int] = {"extract": 0}
 
@@ -76,39 +75,54 @@ def test_db_failure_is_rolled_back_recorded_and_retried() -> None:
         if attempts["extract"] == 1:
             raise RuntimeError("temporary parser failure")
 
-    savepoints: list[str] = []
-
-    class _RecordingCursor:
-        def __init__(self) -> None:
-            pass
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return False
-
-        def execute(self, query, *_args):
-            savepoints.append(query)
+    events: list[str] = []
 
     class _FakeConn:
-        def cursor(self, *_args, **_kwargs):
-            return _RecordingCursor()
+        def rollback(self) -> None:
+            events.append("rollback")
+
+    def observe(stage, attempt, status, error):
+        events.append(f"{stage.value}:{attempt}:{status.value}")
 
     handlers = _handlers(calls)
     handlers[IngestionStage.EXTRACT_TEXT] = flaky
-    result = execute_pipeline(handlers, max_attempts=2, conn=_FakeConn())
+    result = execute_pipeline(
+        handlers, max_attempts=2, observe=observe, conn=_FakeConn()
+    )
     extract_stage = next(
         s for s in result.stages if s.stage == IngestionStage.EXTRACT_TEXT
     )
     assert extract_stage.attempts == 2, "first attempt failed, second clean"
-    assert calls[:2] == [
-        IngestionStage.EXTRACT_TEXT,
-        IngestionStage.EXTRACT_TEXT,
+    assert events[:5] == [
+        "extract_text:1:running",
+        "rollback",
+        "extract_text:1:failed",
+        "extract_text:2:running",
+        "extract_text:2:succeeded",
     ]
-    assert any("SAVEPOINT" in q for q in savepoints), (
-        "each attempt must be fenced by a savepoint"
+
+
+def test_skipped_stage_is_recorded_as_succeeded_with_reason() -> None:
+    """A stage that does not apply records WHY in the ledger instead of
+    pretending it did work (or failing the whole source)."""
+    calls: list[IngestionStage] = []
+    recorded: list[tuple[IngestionStage, IngestionStatus, str | None]] = []
+
+    def skip() -> None:
+        raise StageSkipped("no table of contents yet")
+
+    handlers = _handlers(calls)
+    handlers[IngestionStage.UPDATE_TOC] = skip
+    result = execute_pipeline(
+        handlers,
+        max_attempts=2,
+        observe=lambda stage, attempt, status, error: recorded.append(
+            (stage, status, error)
+        ),
     )
-    assert any("ROLLBACK TO SAVEPOINT" in q for q in savepoints), (
-        "the failed attempt must roll back to its savepoint"
-    )
+    assert IngestionStage.UPDATE_TOC in {s.stage for s in result.stages}
+    assert (
+        IngestionStage.UPDATE_TOC,
+        IngestionStatus.SUCCEEDED,
+        "skipped: no table of contents yet",
+    ) in recorded

@@ -2,7 +2,7 @@
 then allocated — not raw-scored.
 
 Seams:
-- keyword: tsvector match (works day one, zero model dependency)
+- keyword: FTS5 bm25 match (works day one, zero model dependency)
 - toc: static matching of the query against entry titles/descriptions,
   chunks under matched entries' locators (dormant without entries)
 - dependency walk: matched concepts -> 1-hop prereq/dependent chunks
@@ -12,8 +12,9 @@ Seams:
 
 Fusion: each seam's ranks are min-max normalized INTO 0..1 (the unit
 accident — ts_rank ~0.06 vs dependency position 8 — made cross-seam
-comparison meaningless before this). Every seam ranks "higher is
-better", so normalization preserves direction for all of them. A
+comparison meaningless before this; bm25 scores have the same problem).
+Every seam ranks "higher is better", so normalization preserves
+direction for all of them. A
 source's relevance is its best chunk's normalized score from any seam;
 the final_k slots are split across sources proportionally (largest
 remainder) with a one-slot floor per contributing source, availability
@@ -28,8 +29,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from psycopg import Connection
-from psycopg.rows import dict_row
+import numpy as np
+from src.backend.common.db import Connection, json_ids
 from src.backend.common.queries import get
 from src.backend.retrieval.config import RetrievalPolicy
 
@@ -41,24 +42,57 @@ DEPENDENCY = "dependency"
 EMBEDDING = "embedding"
 
 # Only these characters survive keyword tokenization. Everything else —
-# including every to_tsquery operator ( ) < > ! & | : * — is stripped
-# BEFORE the string is split, so a math query like "f(x) = x^2" can never
-# smuggle operator syntax into the tsquery. Tokens must contain at least
-# one letter or digit.
+# including every FTS5 operator ( ) " * ^ : + - and the NEAR/AND/OR/NOT
+# keywords' punctuation — is stripped BEFORE the string is split, so a
+# math query like "f(x) = x^2" can never smuggle query syntax into MATCH.
+# Tokens must contain at least one letter or digit.
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+# FTS5 has no stopword filter (Postgres's 'english' config had one), and
+# with OR semantics a stopword would match nearly every chunk. This is the
+# Snowball English list Postgres used, so ranking behaviour carries over.
+STOPWORDS = frozenset(
+    {
+        "a", "about", "above", "after", "again", "against", "all", "am", "an",
+        "and", "any", "are", "as", "at", "be", "because", "been", "before", "being",
+        "below", "between", "both", "but", "by", "can", "could", "did", "do",
+        "does", "doing", "down", "during", "each", "few", "for", "from", "further",
+        "had", "has", "have", "having", "he", "her", "here", "hers", "herself",
+        "him", "himself", "his", "how", "i", "if", "in", "into", "is", "it", "its",
+        "itself", "just", "me", "more", "most", "my", "myself", "no", "nor", "not",
+        "now", "of", "off", "on", "once", "only", "or", "other", "our", "ours",
+        "ourselves", "out", "over", "own", "same", "she", "should", "so", "some",
+        "such", "than", "that", "the", "their", "theirs", "them", "themselves",
+        "then", "there", "these", "they", "this", "those", "through", "to", "too",
+        "under", "until", "up", "very", "was", "we", "were", "what", "when",
+        "where", "which", "while", "who", "whom", "why", "will", "with", "would",
+        "you", "your", "yours", "yourself", "yourselves",
+    }
+)
 
 
 def _keyword_tokens(query: str) -> list[str]:
     lowered = query.lower()
     tokens = _TOKEN_RE.findall(lowered)
-    return [token for token in tokens if len(token) >= 2]
+    unique: list[str] = []
+    for token in tokens:
+        if len(token) >= 2 and token not in STOPWORDS and token not in unique:
+            unique.append(token)
+    return unique
+
+
+def _fts_match(tokens: list[str]) -> str:
+    """OR-join sanitized tokens as quoted FTS5 strings. Quoting keeps a
+    token that happens to be an FTS5 keyword (e.g. "near", "not") literal;
+    tokens are [a-z0-9]+ so they can never contain a quote."""
+    return " OR ".join(f'"{token}"' for token in tokens)
 
 
 @dataclass(frozen=True)
 class Candidate:
     """One chunk candidate with every layer that surfaced it.
 
-    `rank` is seam-local on ARRIVAL (ts_rank, dot product, or arrival
+    `rank` is seam-local on ARRIVAL (negated bm25, dot product, or arrival
     position) and is normalized to 0..1 inside fuse() before any
     comparison — that normalization is what makes cross-seam comparison
     legal. After normalization the ranks ARE comparable: a source's
@@ -106,22 +140,21 @@ def keyword_seam(
     query: str,
     limit: int,
 ) -> dict[UUID, Candidate]:
-    """tsvector match with OR semantics (any term overlap counts; AND
+    """FTS5 match with OR semantics (any term overlap counts; AND
     semantics would miss chunks holding only part of the question).
     Tokens are extracted with a strict [a-z0-9]+ regex before any SQL, so
-    to_tsquery operator characters can never reach the parser — math
-    questions ("f(x) = x^2") must not crash retrieval. Single characters
-    are dropped (they match everything). Empty token sets match nothing."""
+    FTS5 query syntax can never reach the parser — math questions
+    ("f(x) = x^2") must not crash retrieval. Single characters and
+    stopwords are dropped (they match everything). Empty token sets match
+    nothing."""
     tokens = _keyword_tokens(query)
     if not tokens:
         return {}
-    or_query = " | ".join(tokens)
-    with conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute(
-            get(_FILE, "keyword_candidates"),
-            {"course_id": course_id, "or_query": or_query, "limit": limit},
-        ).fetchall()
-    return _rows_to_candidates(list(rows), KEYWORD)
+    rows = conn.execute(
+        get(_FILE, "keyword_candidates"),
+        {"course_id": course_id, "match": _fts_match(tokens), "limit": limit},
+    ).fetchall()
+    return _rows_to_candidates(rows, KEYWORD)
 
 
 def toc_seam(
@@ -134,17 +167,15 @@ def toc_seam(
     the query tokens, chunks under those entries' locators. Returns the
     candidates AND the matched entry ids (the trace records them).
     Dormant without entries. Uses the same strict tokenizer as the keyword
-    seam so operator characters never reach to_tsquery."""
+    seam so query syntax never reaches MATCH."""
     tokens = _keyword_tokens(query)
     if not tokens:
         return {}, ()
-    or_query = " | ".join(tokens)
     entry_ids: list[UUID] = []
-    with conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute(
-            get(_FILE, "toc_candidates"),
-            {"course_id": course_id, "or_query": or_query, "limit": limit},
-        ).fetchall()
+    rows = conn.execute(
+        get(_FILE, "toc_candidates"),
+        {"course_id": course_id, "match": _fts_match(tokens), "limit": limit},
+    ).fetchall()
     for row in rows:
         entry_id = row.get("entry_id")
         if entry_id is not None and entry_id not in entry_ids:
@@ -170,16 +201,37 @@ def concept_matches(
     query: str,
     limit: int,
 ) -> list[dict[str, Any]]:
-    """Concepts whose name/synonyms appear in the query (the dependency
-    seam's matcher). No rows = seam stays dormant."""
+    """Concepts whose name or a synonym appears in the query as a whole
+    word, case-insensitively (the dependency seam's matcher). No matches =
+    seam stays dormant.
+
+    Concept names are MODEL-EXTRACTED, so each is regex-escaped before
+    matching: unescaped, 'f(x' would raise and take down retrieve(), and
+    'a+b' would silently match 'aaab'. Names like 'O(n)' and 'f(x)' are the
+    common case in maths and CS courses. Single-character names are
+    rejected ('f' or 'R' would match nearly every question)."""
     if not query.strip():
         return []
-    with conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute(
-            get(_FILE, "concept_synonym_matches"),
-            {"course_id": course_id, "query_lower": query.lower(), "limit": limit},
-        ).fetchall()
-    return list(rows)
+    query_lower = query.lower()
+    rows = conn.execute(
+        get(_FILE, "course_concepts"), {"course_id": course_id}
+    ).fetchall()
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        names = [row["name"], *(row["synonyms"] or [])]
+        if any(_whole_word_in(str(name), query_lower) for name in names):
+            matches.append({"concept_id": row["concept_id"], "name": row["name"]})
+            if len(matches) >= limit:
+                break
+    return matches
+
+
+def _whole_word_in(name: str, query_lower: str) -> bool:
+    needle = name.lower().strip()
+    if len(needle) < 2:
+        return False
+    pattern = rf"(^|[^a-z0-9]){re.escape(needle)}([^a-z0-9]|$)"
+    return re.search(pattern, query_lower) is not None
 
 
 def dependency_seam(
@@ -193,16 +245,15 @@ def dependency_seam(
     enforced upstream by the extractor's evidence bar."""
     if not matched_concept_ids:
         return {}
-    with conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute(
-            get(_FILE, "dependency_expansion"),
-            {
-                "course_id": course_id,
-                "concept_ids": [str(cid) for cid in matched_concept_ids],
-                "limit": limit,
-            },
-        ).fetchall()
-    return _rows_to_candidates(list(rows), DEPENDENCY)
+    rows = conn.execute(
+        get(_FILE, "dependency_expansion"),
+        {
+            "course_id": course_id,
+            "concept_ids": json_ids(matched_concept_ids),
+            "limit": limit,
+        },
+    ).fetchall()
+    return _rows_to_candidates(rows, DEPENDENCY)
 
 
 def embedding_seam(
@@ -213,22 +264,29 @@ def embedding_seam(
     limit: int,
 ) -> dict[UUID, Candidate]:
     """Vector ranking. Dormant (empty) until embeddings exist; the caller
-    passes None when there is no query embedding. The seam's `dot` column
-    is the similarity rank (higher = closer)."""
+    passes None when there is no query embedding. Rank is the dot product
+    (higher = closer; vectors are normalized at encode time).
+
+    Dimension guard: a stored vector whose dimension differs from the
+    query's (a model swap under the same name) is excluded, never scored —
+    comparing mismatched vector spaces would rank garbage silently."""
     if not query_embedding:
         return {}
-    with conn.cursor(row_factory=dict_row) as cur:
-        rows = cur.execute(
-            get(_FILE, "embedding_candidates"),
-            {
-                "course_id": course_id,
-                "query_embedding": query_embedding,
-                "model": model,
-                "limit": limit,
-            },
-        ).fetchall()
+    rows = conn.execute(
+        get(_FILE, "embedding_rows"), {"course_id": course_id, "model": model}
+    ).fetchall()
+    dimension = len(query_embedding)
+    rows = [row for row in rows if row["dimension"] == dimension]
+    if not rows:
+        return {}
+    matrix = np.frombuffer(
+        b"".join(row["embedding"] for row in rows), dtype="<f4"
+    ).reshape(len(rows), dimension)
+    scores = matrix @ np.asarray(query_embedding, dtype=np.float32)
+    top = np.argsort(-scores, kind="stable")[:limit]
     out: dict[UUID, Candidate] = {}
-    for row in rows:
+    for index in top:
+        row = rows[int(index)]
         out[row["chunk_id"]] = Candidate(
             chunk_id=row["chunk_id"],
             source_id=row["source_id"],
@@ -236,7 +294,7 @@ def embedding_seam(
             chunk_index=row["chunk_index"],
             text=row["text"],
             layers=frozenset({EMBEDDING}),
-            rank=float(row["dot"]),
+            rank=float(scores[int(index)]),
         )
     return out
 
@@ -247,7 +305,7 @@ def _normalize(seam: dict[UUID, Candidate]) -> None:
     ~0.06 and dependency position 8 were incomparable units).
 
     Every seam's seam-local rank is already "higher is better": keyword
-    is ts_rank, embedding is the dot product, and toc/dependency use
+    is negated bm25, embedding is the dot product, and toc/dependency use
     arrival position as `-position` (best chunk at position 0). The
     normalization therefore keeps the direction for ALL seams. (An
     earlier version flipped keyword/dependency, which inverted their

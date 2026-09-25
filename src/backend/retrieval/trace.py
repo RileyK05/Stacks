@@ -13,10 +13,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from psycopg import Connection
-from psycopg.rows import dict_row
+from src.backend.common.db import Connection
 from src.backend.common.queries import get
 from src.backend.retrieval.funnel import RetrievalResult
 
@@ -34,13 +33,11 @@ class StoredTrace:
 
 def record_trace(
     conn: Connection,
-    user_id: UUID,
     course_id: UUID,
     query: str,
     result: RetrievalResult,
     *,
     embedding_model: str | None = None,
-    conversation_id: UUID | None = None,
     toc_entry_ids: tuple[UUID, ...] = (),
 ) -> StoredTrace:
     """The trace stores the WHY, not just the WHAT: per-chunk layer
@@ -59,19 +56,17 @@ def record_trace(
         "layer_contribution": result.layer_contribution,
         "matched_concept_ids": [str(cid) for cid in result.matched_concept_ids],
     }
-    with conn.cursor(row_factory=dict_row) as cur:
-        row = cur.execute(
-            get(_FILE, "insert_trace"),
-            {
-                "user_id": user_id,
-                "course_id": course_id,
-                "conversation_id": conversation_id,
-                "query": query,
-                "chunk_ids": json.dumps(chunk_payload),
-                "toc_entry_ids": json.dumps([str(cid) for cid in toc_entry_ids]),
-                "model": embedding_model,
-            },
-        ).fetchone()
+    row = conn.execute(
+        get(_FILE, "insert_trace"),
+        {
+            "trace_id": uuid4(),
+            "course_id": course_id,
+            "query": query,
+            "chunk_ids": json.dumps(chunk_payload),
+            "toc_entry_ids": json.dumps([str(cid) for cid in toc_entry_ids]),
+            "model": embedding_model,
+        },
+    ).fetchone()
     assert row is not None
     chunk_uuids = tuple(UUID(str(entry["chunk_id"])) for entry in per_chunk)
     return StoredTrace(

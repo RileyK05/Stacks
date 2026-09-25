@@ -1,21 +1,24 @@
-"""End-to-end ingestion pipeline tests (Milestone 1 wiring).
+"""End-to-end ingestion pipeline tests.
 
-Provider-less state: the three deterministic stages run and persist their
-rows, then the model stage fails the run — inspectably, with the provider
-error visible in the stage row and the queue row cleared. Budget gating
-and ledger recording are asserted against a stubbed provider.
+Text sources index with no model at all: extract → locators → chunks →
+embeddings run locally, and the enrichment stages (TOC, knowledge) record
+an honest skip until their local-first implementations land. Only scanned
+PDFs need a model (OCR); without one they fail loudly, never falsely
+indexed.
 """
 
-from uuid import uuid4
+import io
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import pytest
-from psycopg.rows import dict_row
-from src.backend.common import courses_repo, storage, users_repo
+from src.backend.common import courses_repo, storage, usage_repo
 from src.backend.common.db import connection
 from src.backend.common.schemas.base import IngestionStatus
 from src.backend.ingest import runs
 from src.backend.ingest.orchestrator import run_ingestion
 from src.backend.ingest.pipeline import IngestionPipelineError
+from tests.conftest import configure_test_provider
 
 TEXT_BODY = "\n\n".join(
     f"Paragraph {i}: the mitochondria is the powerhouse of the cell {i}." * 3
@@ -24,408 +27,280 @@ TEXT_BODY = "\n\n".join(
 
 
 @pytest.fixture
-def source_pair():
-    """(user, course) fresh pair for one test."""
-    user = users_repo.create(
-        "Ingest Tester", f"{uuid4().hex}@test.invalid", "not-a-hash"
-    )
-    course = courses_repo.create_course(user.user_id, "Ingestion Course")
-    return user, course
+def course_id() -> UUID:
+    return courses_repo.create_course("Ingestion Course").course_id
 
 
-def _make_source(course_id, owner_id, mime_type: str, body: bytes):
-    """Insert a source row + stored file (identity encoding). Mirrors the
-    upload repo's row shape; kept minimal deliberately so a column change
-    in the upload path shows up here as a failure, not silent drift."""
+def _make_source(course_id: UUID, mime_type: str, body: bytes) -> UUID:
+    """A source row + stored file (identity encoding), enqueued in the same
+    transaction like the real upload path."""
     source_id = uuid4()
     path = storage.write_stored(course_id, source_id, body)
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        object_id = cur.execute(
-            "INSERT INTO course_objects (course_id, created_by_user_id, kind,"
-            " content_type, content, access_scope) VALUES (%s, %s, 'source',"
-            " %s, '{}', 'enrolled') RETURNING object_id",
-            (course_id, owner_id, mime_type),
-        ).fetchone()["object_id"]
-        cur.execute(
-            "INSERT INTO sources (source_id, object_id, uploaded_by_user_id,"
-            " course_id, filename, mime_type, source_type, uri, status,"
-            " file_hash, size_bytes, stored_encoding)"
-            " VALUES (%s, %s, %s, %s, 'notes.txt', %s, 'notes', %s,"
-            " 'uploaded', %s, %s, 'identity')",
-            (
-                source_id,
-                object_id,
-                owner_id,
-                course_id,
-                mime_type,
-                str(path),
-                f"hash-{uuid4().hex}",
-                len(body),
-            ),
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO sources (source_id, course_id, filename, mime_type,"
+            " source_type, uri, status, file_hash, size_bytes, stored_encoding)"
+            " VALUES (?, ?, 'notes.txt', ?, 'notes', ?, 'uploaded', ?, ?,"
+            " 'identity')",
+            (source_id, course_id, mime_type, str(path), uuid4().hex, len(body)),
         )
-        # The real upload path enqueues in the same transaction (the
-        # handoff contract); mirror it so run_ingestion's history write
-        # has its queued_at.
-        runs.enqueue_pending(
-            conn, source_id, course_id, "uploaded_new_source"
-        )
+        runs.enqueue_pending(conn, source_id, course_id, "uploaded_new_source")
         conn.commit()
     return source_id
 
 
-def _run_and_fail(user, course, source_id):
-    policy_tier = user.tier
-    with pytest.raises(IngestionPipelineError), connection() as conn:
-        run_ingestion(conn, source_id, user.user_id, policy_tier)
+def _pdf(pages: int) -> bytes:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(pages):
+        writer.add_blank_page(width=200, height=200)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
 
 
-def test_full_pipeline_deterministic_stages_and_honest_failure(
-    source_pair,
-) -> None:
-    user, course = source_pair
-    source_id = _make_source(
-        course.course_id, user.user_id, "text/plain", TEXT_BODY.encode()
-    )
-    # _make_source now enqueues (the upload-path contract); no manual insert.
-
-    _run_and_fail(user, course, source_id)
-
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        run = runs.latest_run_for_source(conn, source_id)
-        assert run is not None
-        assert run.status == IngestionStatus.FAILED
-        source_row = cur.execute(
-            "SELECT status FROM sources WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()
-        assert source_row["status"] == "failed"
-        locator_rows = cur.execute(
-            "SELECT count(*) AS n FROM locators WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()
-        assert locator_rows["n"] >= 1
-        chunk_rows = cur.execute(
-            "SELECT chunk_index, count(*) AS n FROM chunks"
-            " WHERE source_id = %s GROUP BY chunk_index ORDER BY chunk_index",
-            (source_id,),
-        ).fetchall()
-        assert [row["chunk_index"] for row in chunk_rows] == list(
-            range(len(chunk_rows))
-        )
-        stage_rows = cur.execute(
+def _stage_rows(run_id: UUID) -> list[dict]:
+    with connection() as conn:
+        return conn.execute(
             "SELECT stage, status, error_message, attempt_count"
-            " FROM ingestion_stage_runs"
-            " WHERE run_id = %s ORDER BY position",
-            (run.run_id,),
+            " FROM ingestion_stage_runs WHERE run_id = ? ORDER BY position",
+            (run_id,),
         ).fetchall()
-        assert [row["stage"] for row in stage_rows] == [
-            "extract_text",
-            "ocr",
-            "build_locators",
-            "build_chunks",
-            "embed_chunks",
-            "update_toc",
-            "extract_knowledge",
-        ]
-        statuses = {row["stage"]: row["status"] for row in stage_rows}
-        assert statuses["extract_text"] == "succeeded"
-        assert statuses["build_locators"] == "succeeded"
-        assert statuses["build_chunks"] == "succeeded"
-        assert statuses["embed_chunks"] == "succeeded"
-        assert statuses["update_toc"] == "failed"
-        assert statuses["extract_knowledge"] == "pending"
-        toc_row = next(row for row in stage_rows if row["stage"] == "update_toc")
-        assert "provider" in (toc_row["error_message"] or "")
-        assert toc_row["attempt_count"] == 2
-        zombie = cur.execute(
-            "SELECT count(*) AS n FROM pending_ingestion"
-            " WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()
-        assert zombie["n"] == 0, "failed source must not leave a zombie queue row"
 
 
-def test_failed_source_can_be_requeued(source_pair) -> None:
-    user, course = source_pair
-    source_id = _make_source(
-        course.course_id, user.user_id, "text/plain", TEXT_BODY.encode()
-    )
-    _run_and_fail(user, course, source_id)
+def _one(sql: str, *params) -> dict:
+    with connection() as conn:
+        return conn.execute(sql, params).fetchone()
+
+
+def test_text_source_indexes_with_no_model_configured(
+    course_id: UUID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.backend.common import provider
+
+    def no_model_calls(*args, **kwargs):
+        raise AssertionError("a text source must not need a model")
+
+    monkeypatch.setattr(provider, "_call_provider", no_model_calls)
+    source_id = _make_source(course_id, "text/plain", TEXT_BODY.encode())
+    queued_at = _one(
+        "SELECT created_at FROM pending_ingestion WHERE source_id = ?", source_id
+    )["created_at"]
 
     with connection() as conn:
-        requeued = runs.requeue_failed_source(
-            conn, source_id, course.course_id
-        )
+        run_id = run_ingestion(conn, source_id)
+
+    with connection() as conn:
+        run = runs.get_run(conn, run_id)
+    assert run is not None and run.status == IngestionStatus.SUCCEEDED
+    assert (
+        _one("SELECT status FROM sources WHERE source_id = ?", source_id)["status"]
+        == "indexed"
+    )
+
+    stages = _stage_rows(run_id)
+    assert [row["stage"] for row in stages] == [
+        "extract_text",
+        "ocr",
+        "build_locators",
+        "build_chunks",
+        "embed_chunks",
+        "update_toc",
+        "extract_knowledge",
+    ]
+    assert {row["status"] for row in stages} == {"succeeded"}
+    by_stage = {row["stage"]: row for row in stages}
+    assert by_stage["update_toc"]["error_message"].startswith("skipped:")
+    assert by_stage["extract_knowledge"]["error_message"].startswith("skipped:")
+    assert by_stage["extract_text"]["error_message"] is None
+
+    counts = _one(
+        "SELECT (SELECT COUNT(*) FROM chunks WHERE source_id = ?) AS chunks,"
+        " (SELECT COUNT(*) FROM chunk_embeddings AS e JOIN chunks AS c"
+        "  ON c.chunk_id = e.chunk_id WHERE c.source_id = ?) AS embeddings,"
+        " (SELECT COUNT(*) FROM chunk_locators AS l JOIN chunks AS c"
+        "  ON c.chunk_id = l.chunk_id WHERE c.source_id = ?) AS links,"
+        " (SELECT COUNT(*) FROM pending_ingestion WHERE source_id = ?) AS queued",
+        source_id,
+        source_id,
+        source_id,
+        source_id,
+    )
+    assert counts["chunks"] > 1
+    assert counts["embeddings"] == counts["chunks"]
+    assert counts["links"] >= counts["chunks"], "every chunk maps to its locators"
+    assert counts["queued"] == 0
+
+    history = _one(
+        "SELECT reason, queued_at FROM ingestion_history WHERE source_id = ?",
+        source_id,
+    )
+    assert history["reason"] == "ingested"
+    assert history["queued_at"] == queued_at, "history keeps the ORIGINAL enqueue time"
+
+    hits = _one(
+        "SELECT COUNT(*) AS n FROM chunks_fts WHERE chunks_fts MATCH 'mitochondria'"
+    )
+    assert hits["n"] == counts["chunks"], "every chunk is keyword-searchable"
+    assert usage_repo.ledger_page() == [], "nothing was sent to any model"
+
+
+def test_unsupported_mime_fails_loudly_and_records_history(course_id: UUID) -> None:
+    source_id = _make_source(course_id, "application/zip", b"PK\x03\x04junk")
+    queued_at = _one(
+        "SELECT created_at FROM pending_ingestion WHERE source_id = ?", source_id
+    )["created_at"]
+
+    with pytest.raises(IngestionPipelineError), connection() as conn:
+        run_ingestion(conn, source_id)
+
+    with connection() as conn:
+        run = runs.latest_run_for_source(conn, source_id)
+    assert run is not None and run.status == IngestionStatus.FAILED
+    extract_row = _stage_rows(run.run_id)[0]
+    assert extract_row["status"] == "failed"
+    assert extract_row["attempt_count"] == 2
+    assert "no text extraction handler" in (extract_row["error_message"] or "")
+    source_row = _one(
+        "SELECT status, error_message FROM sources WHERE source_id = ?", source_id
+    )
+    assert source_row["status"] == "failed" and source_row["error_message"]
+    assert (
+        _one(
+            "SELECT COUNT(*) AS n FROM pending_ingestion WHERE source_id = ?", source_id
+        )["n"]
+        == 0
+    ), "a failed source must not leave a zombie queue row"
+    history = _one(
+        "SELECT reason, queued_at FROM ingestion_history WHERE source_id = ?",
+        source_id,
+    )
+    assert history["reason"] == "failed" and history["queued_at"] == queued_at
+
+
+def test_failed_source_can_be_requeued(course_id: UUID) -> None:
+    source_id = _make_source(course_id, "application/zip", b"PK\x03\x04junk")
+    with pytest.raises(IngestionPipelineError), connection() as conn:
+        run_ingestion(conn, source_id)
+
+    with connection() as conn:
+        assert runs.requeue_failed_source(conn, source_id, course_id)
         conn.commit()
-    assert requeued
+        assert not runs.requeue_failed_source(conn, source_id, course_id)
 
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        source_row = cur.execute(
-            "SELECT status FROM sources WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()
-        assert source_row["status"] == "uploaded"
-        queued = cur.execute(
-            "SELECT reason FROM pending_ingestion WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()
-        assert queued is not None
-        assert queued["reason"] == "requeue_after_failure"
+    assert (
+        _one("SELECT status FROM sources WHERE source_id = ?", source_id)["status"]
+        == "uploaded"
+    )
+    assert (
+        _one("SELECT reason FROM pending_ingestion WHERE source_id = ?", source_id)[
+            "reason"
+        ]
+        == "requeue_after_failure"
+    )
 
 
-def test_claim_persists_and_excludes_claimed(source_pair) -> None:
-    user, course = source_pair
-    _make_source(course.course_id, user.user_id, "text/plain", b"one")
-    _make_source(course.course_id, user.user_id, "text/plain", b"two")
-    # Both enqueued by _make_source (the upload-path contract).
+def test_claim_persists_and_excludes_claimed(course_id: UUID) -> None:
+    _make_source(course_id, "text/plain", b"one")
+    _make_source(course_id, "text/plain", b"two")
 
     with connection() as conn:
         first_claim = runs.claim_pending_sources(conn, limit=1)
         conn.commit()
     assert len(first_claim) == 1
-    first_claimed_id = str(first_claim[0]["source_id"])
 
     with connection() as conn:
         second_claim = runs.claim_pending_sources(conn, limit=10)
         conn.commit()
-    claimed_ids = {str(row["source_id"]) for row in second_claim}
-    assert first_claimed_id not in claimed_ids
-    assert len(second_claim) >= 1
+    assert len(second_claim) == 1
+    assert second_claim[0]["source_id"] != first_claim[0]["source_id"]
+    with connection() as conn:
+        assert runs.claim_pending_sources(conn, limit=10) == []
 
 
-def test_unsupported_mime_fails_the_stage(source_pair) -> None:
-    user, course = source_pair
-    source_id = _make_source(
-        course.course_id, user.user_id, "application/zip", b"PK\x03\x04junk"
-    )
-    with pytest.raises(IngestionPipelineError), connection() as conn:
-        run_ingestion(conn, source_id, user.user_id, user.tier)
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        run = runs.latest_run_for_source(conn, source_id)
-        assert run is not None
-        assert run.status == IngestionStatus.FAILED
-        stage = cur.execute(
-            "SELECT error_message FROM ingestion_stage_runs"
-            " WHERE run_id = %s AND stage = 'extract_text'",
-            (run.run_id,),
-        ).fetchone()
-        assert "no text extraction handler" in (stage["error_message"] or "")
+def test_trashed_course_sources_are_not_claimed(course_id: UUID) -> None:
+    """A course in the trash must not keep the laptop busy ingesting it;
+    restoring it makes its queue claimable again."""
+    _make_source(course_id, "text/plain", b"queued before delete")
+    courses_repo.move_to_trash(course_id)
+    with connection() as conn:
+        assert runs.claim_pending_sources(conn, limit=10) == []
+    courses_repo.restore_from_trash(course_id)
+    with connection() as conn:
+        assert len(runs.claim_pending_sources(conn, limit=10)) == 1
 
 
-def test_budget_gate_and_ledger_with_stubbed_provider(
-    monkeypatch, source_pair
+def test_scanned_pdf_is_ocrd_and_recorded(
+    course_id: UUID, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With only the HTTP layer stubbed, a full pipeline must go green and
-    the ledger must show ingestion-pool rows with real token counts —
-    proving the gate + billing inside the seam are actually wired."""
-    user, course = source_pair
-    source_id = _make_source(
-        course.course_id, user.user_id, "text/plain", TEXT_BODY.encode()
+    """An image-only PDF routes through OCR: pages rasterize, the model
+    reads them, and the source indexes with page locators intact."""
+    calls = configure_test_provider(
+        monkeypatch, "page one transcription\n\n---\n\npage two transcription"
     )
-
-    def fake_call(task, model, prompt, *, images=None):
-        return (f"stub output for {task}", 150, 30)
-
-    monkeypatch.setattr(
-        "src.backend.common.provider._call_provider", fake_call
-    )
+    source_id = _make_source(course_id, "application/pdf", _pdf(2))
 
     with connection() as conn:
-        run_id = run_ingestion(conn, source_id, user.user_id, user.tier)
-        conn.commit()
+        run_id = run_ingestion(conn, source_id)
 
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        run = runs.get_run(conn, run_id)
-        assert run is not None
-        assert run.status == IngestionStatus.SUCCEEDED
-        source_row = cur.execute(
-            "SELECT status FROM sources WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()
-        assert source_row["status"] == "indexed"
-        ledger_rows = cur.execute(
-            "SELECT task, spend_kind, input_tokens, output_tokens"
-            " FROM generation_ledger WHERE user_id = %s"
-            " AND created_at >= now() - interval '1 minute'",
-            (user.user_id,),
-        ).fetchall()
-        assert ledger_rows, "successful ingestion must record ledger rows"
-        for row in ledger_rows:
-            assert row["spend_kind"] == "ingestion"
-            assert row["task"] in ("toc_update", "course_knowledge_extraction")
-            assert row["input_tokens"] + row["output_tokens"] > 0
-
-
-def test_budget_exhaustion_fails_ingestion_before_call(
-    monkeypatch, source_pair
-) -> None:
-    """An owner with a drained ingestion pool must fail before any provider
-    call — the gate is real, not decorative."""
-    from src.backend.common import provider as provider_module
-    from src.backend.common import spend_repo
-    from src.backend.common.schemas.base import SpendKind
-
-    user, course = source_pair
-    source_id = _make_source(
-        course.course_id, user.user_id, "text/plain", TEXT_BODY.encode()
-    )
-    from src.backend.common.tiers import load_tier_policies
-
-    policy = load_tier_policies().policy_for(user.tier)
-    for _ in range(3):
-        spend_repo.record_generation(
-            user.user_id,
-            "toc_update",
-            "test-model",
-            policy.ingestion_token_budget,
-            0,
-            spend_kind=SpendKind.INGESTION,
-        )
-
-    def explode(task, model, prompt, *, images=None):
-        raise AssertionError("provider must not be called with a drained pool")
-
-    monkeypatch.setattr(provider_module, "_call_provider", explode)
-
-    with pytest.raises(IngestionPipelineError), connection() as conn:
-        run_ingestion(conn, source_id, user.user_id, user.tier)
-
-def test_ingestion_history_written_with_original_queued_at(
-    source_pair,
-) -> None:
-    """Review catch #2: record_history existed but had no caller — the
-    table was empty since migration 019. Both terminal paths must write
-    a history row carrying the queue row's ORIGINAL queued_at, before
-    the queue row is deleted (the doc-contract in worker.py)."""
-    from psycopg.rows import dict_row as _dict_row
-
-    user, course = source_pair
-    source_id = _make_source(
-        course.course_id, user.user_id, "text/plain", TEXT_BODY.encode()
-    )
-    with connection() as conn, conn.cursor(row_factory=_dict_row) as cur:
-        queued_at = cur.execute(
-            "SELECT created_at AS queued_at FROM pending_ingestion"
-            " WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()["queued_at"]
-
-    with pytest.raises(IngestionPipelineError), connection() as conn:
-        run_ingestion(conn, source_id, user.user_id, user.tier)
-    with connection() as conn, conn.cursor(row_factory=_dict_row) as cur:
-        row = cur.execute(
-            "SELECT reason, queued_at FROM ingestion_history"
-            " WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()
-        assert row is not None, "failed ingestion must record history"
-        assert row["reason"] == "failed"
-        assert row["queued_at"] == queued_at, (
-            "history must carry the ORIGINAL enqueue time"
-        )
-
-
-def test_ocr_scanned_pdf_is_billed_and_indexed(
-    monkeypatch, source_pair
-) -> None:
-    """An image-only PDF with no text layer routes through the OCR stage:
-    pages rasterize, the multimodal task bills the ingestion pool, and the
-    source indexes with OCR text + page locators (citations still align)."""
-    import io
-
-    from pypdf import PdfWriter
-
-    user, course = source_pair
-    writer = PdfWriter()
-    writer.add_blank_page(width=200, height=200)
-    writer.add_blank_page(width=200, height=200)
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    source_id = _make_source(
-        course.course_id, user.user_id, "application/pdf", buffer.getvalue()
-    )
-
-    def fake_call(task, model, prompt, *, images=None):
-        if task == "ocr":
-            assert images and len(images) == 2, "both rendered pages reach the model"
-            return ("page one transcription\n\n---\n\npage two transcription", 400, 80)
-        return (f"stub output for {task}", 150, 30)
-
-    monkeypatch.setattr(
-        "src.backend.common.provider._call_provider", fake_call
-    )
-
+    assert [call["task"] for call in calls] == ["ocr"]
+    assert len(calls[0]["images"]) == 2, "both rendered pages reach the model"
+    statuses = {row["stage"]: row["status"] for row in _stage_rows(run_id)}
+    assert statuses["ocr"] == "succeeded"
     with connection() as conn:
-        run_id = run_ingestion(conn, source_id, user.user_id, user.tier)
-        conn.commit()
-
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        run = runs.get_run(conn, run_id)
-        assert run is not None and run.status == IngestionStatus.SUCCEEDED
-        source_row = cur.execute(
-            "SELECT status FROM sources WHERE source_id = %s", (source_id,)
-        ).fetchone()
-        assert source_row["status"] == "indexed"
-        stages = cur.execute(
-            "SELECT stage, status FROM ingestion_stage_runs"
-            " WHERE run_id = %s ORDER BY position",
-            (run_id,),
-        ).fetchall()
-        statuses = {row["stage"]: row["status"] for row in stages}
-        assert statuses["ocr"] == "succeeded"
-        all_text = cur.execute(
-            "SELECT string_agg(text, ' ') AS all_text FROM chunks"
-            " WHERE source_id = %s",
-            (source_id,),
-        ).fetchone()["all_text"]
-        assert "page one transcription" in all_text
+        text = " ".join(
+            row["text"]
+            for row in conn.execute(
+                "SELECT text FROM chunks WHERE source_id = ?", (source_id,)
+            ).fetchall()
+        )
         labels = {
             row["label"]
-            for row in cur.execute(
-                "SELECT label FROM locators WHERE source_id = %s", (source_id,)
+            for row in conn.execute(
+                "SELECT label FROM locators WHERE source_id = ?", (source_id,)
             ).fetchall()
         }
-        assert {"page 1", "page 2"} <= labels, "OCR pages keep page locators"
-        ledger = cur.execute(
-            "SELECT task, spend_kind FROM generation_ledger"
-            " WHERE user_id = %s AND task = 'ocr'",
-            (user.user_id,),
-        ).fetchall()
-        assert ledger, "the OCR call must be billed"
-        assert ledger[0]["spend_kind"] == "ingestion"
+    assert "page one transcription" in text
+    assert {"page 1", "page 2"} <= labels, "OCR pages keep page locators"
+    entry = usage_repo.ledger_page()[0]
+    assert (entry.task, entry.provider, entry.course_id) == ("ocr", "local", course_id)
 
 
-def test_ocr_unavailable_fails_loudly_without_indexing(source_pair) -> None:
-    """A scanned PDF on a provider-less deployment must fail the OCR stage
-    with an actionable error and leave the source 'failed' — never a
-    falsely-indexed, empty knowledge base."""
-    import io
-
-    from pypdf import PdfWriter
-
-    user, course = source_pair
-    writer = PdfWriter()
-    writer.add_blank_page(width=200, height=200)
-    buffer = io.BytesIO()
-    writer.write(buffer)
-    source_id = _make_source(
-        course.course_id, user.user_id, "application/pdf", buffer.getvalue()
-    )
+def test_scanned_pdf_without_a_model_fails_loudly(course_id: UUID) -> None:
+    """No model configured: the OCR stage fails with an actionable error
+    and the source is 'failed' — never a falsely indexed, empty source."""
+    source_id = _make_source(course_id, "application/pdf", _pdf(1))
 
     with pytest.raises(IngestionPipelineError), connection() as conn:
-        run_ingestion(conn, source_id, user.user_id, user.tier)
+        run_ingestion(conn, source_id)
 
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+    with connection() as conn:
         run = runs.latest_run_for_source(conn, source_id)
-        assert run is not None and run.status == IngestionStatus.FAILED
-        source_row = cur.execute(
-            "SELECT status FROM sources WHERE source_id = %s", (source_id,)
-        ).fetchone()
-        assert source_row["status"] == "failed"
-        ocr_stage = cur.execute(
-            "SELECT status, error_message FROM ingestion_stage_runs"
-            " WHERE run_id = %s AND stage = 'ocr'",
-            (run.run_id,),
-        ).fetchone()
-        assert ocr_stage["status"] == "failed"
-        assert "provider" in (ocr_stage["error_message"] or "")
+    assert run is not None and run.status == IngestionStatus.FAILED
+    ocr_row = next(row for row in _stage_rows(run.run_id) if row["stage"] == "ocr")
+    assert ocr_row["status"] == "failed"
+    assert "provider" in (ocr_row["error_message"] or "")
+    assert (
+        _one("SELECT status FROM sources WHERE source_id = ?", source_id)["status"]
+        == "failed"
+    )
+
+
+def test_observer_heartbeats_the_claim(course_id: UUID) -> None:
+    source_id = _make_source(course_id, "text/plain", TEXT_BODY.encode())
+    before = datetime.now(UTC)
+    with connection() as conn:
+        claimed = runs.claim_pending_sources(conn, limit=1)
+        conn.commit()
+        assert claimed[0]["source_id"] == source_id
+        run, _stages = runs.create_run(conn, source_id, "1", {}, [], max_attempts=1)
+        conn.commit()
+        observer = runs.RunObserver(conn, run.run_id, source_id=source_id)
+        from src.backend.common.schemas.base import IngestionStage
+
+        observer.observe(IngestionStage.EXTRACT_TEXT, 1, IngestionStatus.RUNNING, None)
+    heartbeat = _one(
+        "SELECT heartbeat_at FROM pending_ingestion WHERE source_id = ?", source_id
+    )["heartbeat_at"]
+    assert heartbeat is not None and heartbeat >= before

@@ -1,9 +1,8 @@
 """File storage for uploaded course sources.
 
 Security invariants:
-- Uploads stream to disk under a tier-specific raw-body ceiling; an oversized
-  body is cut mid-stream and never fully enters memory. Stored-byte quotas are
-  checked after optional compression.
+- Uploads stream to disk under a raw-body ceiling (configs/lifecycle.toml);
+  an oversized body is cut mid-stream and never fully enters memory.
 - Disk names are server-generated (`source_id`); user filenames are sanitized
   for display only, so path traversal is structurally impossible.
 - The database is the accounting truth. `size_bytes` always records the bytes
@@ -56,8 +55,7 @@ _INCOMPRESSIBLE_EXACT = {
 
 class RawUploadLimitExceededError(RuntimeError):
     """The request body exceeded the raw per-request upload ceiling. This is
-    a body-size rejection (413), distinct from budget.StorageLimitExceededError,
-    which is a quota rejection (403) against stored bytes."""
+    a body-size rejection (413)."""
 
     def __init__(self, allowed_bytes: int, received_bytes: int) -> None:
         self.allowed_bytes = allowed_bytes
@@ -327,8 +325,8 @@ def read_stored(
     decompression ceiling is mandatory (the whole-buffer read this replaces
     is the seam a zip-bomb would exploit); identity-encoded files are capped
     at their on-disk size. Callers resolve the cap from the versioned
-    lifecycle policy; the policy value must stay >= every tier's raw upload
-    ceiling, which test_config.py pins."""
+    lifecycle policy; the policy value must stay >= the raw upload ceiling,
+    which the policy validates and test_config.py pins."""
     path = source_disk_path(course_id, source_id)
     if stored_encoding != "gzip":
         expanded = path.stat().st_size

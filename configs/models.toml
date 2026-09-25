@@ -1,0 +1,44 @@
+[version]
+models_config_version = "1"
+
+# Provider presets (docs/plan-local-first.md §7). The user picks one per
+# task class in Settings; the choice lives in app_settings, keys in the
+# OS keyring. `disclosure = true` means enabling it sends course excerpts
+# off this machine, and the UI says so once — it is the user's choice.
+
+[presets.local]
+label = "Local model (runs on this computer)"
+base_url = "http://127.0.0.1:8081/v1"
+default_model = "minicpm5-2b"
+requires_key = false
+disclosure = false
+
+[presets.openrouter]
+label = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+default_model = "inclusionai/ling-3.0-tiny:free"
+requires_key = true
+disclosure = true
+
+[presets.openai]
+label = "OpenAI"
+base_url = "https://api.openai.com/v1"
+default_model = ""
+requires_key = true
+disclosure = true
+
+[presets.custom]
+label = "Custom OpenAI-compatible endpoint"
+base_url = ""
+default_model = ""
+requires_key = false
+disclosure = true
+
+# Generation defaults. Small local models deliberate at length when
+# allowed (plan §3), and llama.cpp ignores JSON-schema constraints while
+# thinking is on, so thinking is off unless a profile turns it on.
+[generation]
+temperature = 0.2
+max_output_tokens = 2048
+enable_thinking = false
+request_timeout_seconds = 600

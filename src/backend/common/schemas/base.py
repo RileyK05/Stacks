@@ -82,47 +82,11 @@ class MessageRole(StrEnum):
     SYSTEM = "system"
 
 
-class CourseVisibility(StrEnum):
-    PRIVATE = "private"
-    INVITE_ONLY = "invite_only"
-    PUBLIC = "public"
 
 
-class CourseLifecycleStatus(StrEnum):
-    ACTIVE = "active"
-    ARCHIVED = "archived"
 
 
-class CourseEnrollmentRole(StrEnum):
-    LEARNER = "learner"
 
-
-class EnrollmentStatus(StrEnum):
-    INVITED = "invited"
-    ACTIVE = "active"
-    DECLINED = "declined"
-    REVOKED = "revoked"
-
-
-class EnrollmentSource(StrEnum):
-    SELF_SERVICE = "self_service"
-    INVITATION = "invitation"
-    JOIN_CODE = "join_code"
-
-
-class SpendKind(StrEnum):
-    """Which weekly pool a billed call draws from. Pools are separate so a
-    large ingestion upload can never drain the budget a user needs for
-    interactive answers."""
-
-    GENERATION = "generation"
-    INGESTION = "ingestion"
-
-
-class ObjectAccessScope(StrEnum):
-    PUBLISHED = "published"
-    ENROLLED = "enrolled"
-    PRIVATE = "private"
 
 
 class TutorVerbosity(StrEnum):
@@ -166,10 +130,6 @@ class IngestionStage(StrEnum):
     EXTRACT_KNOWLEDGE = "extract_knowledge"
 
 
-class UserTier(StrEnum):
-    FREE = "free"
-    PAID = "paid"
-
 
 # Canonical free-string values. These fields stay free strings for extensibility,
 # but this is the single source of truth for the values the system emits, so
@@ -192,9 +152,9 @@ KNOWN_GENERATION_TASKS = frozenset(
     }
 )
 
-# Bulk ingestion work bills the ingestion pool; everything else is
-# interactive generation. Symmetric with SpendKind and the single source
-# of truth for task classification (providers derive pools from this).
+# Background ingestion work vs interactive generation. Per-task provider
+# routing (configs/models.toml) and the usage ledger read this; it is the
+# single source of truth for task classification.
 INGESTION_TASKS = frozenset(
     {
         "toc_update",

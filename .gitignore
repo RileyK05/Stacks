@@ -12,6 +12,11 @@ venv/
 # Local course data and generated artifacts (never committed)
 data/raw/
 data/processed/
+# The local SQLite database (dev checkout; the desktop app uses the OS
+# per-user data directory instead)
+*.db
+*.db-wal
+*.db-shm
 runs/
 
 # OS

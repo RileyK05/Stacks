@@ -1,56 +1,50 @@
-"""The single hosted-model seam.
+"""The model seams: `generate` (chat models) and `embed` (encoders).
 
-Every model call in the backend goes through `generate`: task + prompt
-in, text out — gated, routed, billed. Providers are an implementation
-detail behind this one function; swapping providers never touches
-ingestion/tutor code.
+Every generation call in the backend goes through `generate`: task +
+prompt in, text out — routed, checked, and recorded. Which endpoint serves
+a task is `providers.resolve` (the user's choice per task class, then the
+development `.env` fallback); swapping providers never touches ingestion
+or tutor code.
 
 Contract (enforced here, not by callers remembering):
-- the tier is resolved and verified from the account inside this seam —
-  no caller-supplied TierPolicy, so a stale/spoofed tier can never route
-  ingestion to paid models;
-- the budget gate runs BEFORE the provider call (in-flight calls are
-  never cut off; the gate tightens the next request only);
-- the ledger row is recorded AFTER the call with the call's real token
-  counts, even if the caller's access lapsed mid-flight — spend must be
-  visible;
-- task-to-pool routing is symmetric: ingestion tasks must bill the
-  ingestion pool, interactive tasks must bill the generation pool. The
-  task classification lives in `schemas/base.py` next to the task list
-  (single source of truth).
+- the endpoint is resolved per call, so a Settings change applies to the
+  next call without a restart;
+- a cloud call checks the user's optional monthly token budget BEFORE the
+  request (an in-flight call is never cut off); local calls are free;
+- the usage row is recorded AFTER the call with the provider's real token
+  counts — usage is inspectable, never estimated;
+- a cloud provider that rate-limits (HTTP 429, e.g. OpenRouter's free
+  daily cap) falls back to the local model once, and the result says so.
 
-Provider contract: any OpenAI-compatible chat-completions endpoint
-(currently Xiaomi MiMo) — `LLM_API_KEY` + `LLM_BASE_URL` in the
-environment. Token counts come from the provider's usage response, never
-estimated by the caller.
+Provider contract: any OpenAI-compatible chat-completions endpoint — the
+bundled llama.cpp server, Ollama / LM Studio, OpenRouter, OpenAI, or a
+custom URL. Local models get `enable_thinking: false` by default: small
+models deliberate at length and llama.cpp ignores JSON-schema constraints
+while thinking (plan §6.3).
 
-Embeddings are a SEPARATE seam (`embed`), deliberately not `generate`:
-the embedding model is self-hosted and in-process (sentence-transformers),
-so it bills nothing, needs no tier, and sends no course text off-machine
-— the no-retention vendor check does not apply to it by construction.
-Its contract lives in configs/embeddings.toml (the model name is the
-chunk_embeddings row key; dimension is enforced loudly on write and read).
+Embeddings are a SEPARATE seam (`embed_*`), deliberately not `generate`:
+the embedding model runs in-process, so it records nothing and sends no
+course text anywhere. Its contract lives in configs/embeddings.toml (the
+model name is the chunk_embeddings row key; dimension is enforced loudly
+on write and read).
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from src.backend.common import budget, spend_repo
+from src.backend.common import providers, usage_repo
 from src.backend.common.embeddings_config import EmbeddingPolicy, load_embedding_policy
-from src.backend.common.schemas.base import (
-    INGESTION_TASKS,
-    KNOWN_GENERATION_TASKS,
-    SpendKind,
-    UserTier,
-)
-from src.backend.common.tiers import load_tier_policies
+from src.backend.common.providers import ResolvedProvider
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -59,11 +53,19 @@ class GenerationResult:
     model: str
     input_tokens: int
     output_tokens: int
+    provider: str = ""
+    # True when a rate-limited cloud provider fell back to the local model;
+    # the UI shows this so a weaker answer is never silently substituted.
+    fell_back_to_local: bool = False
 
 
 class ProviderUnavailableError(RuntimeError):
-    """Raised when no provider client is configured. Callers surface this
-    as a retryable stage failure, not a crash."""
+    """No provider is configured, or the call failed. Callers surface this
+    as a retryable stage failure / 503, never as a partial row write."""
+
+
+class ProviderRateLimitedError(ProviderUnavailableError):
+    """The provider answered 429 (rate limit / daily free-model cap)."""
 
 
 class EmptyModelError(RuntimeError):
@@ -75,85 +77,91 @@ class EmptyModelError(RuntimeError):
 def generate(
     task: str,
     prompt: str,
-    user_id: UUID,
-    tier: UserTier,
     *,
     course_id: UUID | None = None,
     images: Sequence[bytes] | None = None,
+    response_schema: dict[str, Any] | None = None,
 ) -> GenerationResult:
-    """One gated, routed, billed model call. `tier` is verified against
-    the account inside; the pool is derived from the task, never passed
-    in. `images` carries PNG page renders for the multimodal OCR task; it
-    is None for every text task."""
-    if task not in KNOWN_GENERATION_TASKS:
-        raise ValueError(f"unknown generation task: {task}")
-    spend_kind = (
-        SpendKind.INGESTION if task in INGESTION_TASKS else SpendKind.GENERATION
-    )
-    budget.verify_tier(user_id, tier)
-    policy = load_tier_policies().policy_for(tier)
-    budget.check_budget(
-        user_id,
-        tier,
-        policy,
-        spend_kind=spend_kind,
-    )
-    model = policy.model_for(task)
-    raw_text, input_tokens, output_tokens = _call_provider(
-        task, model, prompt, images=images
-    )
+    """One routed, recorded model call. `images` carries PNG page renders
+    for the multimodal OCR task. `response_schema`, when given, asks the
+    endpoint to constrain output to that JSON schema."""
+    endpoint = providers.resolve(providers.task_class(task))
+    if endpoint is None:
+        raise ProviderUnavailableError(
+            "no model provider configured — choose one in Settings"
+        )
+    fell_back = False
+    try:
+        if not endpoint.is_local:
+            usage_repo.check_cloud_budget()
+        raw_text, input_tokens, output_tokens = _call_provider(
+            task, endpoint, prompt, images=images, response_schema=response_schema
+        )
+    except ProviderRateLimitedError:
+        local = _local_fallback(endpoint)
+        if local is None:
+            raise
+        logger.warning(
+            "%s rate-limited task %s; falling back to the local model",
+            endpoint.name,
+            task,
+        )
+        endpoint, fell_back = local, True
+        raw_text, input_tokens, output_tokens = _call_provider(
+            task, endpoint, prompt, images=images, response_schema=response_schema
+        )
     if not raw_text.strip():
         raise EmptyModelError(task)
-    result = GenerationResult(
-        text=raw_text,
-        model=model,
+    usage_repo.record(
+        task=task,
+        provider=endpoint.name,
+        model=endpoint.model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-    )
-    spend_repo.record_generation(
-        user_id,
-        task,
-        result.model,
-        result.input_tokens,
-        result.output_tokens,
         course_id=course_id,
-        spend_kind=spend_kind,
-        overhead_tokens=budget.free_tier_overhead(
-            policy, result.input_tokens + result.output_tokens
-        ),
     )
-    return result
+    return GenerationResult(
+        text=raw_text,
+        model=endpoint.model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        provider=endpoint.name,
+        fell_back_to_local=fell_back,
+    )
+
+
+def _local_fallback(failed: ResolvedProvider) -> ResolvedProvider | None:
+    if failed.is_local:
+        return None
+    preset = providers.load_models_config().presets.get("local")
+    if preset is None or not preset.base_url or not preset.default_model:
+        return None
+    return ResolvedProvider(
+        name="local",
+        base_url=preset.base_url,
+        model=preset.default_model,
+        api_key=None,
+        is_local=True,
+    )
 
 
 def _call_provider(
     task: str,
-    model: str,
+    endpoint: ResolvedProvider,
     prompt: str,
     *,
     images: Sequence[bytes] | None = None,
+    response_schema: dict[str, Any] | None = None,
 ) -> tuple[str, int, int]:
-    """The provider HTTP call. Returns (text, input_tokens, output_tokens)
-    — token counts come from the provider's usage response, never
-    estimated by the caller. `images` is present only for the multimodal
-    OCR task.
-
-    Provider contract: any OpenAI-compatible chat-completions endpoint
-    (currently Xiaomi MiMo). `LLM_API_KEY` + `LLM_BASE_URL` come from the
-    environment via common.config. Fails closed: missing config or any
-    HTTP/parse failure raises ProviderUnavailableError, which callers
-    surface as a retryable stage failure / 503 — never as a partial row
-    write."""
+    """The HTTP call. Returns (text, input_tokens, output_tokens) — token
+    counts come from the provider's usage response, never estimated.
+    Fails closed: any HTTP/parse failure raises ProviderUnavailableError
+    (ProviderRateLimitedError for 429)."""
     import base64
 
     import httpx
-    from src.backend.common.config import get_settings
 
-    settings = get_settings()
-    if not settings.llm_api_key or not settings.llm_base_url:
-        raise ProviderUnavailableError(
-            "LLM_API_KEY / LLM_BASE_URL not configured"
-        )
-
+    defaults = providers.load_models_config().generation
     if images:
         content: list[dict[str, object]] = [
             {
@@ -169,26 +177,48 @@ def _call_provider(
     else:
         messages = [{"role": "user", "content": prompt}]
 
+    body: dict[str, Any] = {
+        "model": endpoint.model,
+        "messages": messages,
+        "temperature": defaults.temperature,
+        "max_tokens": defaults.max_output_tokens,
+    }
+    if endpoint.is_local or endpoint.name == "custom":
+        # llama.cpp-family servers read this; cloud APIs reject unknown
+        # fields, so it is only sent to local/custom endpoints.
+        body["chat_template_kwargs"] = {"enable_thinking": defaults.enable_thinking}
+    if response_schema is not None:
+        body["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": task, "schema": response_schema, "strict": True},
+        }
+    headers = (
+        {"Authorization": f"Bearer {endpoint.api_key}"} if endpoint.api_key else {}
+    )
+
     try:
         response = httpx.post(
-            settings.llm_base_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-            json={
-                "model": model,
-                "messages": messages,
-                "temperature": 0.2,
-            },
-            timeout=httpx.Timeout(600.0, connect=15.0),
+            endpoint.base_url.rstrip("/") + "/chat/completions",
+            headers=headers,
+            json=body,
+            timeout=httpx.Timeout(defaults.request_timeout_seconds, connect=15.0),
         )
+        if response.status_code == 429:
+            raise ProviderRateLimitedError(
+                f"{endpoint.name} rate-limited (task={task}, model={endpoint.model})"
+            )
         response.raise_for_status()
-        body = response.json()
-        text = body["choices"][0]["message"]["content"]
-        usage = body.get("usage", {})
+        payload = response.json()
+        text = payload["choices"][0]["message"]["content"] or ""
+        usage = payload.get("usage") or {}
         input_tokens = int(usage.get("prompt_tokens", 0))
         output_tokens = int(usage.get("completion_tokens", 0))
+    except ProviderRateLimitedError:
+        raise
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as err:
         raise ProviderUnavailableError(
-            f"provider call failed (task={task}, model={model}): {err}"
+            f"provider call failed ({endpoint.name}, task={task}, "
+            f"model={endpoint.model}): {err}"
         ) from err
     return text, input_tokens, output_tokens
 
@@ -231,7 +261,11 @@ def _load_embedding_backend() -> _EmbedBackend:
             "sentence-transformers not installed — embeddings unavailable"
         ) from err
     policy = load_embedding_policy()
-    model = SentenceTransformer(policy.model)
+    model = SentenceTransformer(policy.model, device="cpu")
+    # Recent transformers load weights in their stored dtype (bf16 for
+    # this model). CPUs without native bf16 run that many times slower
+    # than fp32 (measured on a 1-vCPU AVX2 box), so force fp32.
+    model = model.float()
     test_dimension = model.get_embedding_dimension()
     if test_dimension != policy.dimension:
         raise EmbeddingDimensionError(

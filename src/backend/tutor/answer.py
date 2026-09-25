@@ -16,10 +16,9 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from psycopg import Connection
 from src.backend.common import provider
+from src.backend.common.db import Connection
 from src.backend.common.prompt_registry import grounded_prompt, load_prompt
-from src.backend.common.schemas.base import UserTier
 from src.backend.retrieval import funnel, trace
 from src.backend.retrieval.config import RetrievalPolicy
 from src.backend.retrieval.funnel import Candidate
@@ -46,11 +45,16 @@ class Answer:
         chunk_ids: tuple[UUID, ...],
         trace_id: UUID,
         layer_contribution: dict[str, int],
+        *,
+        model: str = "",
+        fell_back_to_local: bool = False,
     ) -> None:
         self.text = text
         self.chunk_ids = chunk_ids
         self.trace_id = trace_id
         self.layer_contribution = layer_contribution
+        self.model = model
+        self.fell_back_to_local = fell_back_to_local
         extracted = extract_workspace_items(text, len(chunk_ids))
         self.body = extracted.body
         self.workspace_items: tuple[WorkspaceItem, ...] = extracted.items
@@ -59,8 +63,6 @@ class Answer:
 
 def answer_question(
     conn: Connection,
-    user_id: UUID,
-    tier: UserTier,
     course_id: UUID,
     question: str,
     policy: RetrievalPolicy,
@@ -68,10 +70,12 @@ def answer_question(
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
 ) -> Answer:
-    """One grounded answer. Same-transaction contract: retrieval, trace,
-    and the billed provider call share `conn` so a failed generation
-    rolls the trace back (an answer that never happened leaves no
-    evidence-shaped noise)."""
+    """One grounded answer: retrieve, generate, then record the trace.
+
+    The trace is written only after generation succeeds, so an answer
+    that never happened leaves no evidence-shaped noise — and no write
+    transaction is held open during the (possibly minutes-long, on a
+    laptop) model call. The caller commits."""
     result = funnel.retrieve(
         conn,
         course_id,
@@ -84,24 +88,23 @@ def answer_question(
         raise NothingRelevantFoundError(
             "nothing in the course materials matches this question"
         )
+    prompt = build_prompt(question, result.candidates)
+    generation = provider.generate("tutor_answer", prompt, course_id=course_id)
     stored = trace.record_trace(
-        conn, user_id, course_id, question, result,
+        conn,
+        course_id,
+        question,
+        result,
         embedding_model=embedding_model,
         toc_entry_ids=result.matched_toc_entry_ids,
-    )
-    prompt = build_prompt(question, result.candidates)
-    generation = provider.generate(
-        "tutor_answer",
-        prompt,
-        user_id,
-        tier,
-        course_id=course_id,
     )
     return Answer(
         text=generation.text,
         chunk_ids=tuple(c.chunk_id for c in result.candidates),
         trace_id=stored.trace_id,
         layer_contribution=result.layer_contribution,
+        model=generation.model,
+        fell_back_to_local=generation.fell_back_to_local,
     )
 
 

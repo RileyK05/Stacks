@@ -1,296 +1,218 @@
-"""End-to-end ingestion worker tests (M1 close-out).
+"""End-to-end ingestion worker tests.
 
 Exercises the full loop: upload enqueues, the worker claims batches and
 runs pipelines, run/source/queue states are consistent after either
-terminal outcome, stale claims are released, and requeue produces a new
-run.
+terminal outcome, stale claims are released (the laptop-slept-mid-run
+case), live claims are fenced by their heartbeat, and requeue produces a
+new run.
 """
 
+import asyncio
 import io
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID
 
 import pytest
-from psycopg.rows import dict_row
-from src.backend.common import courses_repo, sources_repo, users_repo
-from src.backend.common.auth import hash_password
+from src.backend.common import courses_repo, sources_repo
 from src.backend.common.db import connection
-from src.backend.common.schemas.base import SourceType, UserTier
-from src.backend.common.tiers import load_tier_policies
+from src.backend.common.schemas.base import SourceType
 from src.backend.ingest import runs, worker
 
-PASSWORD = "long-password"
 BODY = "\n\n".join(
     f"Paragraph {i}: the mitochondria is the powerhouse of the cell {i}." * 3
     for i in range(30)
 )
+LONG_AGO = datetime.now(UTC) - worker.STALE_CLAIM_AFTER - timedelta(minutes=5)
 
 
 @pytest.fixture
-def owner():
-    return users_repo.create(
-        "Worker Tester", f"{uuid4().hex}@test.invalid", hash_password(PASSWORD)
-    )
+def course_id() -> UUID:
+    return courses_repo.create_course("Worker Course").course_id
 
 
-@pytest.fixture
-def course(owner):
-    return courses_repo.create_course(owner.user_id, "Worker Course")
-
-
-def _upload(course_id, owner_id, body: bytes = BODY.encode()):
-    account = users_repo.get_by_id(owner_id)
-    assert account is not None
-    policy = load_tier_policies().policy_for(UserTier(account.tier))
+def _upload(
+    course_id: UUID,
+    body: bytes = BODY.encode(),
+    *,
+    mime_type: str = "text/plain",
+) -> sources_repo.StoredSource:
     return sources_repo.upload_source(
         course_id,
-        owner_id,
-        account.tier,
-        policy,
         filename="notes.txt",
-        mime_type="text/plain",
+        mime_type=mime_type,
         source_type=SourceType.NOTES,
         stream=io.BytesIO(body),
     )
 
 
-def test_upload_enqueues_for_ingestion(owner, course) -> None:
-    stored = _upload(course.course_id, owner.user_id)
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        row = cur.execute(
-            "SELECT reason FROM pending_ingestion WHERE source_id = %s",
-            (stored.source_id,),
-        ).fetchone()
-    assert row is not None
-    assert row["reason"] == "uploaded_new_source"
-
-
-def test_worker_batch_runs_and_records(owner, course) -> None:
-    stored = _upload(course.course_id, owner.user_id)
-    attempted, succeeded = worker.process_batch(limit=10)
-    assert attempted >= 1
-    assert succeeded == 0, "provider-less pipelines fail (honest state)"
-
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        run = runs.latest_run_for_source(conn, stored.source_id)
-        assert run is not None
-        source_row = cur.execute(
-            "SELECT status FROM sources WHERE source_id = %s",
-            (stored.source_id,),
-        ).fetchone()
-        assert source_row["status"] == "failed"
-        queue_row = cur.execute(
-            "SELECT count(*) AS n FROM pending_ingestion WHERE source_id = %s",
-            (stored.source_id,),
-        ).fetchone()
-        assert queue_row["n"] == 0, "failed source must not leave a zombie row"
-
-
-def test_worker_clears_queue_on_success(monkeypatch, owner, course) -> None:
-    stored = _upload(course.course_id, owner.user_id)
-
-    def fake_call(task, model, prompt, *, images=None):
-        return (f"stub output for {task}", 150, 30)
-
-    monkeypatch.setattr(
-        "src.backend.common.provider._call_provider", fake_call
-    )
-    attempted, succeeded = worker.process_batch(limit=10)
-    assert succeeded >= 1
-
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        source_row = cur.execute(
-            "SELECT status FROM sources WHERE source_id = %s",
-            (stored.source_id,),
-        ).fetchone()
-        assert source_row["status"] == "indexed"
-        queue_row = cur.execute(
-            "SELECT count(*) AS n FROM pending_ingestion WHERE source_id = %s",
-            (stored.source_id,),
-        ).fetchone()
-        assert queue_row["n"] == 0
-
-
-def test_worker_requeue_after_failure(owner, course) -> None:
-    stored = _upload(course.course_id, owner.user_id)
-    worker.process_batch(limit=10)
-
+def _queue_row(source_id: UUID) -> dict | None:
     with connection() as conn:
-        requeued = runs.requeue_failed_source(
-            conn, stored.source_id, course.course_id
-        )
-        conn.commit()
-    assert requeued
-    attempted, succeeded = worker.process_batch(limit=10)
-    assert attempted >= 1
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        run_count = cur.execute(
-            "SELECT count(*) AS n FROM ingestion_runs WHERE source_id = %s",
-            (stored.source_id,),
+        return conn.execute(
+            "SELECT reason, claimed_at, heartbeat_at FROM pending_ingestion"
+            " WHERE source_id = ?",
+            (source_id,),
         ).fetchone()
-        assert run_count["n"] >= 2, "requeue must produce a second run"
 
 
-def test_stale_claims_are_released(owner, course) -> None:
-    stored = _upload(course.course_id, owner.user_id)
+def _set_claim(source_id: UUID, claimed_at, heartbeat_at) -> None:
     with connection() as conn:
-        claimed = runs.claim_pending_sources(conn, limit=1)
-        conn.commit()
-    assert len(claimed) == 1
-
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE pending_ingestion SET claimed_at = %s"
-            " WHERE source_id = %s",
-            (
-                datetime.now(UTC)
-                - worker.STALE_CLAIM_AFTER
-                - timedelta(minutes=5),
-                stored.source_id,
-            ),
+        conn.execute(
+            "UPDATE pending_ingestion SET claimed_at = ?, heartbeat_at = ?"
+            " WHERE source_id = ?",
+            (claimed_at, heartbeat_at, source_id),
         )
         conn.commit()
 
+
+def _release_and_claim() -> list[dict]:
     with connection() as conn:
         worker._release_stale_claims(conn)
         conn.commit()
-
     with connection() as conn:
-        reclaimed = runs.claim_pending_sources(conn, limit=1)
+        claimed = runs.claim_pending_sources(conn, limit=1)
         conn.commit()
-    assert len(reclaimed) == 1
+    return claimed
 
-def test_batch_refreshes_course_memory_once(monkeypatch, owner, course) -> None:
-    """Fix #9 ratified: the course-memory summary is rebuilt once per
-    successful batch (not per upload, not per source). Two uploads to the
-    same course -> one refresh call covering both."""
-    calls: list = []
+
+def _source_status(source_id: UUID) -> str:
+    with connection() as conn:
+        return conn.execute(
+            "SELECT status FROM sources WHERE source_id = ?", (source_id,)
+        ).fetchone()["status"]
+
+
+def test_upload_enqueues_for_ingestion(course_id: UUID) -> None:
+    stored = _upload(course_id)
+    assert _queue_row(stored.source_id)["reason"] == "uploaded_new_source"
+
+
+def test_worker_indexes_text_sources_and_clears_the_queue(course_id: UUID) -> None:
+    stored = _upload(course_id)
+    attempted, succeeded = worker.process_batch(limit=10)
+    assert (attempted, succeeded) == (1, 1)
+    assert _source_status(stored.source_id) == "indexed"
+    assert _queue_row(stored.source_id) is None
+    with connection() as conn:
+        assert (
+            conn.execute("SELECT COUNT(*) AS n FROM chunk_embeddings").fetchone()["n"]
+            >= 1
+        )
+
+
+def test_worker_records_failures_without_zombies(course_id: UUID) -> None:
+    stored = _upload(course_id, b"PK\x03\x04junk", mime_type="application/zip")
+    attempted, succeeded = worker.process_batch(limit=10)
+    assert (attempted, succeeded) == (1, 0)
+    assert _source_status(stored.source_id) == "failed"
+    assert _queue_row(stored.source_id) is None
+
+
+def test_worker_requeue_after_failure(course_id: UUID) -> None:
+    stored = _upload(course_id, b"PK\x03\x04junk", mime_type="application/zip")
+    worker.process_batch(limit=10)
+    with connection() as conn:
+        assert runs.requeue_failed_source(conn, stored.source_id, course_id)
+        conn.commit()
+    attempted, _succeeded = worker.process_batch(limit=10)
+    assert attempted == 1
+    with connection() as conn:
+        run_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM ingestion_runs WHERE source_id = ?",
+            (stored.source_id,),
+        ).fetchone()["n"]
+    assert run_count == 2, "requeue must produce a second run"
+
+
+def test_batch_refreshes_course_memory_once(
+    monkeypatch: pytest.MonkeyPatch, course_id: UUID
+) -> None:
+    """The course-memory summary is rebuilt once per successful batch (not
+    per upload, not per source): two uploads to one course -> one refresh."""
+    calls: list[UUID] = []
     monkeypatch.setattr(
         "src.backend.ingest.worker._refresh_course_memory",
-        lambda course_id: calls.append(course_id),
+        lambda refreshed: calls.append(refreshed),
     )
-
-    def fake_call(task, model, prompt, *, images=None):
-        return (f"stub output for {task}", 100, 20)
-
-    monkeypatch.setattr(
-        "src.backend.common.provider._call_provider", fake_call
-    )
-    _upload(course.course_id, owner.user_id, body=b"first upload body " * 50)
-    _upload(course.course_id, owner.user_id, body=b"second upload body " * 50)
+    _upload(course_id, body=b"first upload body " * 50)
+    _upload(course_id, body=b"second upload body " * 50)
     attempted, succeeded = worker.process_batch(limit=10)
-    assert succeeded == 2
-    assert calls == [course.course_id], (
-        "one refresh per touched course per batch, not per source"
-    )
+    assert (attempted, succeeded) == (2, 2)
+    assert calls == [course_id]
 
 
-def test_live_run_is_never_reclaimed(owner, course) -> None:
-    """Fix #5 (ratified): the heartbeat fence. A claim whose heartbeat is
-    fresh is NOT stale even if its claim time is ancient — a
-    slow-but-alive run is never re-claimed out from under a live worker
-    (two pipelines racing delete-then-insert was the failure mode)."""
-    stored = _upload(course.course_id, owner.user_id)
+def test_batch_refresh_writes_the_summary(course_id: UUID) -> None:
+    _upload(course_id, body=b"memory refresh body " * 50)
+    worker.process_batch(limit=10)
     with connection() as conn:
-        claimed = runs.claim_pending_sources(conn, limit=1)
-        conn.commit()
-    assert len(claimed) == 1
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE pending_ingestion SET claimed_at = %s,"
-            " heartbeat_at = now() WHERE source_id = %s",
-            (
-                datetime.now(UTC)
-                - worker.STALE_CLAIM_AFTER
-                - timedelta(minutes=5),
-                stored.source_id,
-            ),
-        )
-        conn.commit()
-    with connection() as conn:
-        worker._release_stale_claims(conn)
-        conn.commit()
-    with connection() as conn:
-        still_claimed = runs.claim_pending_sources(conn, limit=1)
-        conn.commit()
-    assert still_claimed == [], "fresh heartbeat must fence the re-claim"
+        summary = conn.execute(
+            "SELECT summary FROM course_memories WHERE course_id = ?", (course_id,)
+        ).fetchone()["summary"]
+    assert "notes.txt" in summary
 
 
-def test_dead_run_without_heartbeat_is_reclaimed(owner, course) -> None:
-    """The other half of the fence: a claim with NO heartbeat yet (worker
-    died before its first stage transition) still ages out on claimed_at
-    — the original 30-minute budget bounds the pre-stage crash window."""
-    stored = _upload(course.course_id, owner.user_id)
+def test_stale_claims_are_released(course_id: UUID) -> None:
+    """A laptop that slept or crashed mid-run: the claim ages out and the
+    source becomes claimable again."""
+    stored = _upload(course_id)
     with connection() as conn:
-        claimed = runs.claim_pending_sources(conn, limit=1)
+        assert len(runs.claim_pending_sources(conn, limit=1)) == 1
         conn.commit()
-    assert len(claimed) == 1
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE pending_ingestion SET claimed_at = %s,"
-            " heartbeat_at = NULL WHERE source_id = %s",
-            (
-                datetime.now(UTC)
-                - worker.STALE_CLAIM_AFTER
-                - timedelta(minutes=5),
-                stored.source_id,
-            ),
-        )
-        conn.commit()
-    with connection() as conn:
-        worker._release_stale_claims(conn)
-        conn.commit()
-    with connection() as conn:
-        reclaimed = runs.claim_pending_sources(conn, limit=1)
-        conn.commit()
-    assert len(reclaimed) == 1
+    _set_claim(stored.source_id, LONG_AGO, None)
+    assert len(_release_and_claim()) == 1
 
 
-def test_stale_sweep_clears_heartbeat(owner, course) -> None:
-    """A released claim loses its stale heartbeat too: the next claim
-    starts a fresh liveness budget."""
-    stored = _upload(course.course_id, owner.user_id)
+def test_live_run_is_never_reclaimed(course_id: UUID) -> None:
+    """The heartbeat fence: a fresh heartbeat protects a claim however old
+    the claim itself is — a slow-but-alive run is never re-claimed."""
+    stored = _upload(course_id)
     with connection() as conn:
         runs.claim_pending_sources(conn, limit=1)
         conn.commit()
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute(
-            "UPDATE pending_ingestion SET claimed_at = %s,"
-            " heartbeat_at = %s WHERE source_id = %s",
-            (
-                datetime.now(UTC)
-                - worker.STALE_CLAIM_AFTER
-                - timedelta(minutes=5),
-                datetime.now(UTC) - timedelta(hours=2),
-                stored.source_id,
-            ),
-        )
+    _set_claim(stored.source_id, LONG_AGO, datetime.now(UTC))
+    assert _release_and_claim() == []
+
+
+def test_stale_sweep_clears_heartbeat(course_id: UUID) -> None:
+    stored = _upload(course_id)
+    with connection() as conn:
+        runs.claim_pending_sources(conn, limit=1)
         conn.commit()
+    _set_claim(stored.source_id, LONG_AGO, datetime.now(UTC) - timedelta(hours=2))
     with connection() as conn:
         worker._release_stale_claims(conn)
         conn.commit()
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-        row = cur.execute(
-            "SELECT claimed_at, heartbeat_at FROM pending_ingestion"
-            " WHERE source_id = %s",
-            (stored.source_id,),
-        ).fetchone()
-    assert row["claimed_at"] is None
-    assert row["heartbeat_at"] is None
+    row = _queue_row(stored.source_id)
+    assert row["claimed_at"] is None and row["heartbeat_at"] is None
 
 
-def test_debug_capture_error(owner, course, monkeypatch) -> None:
-    """Embedding seam lives in the worker path: the whole pipeline must
-    succeed with the fake embedding backend (no model load in tests)."""
-    from src.backend.common.db import connection
+def test_upload_wakes_the_worker_immediately() -> None:
+    """wakeup() is called from API threads; it must reach the worker's
+    loop (thread-safely) and end its sleep well before the poll interval."""
 
-    monkeypatch.setattr(
-        "src.backend.common.provider._call_provider",
-        lambda task, model, prompt, *, images=None: (f"stub {task}", 100, 20),
-    )
-    _upload(course.course_id, owner.user_id, body=b"first body " * 50)
-    attempted, succeeded = worker.process_batch(limit=10)
-    assert succeeded == 1
-    with connection() as conn, conn.cursor() as cur:
-        cur.execute("SELECT count(*) FROM chunk_embeddings")
-        assert cur.fetchone()[0] >= 1
+    async def scenario() -> float:
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        passes: list[float] = []
+        original = worker.process_batch
+
+        def counting_batch(*args, **kwargs):
+            passes.append(loop.time())
+            return original(*args, **kwargs)
+
+        worker.process_batch = counting_batch
+        try:
+            task = asyncio.create_task(worker.run_forever(stop))
+            while len(passes) < 1:
+                await asyncio.sleep(0.01)
+            started = loop.time()
+            await asyncio.to_thread(worker.wakeup)
+            while len(passes) < 2:
+                await asyncio.sleep(0.01)
+            elapsed = passes[1] - started
+            stop.set()
+            await asyncio.wait_for(task, timeout=5)
+            return elapsed
+        finally:
+            worker.process_batch = original
+
+    assert asyncio.run(scenario()) < 2.0

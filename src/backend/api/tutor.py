@@ -1,31 +1,21 @@
 """Tutor API: grounded answers for a course.
 
 POST /courses/{course_id}/ask — single-turn grounded Q&A (Fork D scope).
-Enrollment-gated (owner or active learner; the retrieval-caller check the
-review flagged lands here). Strict refusal on empty retrieval (Fork B
-lean). Provider-unavailable and budget-exhausted surface as honest 503s —
-the endpoint never pretends to answer.
+Strict refusal on empty retrieval (Fork B lean). Provider-unavailable
+surfaces as an honest 503 and a reached cloud budget as a 402 — the
+endpoint never pretends to answer.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from psycopg.rows import dict_row
+from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
-from src.backend.api.deps import current_user, require_verified_email
-from src.backend.common import (
-    budget,
-    courses_repo,
-    enrollments_repo,
-    provider,
-)
-from src.backend.common.db import connection
+from src.backend.common import courses_repo, provider, usage_repo
+from src.backend.common.db import connection, json_ids
 from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.common.queries import get
-from src.backend.common.schemas.identity import UserAccount
 from src.backend.retrieval.config import load_retrieval_policy
 from src.backend.tutor import answer as tutor_answer
 from src.backend.tutor.workspace import WorkspaceItem
@@ -50,6 +40,9 @@ class AnswerView(BaseModel):
     trace_id: str
     workspace: list[WorkspaceItem] = Field(default_factory=list)
     withheld: list[str] = Field(default_factory=list)
+    model: str = ""
+    # True when a rate-limited cloud provider fell back to the local model.
+    fell_back_to_local: bool = False
 
 
 class CitationView(BaseModel):
@@ -66,66 +59,42 @@ class CitationView(BaseModel):
     filename: str
 
 
-def _course_or_404_for_reader(course_id: UUID, user: UserAccount) -> None:
-    """Owner-or-active-enrollment gate for reading course content.
-    Strangers get 404 (existence not disclosed)."""
-    course = courses_repo.get_course(course_id)
-    if course is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
-    if course.owner_user_id != user.user_id and not enrollments_repo.is_active(
-        course_id, user.user_id
-    ):
+def _require_course(course_id: UUID) -> None:
+    if courses_repo.get_course(course_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
 
 
 @router.post("/{course_id}/ask", response_model=AnswerView)
-def ask(
-    course_id: UUID,
-    payload: AskRequest,
-    user: Annotated[UserAccount, Depends(current_user)],
-) -> AnswerView:
-    require_verified_email(user)
-    course = courses_repo.get_course(course_id)
-    if course is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
-    is_learner = (
-        course.owner_user_id != user.user_id
-        and enrollments_repo.is_active(course_id, user.user_id)
-    )
-    if course.owner_user_id != user.user_id and not is_learner:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
-    budget.verify_tier(user.user_id, user.tier)
+def ask(course_id: UUID, payload: AskRequest) -> AnswerView:
+    _require_course(course_id)
     try:
+        # Embed before opening the connection: the model call is the slow
+        # part and needs no database.
+        query_embedding = provider.embed_query(payload.question)
         with connection() as conn:
             result = tutor_answer.answer_question(
                 conn,
-                user.user_id,
-                user.tier,
                 course_id,
                 payload.question,
                 load_retrieval_policy(),
-                query_embedding=provider.embed_query(payload.question),
+                query_embedding=query_embedding,
                 embedding_model=load_embedding_policy().model,
             )
             conn.commit()
     except tutor_answer.NothingRelevantFoundError as err:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(err)) from err
     except provider.ProviderUnavailableError as err:
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            "model provider not configured; answers are unavailable",
-        ) from err
-    except budget.BudgetExceededError as err:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            f"weekly {user.tier.value} budget exhausted; resets weekly",
-        ) from err
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(err)) from err
+    except usage_repo.BudgetExceededError as err:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(err)) from err
     return AnswerView(
         text=result.body,
         chunk_ids=[str(cid) for cid in result.chunk_ids],
         trace_id=str(result.trace_id),
         workspace=list(result.workspace_items),
         withheld=list(result.withheld),
+        model=result.model,
+        fell_back_to_local=result.fell_back_to_local,
     )
 
 
@@ -133,37 +102,32 @@ def ask(
     "/{course_id}/traces/{trace_id}/citations",
     response_model=list[CitationView],
 )
-def trace_citations(
-    course_id: UUID,
-    trace_id: UUID,
-    user: Annotated[UserAccount, Depends(current_user)],
-) -> list[CitationView]:
+def trace_citations(course_id: UUID, trace_id: UUID) -> list[CitationView]:
     """The evidence behind one answer: chunk text + locator label +
-    filename, in retrieval order. Owner-or-active-enrollment; the trace
-    must belong to this course (a trace id from another course 404s, not
-    leaks). Layer attribution comes from the trace's stored payload."""
-    _course_or_404_for_reader(course_id, user)
-    with connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            trace = cur.execute(
-                get("retrieval_traces", "trace_for_course"),
-                {"trace_id": trace_id, "course_id": course_id},
-            ).fetchone()
-            if trace is None:
-                raise HTTPException(
-                    status.HTTP_404_NOT_FOUND, "trace not found"
-                )
-            payload = trace["retrieved_chunk_ids"]
-            if not isinstance(payload, dict):
-                payload = {}
-            chunk_ids = [
-                UUID(cid) for cid in payload.get("chunk_ids", [])
-            ]
-            if not chunk_ids:
-                return []
-            rows = cur.execute(
-                get("retrieval_traces", "chunks_with_locators_by_ids"),
-                {"chunk_ids": chunk_ids},
-            ).fetchall()
+    filename. The trace must belong to this course (a trace id from
+    another course 404s)."""
+    _require_course(course_id)
+    with connection() as conn:
+        trace = conn.execute(
+            get("retrieval_traces", "trace_for_course"),
+            {"trace_id": trace_id, "course_id": course_id},
+        ).fetchone()
+        if trace is None:
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND, "trace not found"
+            )
+        payload = trace["retrieved_chunk_ids"]
+        if not isinstance(payload, dict):
+            payload = {}
+        chunk_ids = [
+            UUID(cid) for cid in payload.get("chunk_ids", [])
+        ]
+        if not chunk_ids:
+            return []
+        rows = conn.execute(
+            get("retrieval_traces", "chunks_with_locators_by_ids"),
+            {"chunk_ids": json_ids(chunk_ids)},
+        ).fetchall()
     return [
         CitationView(
             chunk_id=str(row["chunk_id"]),

@@ -16,7 +16,6 @@ class Conversation(BaseRecord):
     """A chat session with the tutor, stored in two forms for two audiences."""
 
     conversation_id: UUID = Field(default_factory=_new_id)
-    user_id: UUID
     course_id: UUID
     title: str
     created_at: datetime = Field(default_factory=_now)

@@ -29,7 +29,6 @@ class AssessmentItem(BaseRecord):
 
 class Attempt(BaseRecord):
     attempt_id: UUID = Field(default_factory=_new_id)
-    user_id: UUID
     course_id: UUID
     item_id: UUID
     concept_ids: list[UUID] = Field(default_factory=list)
@@ -51,7 +50,6 @@ class ConceptMastery(BaseRecord):
     """
 
     mastery_id: UUID = Field(default_factory=_new_id)
-    user_id: UUID
     concept_id: UUID
     state: MasteryState = MasteryState.UNSEEN
     confidence: int | None = Field(default=None, ge=0, le=100)
@@ -62,7 +60,6 @@ class Recommendation(BaseRecord):
     """A 'what to study next' suggestion, traceable to attempts and concepts."""
 
     recommendation_id: UUID = Field(default_factory=_new_id)
-    user_id: UUID
     course_id: UUID
     concept_id: UUID
     reason: str

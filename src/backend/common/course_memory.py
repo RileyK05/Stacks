@@ -1,24 +1,21 @@
-"""Course memory (decision 007): the per-user, per-course focus node.
+"""Course memory (decision 007): the per-course focus node.
 
 The course-memory tree: a user-memory root (behavioral, lifelong, the only
 layer that may change model behavior) with one course-memory child per
-user per course ("what THIS person struggles with in THIS course"). Facts
-about understanding only — never behavior instructions, never shared.
+course ("what this student struggles with in THIS course"). Facts about
+understanding only — never behavior instructions. One local user per
+database, so the node belongs to the course's only user. It survives the
+course's trash purge as the deletion keepsake (golden rule 6).
 
-This module owns the child node for the MAIN USER of a course (its owner)
-and nobody else: `refresh_for_owner` is the only public write seam. The
-node belongs to the user, not the course — it survives archival and purge
-as the deletion keepsake (golden rule 6).
-
-Current node content is a grounded course-content summary (concepts,
-memory objects, sources, evidence snapshot) — the only thing distillable
-before attempts/mastery data exists. Target content is FOCUS memory
-distilled from the owner's own student data (Milestone 3 wiring); see
-decision 007 "Current state vs target".
+`refresh` is the only write seam. Current node content is a grounded
+course-content summary (concepts, memory objects, sources, evidence
+snapshot) — the only thing distillable before attempts/mastery data
+exists. Target content is FOCUS memory distilled from the student's own
+data (Milestone 3 wiring); see decision 007 "Current state vs target".
 
 NOTE: this is NOT course knowledge. Concepts/dependencies/memory objects/
 TOC live in `schemas/memory.py`, `src/backend/memory/`, and their tables;
-those describe what the course SAYS, shared per course.
+those describe what the course SAYS.
 """
 
 from __future__ import annotations
@@ -26,15 +23,14 @@ from __future__ import annotations
 import json
 import math
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from psycopg import Cursor
-from psycopg.rows import DictRow
+from src.backend.common.db import Connection
 from src.backend.common.lifecycle_config import load_lifecycle_policy
 from src.backend.common.queries import get
-from src.backend.common.schemas.base import UserTier
 
-_ARCHIVE_FILE = "course_archives"
+_FILE = "course_memory"
+DictRow = dict[str, Any]
 
 # 4 characters per token is an approximation; the node text is prose, and
 # if exact model tokenization ever becomes necessary it must come from a
@@ -47,10 +43,10 @@ _SOURCES_HEADER = "Sources:"
 _TRUNCATED_MARKER = "[truncated at token budget]"
 
 
-def target_tokens(source_count: int, tier: UserTier) -> int:
+def target_tokens(source_count: int) -> int:
     policy = load_lifecycle_policy()
     scaled = round(policy.summary_base_tokens * math.sqrt(max(source_count, 1)))
-    return min(policy.memory_limit(tier), scaled)
+    return min(policy.memory_max_tokens, scaled)
 
 
 def _character_budget(token_budget: int) -> int:
@@ -164,89 +160,40 @@ def _lines_cost(lines: list[str]) -> int:
     return sum(len(line) for line in lines) + len(lines) - 1
 
 
-def _fetch_material(
-    cur: Cursor[Any], course_id: UUID
-) -> dict[str, list[DictRow]]:
-    sources = cur.execute(
-        get(_ARCHIVE_FILE, "memory_sources"), {"course_id": course_id}
-    ).fetchall()
-    concepts = cur.execute(
-        get(_ARCHIVE_FILE, "memory_concepts"), {"course_id": course_id}
-    ).fetchall()
-    memory_objects = cur.execute(
-        get(_ARCHIVE_FILE, "memory_objects"), {"course_id": course_id}
-    ).fetchall()
-    evidence = cur.execute(
-        get(_ARCHIVE_FILE, "memory_evidence"), {"course_id": course_id}
-    ).fetchall()
+def _fetch_material(conn: Connection, course_id: UUID) -> dict[str, list[DictRow]]:
+    params = {"course_id": course_id}
     return {
-        "sources": sources,
-        "concepts": concepts,
-        "memory_objects": memory_objects,
-        "evidence": evidence,
+        "sources": conn.execute(get(_FILE, "memory_sources"), params).fetchall(),
+        "concepts": conn.execute(get(_FILE, "memory_concepts"), params).fetchall(),
+        "memory_objects": conn.execute(
+            get(_FILE, "memory_objects"), params
+        ).fetchall(),
+        "evidence": conn.execute(get(_FILE, "memory_evidence"), params).fetchall(),
     }
 
 
-def refresh_for_owner(cur: Cursor[Any], course_id: UUID) -> None:
-    """Refresh the course-memory node of the course's main user (its
-    owner). This is the ONLY public write seam (decision 007): course
-    memory is stored for the main user per course and nobody else, so no
-    caller can ever write another user's node. Learners get the harness
-    plus their own raw private student data — never a course-memory node.
-    """
-    course = cur.execute(
-        "SELECT owner_user_id FROM courses WHERE course_id = %s",
-        (course_id,),
+def refresh(conn: Connection, course_id: UUID) -> None:
+    """Rewrite the course's memory node from its current material, inside
+    the caller's transaction. The only write seam (decision 007). A course
+    that no longer exists leaves its existing node untouched."""
+    course = conn.execute(
+        get(_FILE, "course_name"), {"course_id": course_id}
     ).fetchone()
     if course is None:
         return
-    _write_node(cur, course_id, [course["owner_user_id"]])
-
-
-def _write_node(
-    cur: Cursor[Any], course_id: UUID, user_ids: list[UUID]
-) -> None:
-    unique_user_ids = set(user_ids)
-    if not unique_user_ids:
-        return
-    course = cur.execute(
-        "SELECT course_id, name FROM courses WHERE course_id = %s",
-        (course_id,),
-    ).fetchone()
-    if course is None:
-        return
-    material = _fetch_material(cur, course_id)
-    tiers = {
-        row["user_id"]: UserTier(row["tier"])
-        for row in cur.execute(
-            "SELECT user_id, tier FROM users WHERE user_id = ANY(%s)",
-            (list(unique_user_ids),),
-        ).fetchall()
-    }
-    policy = load_lifecycle_policy()
-    assembled: dict[UserTier, tuple[str, list[str]]] = {}
-    for user_id in unique_user_ids:
-        tier = tiers.get(user_id)
-        if tier is None:
-            continue
-        if tier not in assembled:
-            token_budget = target_tokens(len(material["sources"]), tier)
-            assembled[tier] = (
-                _assemble_summary(material, course["name"], token_budget)
-            )
-        summary, key_concepts = assembled[tier]
-        cur.execute(
-            get(_ARCHIVE_FILE, "upsert_memory"),
-            {
-                "user_id": user_id,
-                "course_id": course_id,
-                "course_ref": str(course_id),
-                "name": course["name"],
-                "summary": summary,
-                "key_concepts": json.dumps(key_concepts),
-                "token_budget": target_tokens(
-                    len(material["sources"]), tier
-                ),
-                "summary_version": policy.summary_version,
-            },
-        )
+    material = _fetch_material(conn, course_id)
+    token_budget = target_tokens(len(material["sources"]))
+    summary, key_concepts = _assemble_summary(material, course["name"], token_budget)
+    conn.execute(
+        get(_FILE, "upsert_memory"),
+        {
+            "memory_id": uuid4(),
+            "course_id": course_id,
+            "course_ref": str(course_id),
+            "name": course["name"],
+            "summary": summary,
+            "key_concepts": json.dumps(key_concepts),
+            "token_budget": token_budget,
+            "summary_version": load_lifecycle_policy().summary_version,
+        },
+    )

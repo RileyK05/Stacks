@@ -1,14 +1,18 @@
-"""Milestone-1 ingestion orchestrator.
+"""Ingestion orchestrator.
 
 Binds the pipeline executor, the run ledger, and the stage handlers into
-`run_ingestion`: extract_text → build_locators → build_chunks →
-embed_chunks run deterministically (embeddings are self-hosted and
-in-process — no tier, no billing); update_toc and extract_knowledge call
-the hosted provider seam (gated + billed there). A full retry re-executes
-every stage from the top — the executor has no resume logic — but each
-stage is delete-your-rows-first idempotent, so re-execution is safe, just
-not free. The run ledger records every attempt, so "re-ran and succeeded"
-and "ran once" are distinguishable by attempt history.
+`run_ingestion`: extract_text → ocr (scanned PDFs only) → build_locators →
+build_chunks → embed_chunks run deterministically (embeddings run
+in-process). update_toc and extract_knowledge are enrichment stages: they
+record a skip until their local-first implementations land (plan §10a —
+a TOC built without the chat model, and decomposed per-chunk knowledge
+extraction), instead of spending model calls whose output nothing stores.
+
+A full retry re-executes every stage from the top — the executor has no
+resume logic — but each stage is delete-your-rows-first idempotent, so
+re-execution is safe, just not free. The run ledger records every
+attempt, so "re-ran and succeeded" and "ran once" are distinguishable by
+attempt history.
 
 Prompt text is inlined into model prompts with uploaded material fenced
 inside the UNTRUSTED_COURSE_MATERIAL markers (`prompt_registry`), and the
@@ -19,24 +23,21 @@ a security boundary; uploaded text can still attempt persuasion.
 
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from psycopg import Connection
-from psycopg.rows import dict_row
+import numpy as np
 from src.backend.common import provider
+from src.backend.common.db import Connection
 from src.backend.common.embeddings_config import load_embedding_policy
-from src.backend.common.prompt_registry import grounded_prompt, load_prompt
+from src.backend.common.prompt_registry import load_prompt
 from src.backend.common.queries import get
-from src.backend.common.schemas.base import (
-    IngestionStage,
-    IngestionStatus,
-    UserTier,
-)
+from src.backend.common.schemas.base import IngestionStage, IngestionStatus
 from src.backend.ingest import chunking, extract, runs
 from src.backend.ingest.config import load_ingestion_config
 from src.backend.ingest.pipeline import (
     IngestionPipelineError,
     StageHandler,
+    StageSkipped,
     execute_pipeline,
 )
 
@@ -93,10 +94,7 @@ class SourceRow:
 
 
 def fetch_source_row(conn: Connection, source_id: UUID) -> SourceRow:
-    with conn.cursor(row_factory=dict_row) as cur:
-        row = cur.execute(
-            get(_FILE, "source_row"), {"source_id": source_id}
-        ).fetchone()
+    row = conn.execute(get(_FILE, "source_row"), {"source_id": source_id}).fetchone()
     if row is None:
         raise UnknownSourceError(source_id)
     return SourceRow(
@@ -116,20 +114,14 @@ class IngestionHandlers:
         self,
         conn: Connection,
         source: SourceRow,
-        owner_user_id: UUID,
-        tier: UserTier,
         *,
         chunk_max_tokens: int,
-        prompt_window_chars: int,
         ocr_max_pages: int,
         ocr_scale: float,
     ) -> None:
         self.conn = conn
         self.source = source
-        self.owner_user_id = owner_user_id
-        self.tier = tier
         self.chunk_max_tokens = chunk_max_tokens
-        self.prompt_window_chars = prompt_window_chars
         self.ocr_max_pages = ocr_max_pages
         self.ocr_scale = ocr_scale
         self.extracted: extract.ExtractedSource | None = None
@@ -182,8 +174,6 @@ class IngestionHandlers:
         result = provider.generate(
             MODEL_TASKS[IngestionStage.OCR],
             load_prompt("ocr"),
-            self.owner_user_id,
-            self.tier,
             course_id=self.source.course_id,
             images=images,
         )
@@ -194,28 +184,24 @@ class IngestionHandlers:
 
     def build_locators(self) -> None:
         assert self.extracted is not None
-        with self.conn.cursor() as cur:
-            cur.execute(
-                get(_FILE, "delete_chunks"),
-                {"source_id": self.source.source_id},
-            )
-            cur.execute(
-                get(_FILE, "delete_locators"),
-                {"source_id": self.source.source_id},
-            )
-            for span in self.extracted.locators:
-                cur.execute(
-                    get(_FILE, "insert_locator"),
-                    {
-                        "locator_id": span.locator_id,
-                        "source_id": self.source.source_id,
-                        "locator_type": span.locator_type,
-                        "start": str(span.start),
-                        "end_value": str(span.end),
-                        "label": span.label,
-                        "description": span.description,
-                    },
-                )
+        source_param = {"source_id": self.source.source_id}
+        self.conn.execute(get(_FILE, "delete_chunks"), source_param)
+        self.conn.execute(get(_FILE, "delete_locators"), source_param)
+        self.conn.executemany(
+            get(_FILE, "insert_locator"),
+            [
+                {
+                    "locator_id": span.locator_id,
+                    "source_id": self.source.source_id,
+                    "locator_type": span.locator_type,
+                    "start": str(span.start),
+                    "end_value": str(span.end),
+                    "label": span.label,
+                    "description": span.description,
+                }
+                for span in self.extracted.locators
+            ],
+        )
 
     def build_chunks(self) -> None:
         assert self.extracted is not None
@@ -224,136 +210,91 @@ class IngestionHandlers:
             self.extracted.locators,
             max_tokens=self.chunk_max_tokens,
         )
-        with self.conn.cursor() as cur:
-            cur.execute(
-                get(_FILE, "delete_chunks"),
-                {"source_id": self.source.source_id},
-            )
-            for span in self.spans:
-                if not span.locator_ids:
-                    raise ValueError(
-                        f"chunk {span.chunk_index} maps to no locator — "
-                        "citation grounding is mandatory"
-                    )
-                # One row per logical chunk (ratified fix #10): the
-                # primary locator goes on the chunk row, every locator in
-                # the span goes into chunk_locators (the citation map).
-                cur.execute(
-                    get(_FILE, "insert_chunk"),
-                    {
-                        "source_id": self.source.source_id,
-                        "locator_id": span.locator_ids[0],
-                        "chunk_index": span.chunk_index,
-                        "text": span.text,
-                    },
+        self.conn.execute(
+            get(_FILE, "delete_chunks"), {"source_id": self.source.source_id}
+        )
+        chunk_rows: list[dict[str, object]] = []
+        link_rows: list[dict[str, object]] = []
+        for span in self.spans:
+            if not span.locator_ids:
+                raise ValueError(
+                    f"chunk {span.chunk_index} maps to no locator — "
+                    "citation grounding is mandatory"
                 )
-                inserted = cur.fetchone()
-                if inserted is None:
-                    raise RuntimeError(
-                        "insert_chunk returned no chunk_id — pipeline"
-                        " invariant violated"
-                    )
-                chunk_id = inserted[0]
-                for locator_span_id in span.locator_ids:
-                    cur.execute(
-                        get(_FILE, "insert_chunk_locator"),
-                        {
-                            "chunk_id": chunk_id,
-                            "locator_id": locator_span_id,
-                        },
-                    )
+            # One row per logical chunk (ratified fix #10): the primary
+            # locator goes on the chunk row, every locator in the span
+            # goes into chunk_locators (the citation map).
+            chunk_id = uuid4()
+            chunk_rows.append(
+                {
+                    "chunk_id": chunk_id,
+                    "source_id": self.source.source_id,
+                    "locator_id": span.locator_ids[0],
+                    "chunk_index": span.chunk_index,
+                    "text": span.text,
+                }
+            )
+            link_rows.extend(
+                {"chunk_id": chunk_id, "locator_id": locator_span_id}
+                for locator_span_id in span.locator_ids
+            )
+        self.conn.executemany(get(_FILE, "insert_chunk"), chunk_rows)
+        self.conn.executemany(get(_FILE, "insert_chunk_locator"), link_rows)
 
     def update_toc(self) -> None:
-        result = provider.generate(
-            MODEL_TASKS[IngestionStage.UPDATE_TOC],
-            self._prompt(load_prompt("toc_update")),
-            self.owner_user_id,
-            self.tier,
-            course_id=self.source.course_id,
+        raise StageSkipped(
+            "TOC building lands with the local-first TOC builder (plan §10a)"
         )
-        self._require_rows("toc", result)
 
     def embed_chunks(self) -> None:
         """Embed every chunk of this source under the configured model's
-        contract. Self-hosted and in-process: no tier, no budget gate, no
-        spend row — course text goes to a local model, so the no-retention
-        vendor check does not apply here by construction (the seam that
-        DOES host out is `generate`, untouched by this stage)."""
+        contract. In-process: records nothing and sends no text anywhere.
+        The (slow) encoding runs before any write, so no transaction is
+        held open while the model works."""
         assert self.spans
         policy = load_embedding_policy()
         vectors = provider.embed_chunks([span.text for span in self.spans])
-        with self.conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                get(_FILE, "delete_chunk_embeddings"),
-                {"source_id": self.source.source_id},
-            )
-            cur.execute(
-                get(_FILE, "chunk_ids_by_source_index"),
-                {"source_id": self.source.source_id},
-            )
-            rows = cur.fetchall()
-            by_index = {row["chunk_index"]: row["chunk_id"] for row in rows}
-            for span, vector in zip(self.spans, vectors, strict=True):
-                chunk_id = by_index.get(span.chunk_index)
-                if chunk_id is None:
-                    raise RuntimeError(
-                        f"chunk {span.chunk_index} vanished between "
-                        "build_chunks and embed_chunks"
-                    )
-                cur.execute(
-                    get(_FILE, "replace_chunk_embedding"),
-                    {
-                        "chunk_id": chunk_id,
-                        "model": policy.model,
-                        "embedding": vector,
-                    },
+        source_param = {"source_id": self.source.source_id}
+        rows = self.conn.execute(
+            get(_FILE, "chunk_ids_by_source_index"), source_param
+        ).fetchall()
+        by_index = {row["chunk_index"]: row["chunk_id"] for row in rows}
+        embedding_rows: list[dict[str, object]] = []
+        for span, vector in zip(self.spans, vectors, strict=True):
+            chunk_id = by_index.get(span.chunk_index)
+            if chunk_id is None:
+                raise RuntimeError(
+                    f"chunk {span.chunk_index} vanished between "
+                    "build_chunks and embed_chunks"
                 )
+            embedding_rows.append(
+                {
+                    "chunk_id": chunk_id,
+                    "model": policy.model,
+                    "dimension": len(vector),
+                    "embedding": np.asarray(vector, dtype="<f4").tobytes(),
+                }
+            )
+        self.conn.execute(get(_FILE, "delete_chunk_embeddings"), source_param)
+        self.conn.executemany(get(_FILE, "replace_chunk_embedding"), embedding_rows)
 
     def extract_knowledge(self) -> None:
-        result = provider.generate(
-            MODEL_TASKS[IngestionStage.EXTRACT_KNOWLEDGE],
-            self._prompt(load_prompt("course_knowledge_extraction")),
-            self.owner_user_id,
-            self.tier,
-            course_id=self.source.course_id,
+        raise StageSkipped(
+            "knowledge extraction lands with decomposed per-chunk extraction "
+            "(plan §10a)"
         )
-        self._require_rows("course knowledge", result)
-
-    def _prompt(self, instruction: str) -> str:
-        assert self.extracted is not None
-        window = self.extracted.text[: self.prompt_window_chars]
-        return grounded_prompt(instruction, window)
-
-    def _require_rows(self, what: str, result: provider.GenerationResult) -> None:
-        """A model stage that returns nothing would write no rows while
-        the run reads SUCCEEDED — a false success. The provider seam
-        guarantees non-empty text (EmptyModelError); row-writing itself
-        lands with the provider's real output format, so until then this
-        asserts the seam contract explicitly and fails closed."""
-        if not result.text.strip():
-            raise provider.EmptyModelError(what)
 
 
-def run_ingestion(
-    conn: Connection,
-    source_id: UUID,
-    owner_user_id: UUID,
-    tier: UserTier,
-) -> UUID:
-    """Execute the full pipeline for one source inside the caller's
-    transaction context. Tier is verified inside the provider seam (not
-    trusted from this caller). Creates run + stage rows, executes stages
-    with retries from the top, marks run/source terminal, clears the
+def run_ingestion(conn: Connection, source_id: UUID) -> UUID:
+    """Execute the full pipeline for one source. Creates run + stage rows,
+    executes stages with retries, marks run/source terminal, clears the
     queue row. Returns run_id."""
     source = fetch_source_row(conn, source_id)
     ingestion_config = load_ingestion_config()
     handler_set = IngestionHandlers(
         conn,
         source,
-        owner_user_id,
-        tier,
         chunk_max_tokens=ingestion_config.chunk_max_tokens,
-        prompt_window_chars=ingestion_config.prompt_window_chars,
         ocr_max_pages=ingestion_config.ocr.max_pages,
         ocr_scale=ingestion_config.ocr.scale,
     )
@@ -367,7 +308,6 @@ def run_ingestion(
         ingestion_config.pipeline_version,
         {
             "chunk_max_tokens": handler_set.chunk_max_tokens,
-            "prompt_window_chars": handler_set.prompt_window_chars,
         },
         stage_versions,
         ingestion_config.max_attempts,

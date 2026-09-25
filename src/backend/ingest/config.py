@@ -28,7 +28,6 @@ class IngestionConfig(BaseModel):
     pipeline_version: str
     max_attempts: int = Field(ge=1)
     chunk_max_tokens: int = Field(ge=1)
-    prompt_window_chars: int = Field(ge=1)
     poll_interval_seconds: int = Field(ge=1)
     ocr: OcrConfig
     stages: list[StageConfig]
