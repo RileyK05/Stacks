@@ -231,3 +231,12 @@ def set_summary(conversation_id: UUID, summary: str, through: int) -> None:
             },
         )
         conn.commit()
+
+
+def message_in_course(course_id: UUID, message_id: UUID) -> Message | None:
+    with connection() as conn:
+        row = conn.execute(
+            get(_FILE, "message_in_course"),
+            {"course_id": course_id, "message_id": message_id},
+        ).fetchone()
+    return _to_message(row) if row else None

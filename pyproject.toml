@@ -24,6 +24,11 @@ dependencies = [
     # In-process encoders (embeddings, reranker) — no torch at runtime.
     "onnxruntime>=1.20",
     "tokenizers>=0.20",
+    # Artifact export: Word, Excel, PowerPoint; docs are parsed as Markdown.
+    "python-docx>=1.2",
+    "openpyxl>=3.1",
+    "python-pptx>=1.0",
+    "markdown-it-py>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +45,7 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.5",
     "mypy>=1.10",
+    "types-openpyxl",
 ]
 
 [tool.setuptools.packages.find]

@@ -17,6 +17,7 @@ WORKSPACE_PROMPTS = frozenset(
 KNOWN_PROMPTS = KNOWN_GENERATION_TASKS | WORKSPACE_PROMPTS | {
     "tutor_steer",
     "tutor_answer_quotes",
+    "artifact_edit",
 }
 
 DEFAULT_PROMPTS_PATH = PROJECT_ROOT / "configs" / "prompts.toml"

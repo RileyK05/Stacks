@@ -65,6 +65,12 @@ def build_backend() -> Path:
         "onnxruntime",
         "--collect-submodules",
         "tokenizers",
+        # Artifact export: Word and PowerPoint build from template files
+        # shipped inside their packages.
+        "--collect-data",
+        "docx",
+        "--collect-data",
+        "pptx",
         "--exclude-module",
         "torch",
         "--exclude-module",

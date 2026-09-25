@@ -64,3 +64,12 @@ FROM messages WHERE conversation_id = :conversation_id;
 -- name: add_message
 INSERT INTO messages (message_id, conversation_id, seq, role, text, trace_id, payload)
 VALUES (:message_id, :conversation_id, :seq, :role, :text, :trace_id, :payload);
+
+-- name: message_in_course
+SELECT message.message_id, message.conversation_id, message.seq, message.role,
+       message.text, message.trace_id, message.payload, message.created_at
+FROM messages AS message
+JOIN conversations AS conversation
+  ON conversation.conversation_id = message.conversation_id
+WHERE message.message_id = :message_id
+  AND conversation.course_id = :course_id;
