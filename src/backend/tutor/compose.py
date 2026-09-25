@@ -149,13 +149,21 @@ class Composed:
     rejected_quotes: tuple[quote_anchors.Quote, ...] = ()
 
 
-def numbered_material(question: str, candidates: tuple[Candidate, ...]) -> str:
+def numbered_material(
+    question: str, candidates: tuple[Candidate, ...], conversation: str = ""
+) -> str:
+    """The question and numbered chunks, preceded — in a saved chat — by
+    the conversation so far (tutor/chat.py). It all goes inside the fence:
+    earlier turns are context, never a source to cite."""
     blocks = [
         f"[{index + 1}] chunk {candidate.chunk_id}\n{candidate.text}"
         for index, candidate in enumerate(candidates)
     ]
     evidence = "\n\n".join(blocks)
-    return f"Question: {question}\n\nCourse material:\n{evidence}"
+    material = f"Question: {question}\n\nCourse material:\n{evidence}"
+    if conversation:
+        return f"Conversation so far (context only):\n{conversation}\n\n{material}"
+    return material
 
 
 def build_prompt(question: str, candidates: tuple[Candidate, ...]) -> str:
@@ -315,6 +323,7 @@ def compose_answer(
     on_schema_rejected: Callable[[Exception], bool] | None = None,
     select: Callable[[str, tuple[Candidate, ...]], tuple[Candidate, ...]] | None = None,
     answer_mode: AnswerMode = AnswerMode.PLAIN,
+    conversation: str = "",
 ) -> Composed:
     """Frame the task, generate, and return standard answer text.
 
@@ -324,22 +333,18 @@ def compose_answer(
     if select is not None:
         candidates = select(question, candidates)
     intent = classify_intent(question)
+    material = numbered_material(question, candidates, conversation)
     if intent is Intent.ANSWER and answer_mode is AnswerMode.QUOTES:
-        return _compose_quoted(question, candidates, generate, on_schema_rejected)
+        return _compose_quoted(material, candidates, generate, on_schema_rejected)
     if intent in (Intent.ANSWER, Intent.GRADED):
         instruction = "tutor_steer" if intent is Intent.GRADED else "tutor_answer"
-        prompt = grounded_prompt(
-            load_prompt(instruction), numbered_material(question, candidates)
-        )
+        prompt = grounded_prompt(load_prompt(instruction), material)
         text = generate("tutor_answer", prompt)
         return Composed(
             strip_fence_echo(text), intent, structured=False, candidates=candidates
         )
 
-    prompt = grounded_prompt(
-        load_prompt(f"workspace_{intent.value}"),
-        numbered_material(question, candidates),
-    )
+    prompt = grounded_prompt(load_prompt(f"workspace_{intent.value}"), material)
     schema = workspace_schema(intent, len(candidates))
     try:
         raw = generate("artifact_generation", prompt, response_schema=schema)
@@ -364,7 +369,7 @@ def compose_answer(
 
 
 def _compose_quoted(
-    question: str,
+    material: str,
     candidates: tuple[Candidate, ...],
     generate: Generate,
     on_schema_rejected: Callable[[Exception], bool] | None,
@@ -372,7 +377,6 @@ def _compose_quoted(
     """Quote-first answer: evidence, then the answer; quotes verified
     against their chunks. An endpoint that rejects the schema, or a reply
     that is not the requested JSON, falls back to the plain answer."""
-    material = numbered_material(question, candidates)
     prompt = grounded_prompt(load_prompt("tutor_answer_quotes"), material)
     try:
         raw = generate(

@@ -25,6 +25,7 @@ the layer contribution is returned for the trace.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
@@ -40,6 +41,11 @@ KEYWORD = "keyword"
 TOC = "toc"
 DEPENDENCY = "dependency"
 EMBEDDING = "embedding"
+
+# A search narrowed to some sources fetches this many times the usual
+# candidates per seam before filtering, so the chosen sources are not
+# crowded out by the ones left out.
+_NARROWED_FETCH_FACTOR = 4
 
 # Only these characters survive keyword tokenization. Everything else —
 # including every FTS5 operator ( ) " * ^ : + - and the NEAR/AND/OR/NOT
@@ -489,21 +495,35 @@ def retrieve(
     *,
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
+    source_ids: Collection[UUID] | None = None,
 ) -> RetrievalResult:
     """Run every seam, fuse, attribute layers. Trace persistence is the
-    caller's job (the tutor flow owns the transaction)."""
+    caller's job (the tutor flow owns the transaction).
+
+    `source_ids` narrows the answer to chosen sources (a chat's source
+    selection); None searches the whole course. Each seam over-fetches
+    when narrowed, so the chosen sources still fill the candidate set."""
+    widen = 1 if source_ids is None else _NARROWED_FETCH_FACTOR
     matched_concepts = concept_matches(conn, course_id, query, policy.dependency_limit)
     matched_ids = [row["concept_id"] for row in matched_concepts]
-    keyword = keyword_seam(conn, course_id, query, policy.keyword_limit)
-    toc, toc_entry_ids = toc_seam(conn, course_id, query, policy.toc_limit)
-    dependency = dependency_seam(conn, course_id, matched_ids, policy.dependency_limit)
+    keyword = keyword_seam(conn, course_id, query, policy.keyword_limit * widen)
+    toc, toc_entry_ids = toc_seam(conn, course_id, query, policy.toc_limit * widen)
+    dependency = dependency_seam(
+        conn, course_id, matched_ids, policy.dependency_limit * widen
+    )
     embeddings = embedding_seam(
         conn,
         course_id,
         query_embedding,
         embedding_model or "",
-        policy.embedding_limit,
+        policy.embedding_limit * widen,
     )
+    if source_ids is not None:
+        allowed = set(source_ids)
+        keyword, toc, dependency, embeddings = (
+            {cid: c for cid, c in seam.items() if c.source_id in allowed}
+            for seam in (keyword, toc, dependency, embeddings)
+        )
     final = fuse(
         keyword, toc, dependency, embeddings, policy=policy
     )

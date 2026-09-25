@@ -17,7 +17,15 @@ from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from src.backend.api import courses, data, runtime, settings, sources, tutor
+from src.backend.api import (
+    conversations,
+    courses,
+    data,
+    runtime,
+    settings,
+    sources,
+    tutor,
+)
 from src.backend.api.deps import require_app_token
 from src.backend.common import maintenance
 from src.backend.common.migrate import migrate
@@ -46,6 +54,7 @@ def create_api() -> FastAPI:
     api.include_router(courses.router)
     api.include_router(sources.router)
     api.include_router(tutor.router)
+    api.include_router(conversations.router)
     api.include_router(settings.router)
     api.include_router(runtime.router)
     api.include_router(data.router)

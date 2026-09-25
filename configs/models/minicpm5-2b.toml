@@ -1,0 +1,6 @@
+# MiniCPM5-2B, the default local model (decision 012). With reasoning on
+# it spent ~90% of its tokens thinking and sometimes never answered, so
+# reasoning stays off; answers come back in ~6 s on the owner's laptop.
+model = "minicpm5-2b"
+aliases = ["MiniCPM5-2B-Q4_K_M", "openbmb/MiniCPM5-2B-GGUF"]
+reasoning = false

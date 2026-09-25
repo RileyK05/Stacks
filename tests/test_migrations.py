@@ -29,7 +29,9 @@ def _source(conn: sqlite3.Connection, course_id: UUID) -> UUID:
 
 def test_migrations_apply_to_a_fresh_file_and_are_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "fresh.db"
-    assert migrate(path) == ["001", "002"]
+    expected = sorted(f.name[:3] for f in migrate_module.MIGRATIONS_DIR.glob("*.sql"))
+    assert expected[:3] == ["001", "002", "003"]
+    assert migrate(path) == expected
     assert migrate(path) == []
     conn = connect(path)
     try:

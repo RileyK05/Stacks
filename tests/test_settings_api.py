@@ -9,7 +9,10 @@ from src.backend.common import usage_repo
 def test_providers_overview_starts_unconfigured(client: TestClient) -> None:
     overview = client.get("/settings/providers").json()
     names = [preset["name"] for preset in overview["presets"]]
-    assert names == ["local", "openrouter", "openai", "custom"]
+    assert names[0] == "local"
+    assert {"openai", "anthropic", "google", "openrouter", "groq"} <= set(names)
+    assert {"lmstudio", "ollama", "custom"} <= set(names)
+    assert [c["id"] for c in overview["connections"]] == ["local"]
     unset = {"interactive": None, "background": None, "bigger": None}
     assert overview["choices"] == unset
     assert overview["resolved"] == unset

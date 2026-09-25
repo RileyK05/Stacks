@@ -112,6 +112,19 @@ def _no_live_provider(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_model_hub(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """No test asks Hugging Face about a model. Tests that add one stub
+    `user_models._http_get` themselves."""
+    from src.backend.runtime import user_models
+
+    def _offline(url: str) -> object:
+        raise AssertionError(f"a test tried to reach {url}")
+
+    monkeypatch.setattr(user_models, "_http_get", _offline)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _fake_embedding_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """No test loads the real embedding model (hundreds of MB, seconds per
     load). The stub's dimension matches the configured contract — the seam

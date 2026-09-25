@@ -45,10 +45,15 @@ class CatalogModel(BaseModel):
     min_ram_gb: int = Field(ge=1)
     license: str
     notes: str = ""
+    revision: str = "main"
+    # Models the user added (runtime/user_models.py). `local_path` is a
+    # .gguf they pointed at on this computer: used in place, never copied.
+    added_by_user: bool = False
+    local_path: str | None = None
 
     @property
     def download_url(self) -> str:
-        return f"https://huggingface.co/{self.repo}/resolve/main/{self.file}"
+        return f"https://huggingface.co/{self.repo}/resolve/{self.revision}/{self.file}"
 
 
 class RuntimeConfig(BaseModel):

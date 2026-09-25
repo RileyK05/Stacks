@@ -82,13 +82,6 @@ class MessageRole(StrEnum):
     SYSTEM = "system"
 
 
-
-
-
-
-
-
-
 class TutorVerbosity(StrEnum):
     CONCISE = "concise"
     BALANCED = "balanced"
@@ -130,13 +123,10 @@ class IngestionStage(StrEnum):
     EXTRACT_KNOWLEDGE = "extract_knowledge"
 
 
-
 # Canonical free-string values. These fields stay free strings for extensibility,
 # but this is the single source of truth for the values the system emits, so
 # different parts of the code agree on spelling.
-KNOWN_CLAIM_TYPES = frozenset(
-    {"academic", "inference", "hypothesis", "recommendation"}
-)
+KNOWN_CLAIM_TYPES = frozenset({"academic", "inference", "hypothesis", "recommendation"})
 KNOWN_CITATION_TARGETS = frozenset(
     {"chunk", "memory_object", "toc_entry", "source", "conversation_turn"}
 )
@@ -149,16 +139,19 @@ KNOWN_GENERATION_TASKS = frozenset(
         "course_knowledge_extraction",
         "artifact_generation",
         "ocr",
+        "conversation_summary",
     }
 )
 
-# Background ingestion work vs interactive generation. Per-task provider
-# routing (configs/models.toml) and the usage ledger read this; it is the
-# single source of truth for task classification.
+# Background work (nobody is waiting on it) vs interactive generation.
+# Per-task provider routing (configs/models.toml) and the usage ledger read
+# this; it is the single source of truth for task classification. The
+# name predates the chat summary, which also runs in the background.
 INGESTION_TASKS = frozenset(
     {
         "toc_update",
         "course_knowledge_extraction",
         "ocr",
+        "conversation_summary",
     }
 )

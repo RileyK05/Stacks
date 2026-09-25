@@ -16,7 +16,8 @@ from typing import Any
 
 from src.backend.common import settings_repo
 from src.backend.common.config import get_settings
-from src.backend.runtime.config import CatalogModel, load_runtime_config
+from src.backend.runtime import user_models
+from src.backend.runtime.config import CatalogModel
 from src.backend.runtime.downloads import (
     DownloadCancelled,
     download_verified,
@@ -52,7 +53,7 @@ def _external_candidates(model: CatalogModel) -> list[Path]:
         if root.is_dir():
             found.extend(
                 candidate
-                for candidate in root.rglob(model.file)
+                for candidate in root.rglob(Path(model.file).name)
                 if candidate.is_file() and candidate.stat().st_size == model.size_bytes
             )
     return found
@@ -62,8 +63,11 @@ def locate(model: CatalogModel, *, verify: bool) -> tuple[Path | None, str]:
     """Where a catalog model's file is: ("app" | "external" |
     "external-unverified" | "missing"). `verify=True` hashes an external
     candidate once (seconds for a multi-GB file) and remembers the result;
-    `verify=False` stays instant, for listings."""
-    own = models_dir() / model.file
+    `verify=False` stays instant, for listings. A model the user added from
+    a file on this computer is used where it is, if it is unchanged."""
+    if model.local_path is not None:
+        return _added_local_file(model)
+    own = models_dir() / Path(model.file).name
     if own.is_file() and own.stat().st_size == model.size_bytes:
         return own, "app"
     remembered: dict[str, Any] = settings_repo.get_setting(VERIFIED_SETTING, {}) or {}
@@ -81,6 +85,14 @@ def locate(model: CatalogModel, *, verify: bool) -> tuple[Path | None, str]:
             return candidate, "external"
     if unverified is not None:
         return unverified, "external-unverified"
+    return None, "missing"
+
+
+def _added_local_file(model: CatalogModel) -> tuple[Path | None, str]:
+    assert model.local_path is not None
+    path = Path(model.local_path)
+    if path.is_file() and path.stat().st_size == model.size_bytes:
+        return path, "external"
     return None, "missing"
 
 
@@ -110,9 +122,10 @@ def download_status(model_id: str) -> DownloadState | None:
 
 
 def start_download(model_id: str) -> DownloadState:
-    """Start (or return the running) background download for a model."""
-    model = load_runtime_config().model(model_id)
-    if model is None:
+    """Start (or return the running) background download for a model. A
+    model added from a local file has nothing to download."""
+    model = user_models.find_model(model_id)
+    if model is None or model.local_path is not None:
         raise KeyError(model_id)
     with _lock:
         existing = _downloads.get(model_id)
@@ -145,7 +158,7 @@ def _run_download(model: CatalogModel, state: DownloadState) -> None:
     try:
         download_verified(
             model.download_url,
-            models_dir() / model.file,
+            models_dir() / Path(model.file).name,
             sha256=model.sha256,
             size_bytes=model.size_bytes,
             progress=progress,
@@ -163,7 +176,7 @@ def _run_download(model: CatalogModel, state: DownloadState) -> None:
 
 def delete_model(model: CatalogModel) -> bool:
     """Delete the app's own copy (never a file in another app's folder)."""
-    own = models_dir() / model.file
+    own = models_dir() / Path(model.file).name
     removed = False
     for path in (own, own.with_name(own.name + ".part")):
         if path.exists():

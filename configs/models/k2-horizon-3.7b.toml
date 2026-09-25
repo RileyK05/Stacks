@@ -1,0 +1,10 @@
+# K2 Horizon 3.7B (IFM). Reasoning-first: IFM recommends high effort and
+# 32K output tokens; it has no "off" mode. Not in the bundled catalog until
+# upstream llama.cpp supports its architecture (decision 013); reachable
+# through an LM Studio connection meanwhile, with reasoning on and room
+# to finish.
+model = "k2-horizon-3.7b"
+aliases = ["K2-Horizon-4B-Q4_K_M", "K2-Horizon-4B-Q8_0", "IFM/K2-Horizon-3.7B", "k2-horizon-3.7b-gguf"]
+reasoning = true
+max_output_tokens = 8192
+temperature = 1.0

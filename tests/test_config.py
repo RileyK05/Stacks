@@ -73,8 +73,9 @@ def test_models_config_has_a_keyless_local_preset() -> None:
     local = config.presets["local"]
     assert local.requires_key is False and local.disclosure is False
     assert local.base_url.startswith("http://127.0.0.1")
-    # Every cloud preset is disclosed to the user before first use.
-    for name, preset in config.presets.items():
-        if name != "local":
-            assert preset.disclosure is True
+    # Every preset that sends material off this machine is disclosed to
+    # the user before first use; runners on this computer are not.
+    for preset in config.presets.values():
+        on_this_machine = preset.base_url.startswith("http://127.0.0.1")
+        assert preset.disclosure is not on_this_machine
     assert config.generation.enable_thinking is False

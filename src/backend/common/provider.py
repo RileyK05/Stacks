@@ -37,11 +37,15 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from src.backend.common import providers, usage_repo
+from src.backend.common import model_profiles, providers, usage_repo
 from src.backend.common.embeddings_config import EmbeddingPolicy, load_embedding_policy
-from src.backend.common.providers import ResolvedProvider
+from src.backend.common.providers import ProviderChoice, ResolvedProvider
 
 logger = logging.getLogger(__name__)
+
+# Presets for servers the user runs (not the bundled one). They get the
+# runtime-specific reasoning switches that cloud APIs would reject.
+SELF_HOSTED_PRESETS = frozenset({"custom", "lmstudio", "ollama"})
 
 
 @dataclass(frozen=True)
@@ -85,23 +89,37 @@ def generate(
     images: Sequence[bytes] | None = None,
     response_schema: dict[str, Any] | None = None,
     bigger: bool = False,
+    choice: ProviderChoice | None = None,
 ) -> GenerationResult:
     """One routed, recorded model call. `images` carries PNG page renders
     for the multimodal OCR task. `response_schema`, when given, asks the
     endpoint to constrain output to that JSON schema. `bigger` routes an
-    interactive task to the user's "bigger model" slot instead."""
+    interactive task to the user's "bigger model" slot instead; `choice`
+    (a chat's model picker) names the endpoint outright. Neither an
+    explicit choice nor the bigger model falls back to another model when
+    rate-limited: the user picked it on purpose."""
     cls = providers.task_class(task)
     if bigger:
         if cls != providers.TaskClass.INTERACTIVE:
             raise ValueError(f"only interactive tasks can ask a bigger model: {task}")
         cls = providers.TaskClass.BIGGER
-    endpoint = providers.resolve(cls)
+    endpoint = (
+        providers.resolve_choice(choice)
+        if choice is not None and not bigger
+        else providers.resolve(cls)
+    )
     if endpoint is None:
-        raise ProviderUnavailableError(
-            "no bigger model configured — choose one in Settings"
-            if bigger
-            else "no model provider configured — choose one in Settings"
-        )
+        if bigger:
+            message = "no bigger model configured — choose one in Settings"
+        elif choice is not None:
+            message = (
+                "this chat's model isn't available — check its connection "
+                "and key in Settings, or pick another model"
+            )
+        else:
+            message = "no model provider configured — choose one in Settings"
+        raise ProviderUnavailableError(message)
+    pinned = bigger or choice is not None
     if endpoint.name == "local":
         _ensure_local_runtime(endpoint.model)
     fell_back = False
@@ -114,7 +132,7 @@ def generate(
     except ProviderRateLimitedError:
         # The user asked for the bigger model on purpose: quietly answering
         # with the small one instead would defeat the button.
-        local = None if bigger else _local_fallback(endpoint)
+        local = None if pinned else _local_fallback(endpoint)
         if local is None:
             raise
         logger.warning(
@@ -151,10 +169,10 @@ def _ensure_local_runtime(model_id: str) -> None:
     """The "local" preset is the app's own llama.cpp server: start the
     chosen catalog model on first use. A model name outside the catalog
     (a server the user runs themselves) is left alone."""
-    from src.backend.runtime.config import load_runtime_config
     from src.backend.runtime.server import RuntimeUnavailableError, ensure_running
+    from src.backend.runtime.user_models import find_model
 
-    if load_runtime_config().model(model_id) is None:
+    if find_model(model_id) is None:
         return
     try:
         ensure_running(model_id)
@@ -177,24 +195,23 @@ def _local_fallback(failed: ResolvedProvider) -> ResolvedProvider | None:
         model=preset.default_model,
         api_key=None,
         is_local=True,
+        connection=providers.LOCAL,
+        label=preset.label,
     )
 
 
-def _call_provider(
+def request_body(
     task: str,
     endpoint: ResolvedProvider,
     prompt: str,
     *,
     images: Sequence[bytes] | None = None,
     response_schema: dict[str, Any] | None = None,
-) -> tuple[str, int, int]:
-    """The HTTP call. Returns (text, input_tokens, output_tokens) — token
-    counts come from the provider's usage response, never estimated.
-    Fails closed: any HTTP/parse failure raises ProviderUnavailableError
-    (ProviderRateLimitedError for 429)."""
+) -> dict[str, Any]:
+    """The chat-completions request for one call: the model's profile
+    (configs/models/) decides reasoning, output length and temperature;
+    `[generation]` covers models without one."""
     import base64
-
-    import httpx
 
     defaults = providers.load_models_config().generation
     if images:
@@ -212,25 +229,55 @@ def _call_provider(
     else:
         messages = [{"role": "user", "content": prompt}]
 
+    profile = model_profiles.profile_for(endpoint.model)
+    thinking = profile.reasoning if profile else defaults.enable_thinking
     body: dict[str, Any] = {
         "model": endpoint.model,
         "messages": messages,
-        "temperature": defaults.temperature,
-        "max_tokens": defaults.max_output_tokens,
+        "temperature": (
+            profile.temperature
+            if profile and profile.temperature is not None
+            else defaults.temperature
+        ),
+        "max_tokens": (
+            profile.max_output_tokens
+            if profile and profile.max_output_tokens
+            else defaults.max_output_tokens
+        ),
     }
-    if endpoint.is_local or endpoint.name == "custom":
+    if endpoint.is_local or endpoint.name in SELF_HOSTED_PRESETS:
         # Local runtimes disagree on the switch: llama-server reads the
         # template kwarg, LM Studio only honours reasoning_effort (measured:
         # MiniCPM5-2B spent ~90% of its tokens thinking with the kwarg alone).
         # Cloud APIs reject unknown fields, so neither goes to them.
-        body["chat_template_kwargs"] = {"enable_thinking": defaults.enable_thinking}
-        if not defaults.enable_thinking:
-            body["reasoning_effort"] = "none"
+        body["chat_template_kwargs"] = {"enable_thinking": thinking}
+        body["reasoning_effort"] = "high" if thinking else "none"
     if response_schema is not None:
         body["response_format"] = {
             "type": "json_schema",
             "json_schema": {"name": task, "schema": response_schema, "strict": True},
         }
+    return body
+
+
+def _call_provider(
+    task: str,
+    endpoint: ResolvedProvider,
+    prompt: str,
+    *,
+    images: Sequence[bytes] | None = None,
+    response_schema: dict[str, Any] | None = None,
+) -> tuple[str, int, int]:
+    """The HTTP call. Returns (text, input_tokens, output_tokens) — token
+    counts come from the provider's usage response, never estimated.
+    Fails closed: any HTTP/parse failure raises ProviderUnavailableError
+    (ProviderRateLimitedError for 429)."""
+    import httpx
+
+    defaults = providers.load_models_config().generation
+    body = request_body(
+        task, endpoint, prompt, images=images, response_schema=response_schema
+    )
     headers = (
         {"Authorization": f"Bearer {endpoint.api_key}"} if endpoint.api_key else {}
     )

@@ -32,7 +32,7 @@ from pathlib import Path
 import httpx
 from src.backend.common import settings_repo
 from src.backend.common.config import get_settings
-from src.backend.runtime import hardware, model_store
+from src.backend.runtime import hardware, model_store, user_models
 from src.backend.runtime.config import CatalogModel, load_runtime_config
 from src.backend.runtime.downloads import download_verified
 
@@ -198,7 +198,7 @@ class LlamaServer:
     def start(self, model_id: str) -> ServerStatus:
         """Start (or switch to) a model. Blocks until the server answers
         health checks, so callers can use it immediately after."""
-        model = load_runtime_config().model(model_id)
+        model = user_models.find_model(model_id)
         if model is None:
             raise RuntimeUnavailableError(f"unknown model: {model_id}")
         path = model_store.installed_path(model)

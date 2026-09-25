@@ -1,10 +1,13 @@
 [version]
-models_config_version = "1"
+models_config_version = "2"
 
-# Provider presets (docs/plan-local-first.md §7). The user picks one per
-# task class in Settings; the choice lives in app_settings, keys in the
-# OS keyring. `disclosure = true` means enabling it sends course excerpts
-# off this machine, and the UI says so once — it is the user's choice.
+# Provider presets (docs/plan-local-first.md §7, plan-notebook §4.8): the
+# templates a connection is made from. The user adds connections in
+# Settings (as many as they like, each with its own key in the OS
+# keyring) and picks a connection + model per task or per chat.
+# `disclosure = true` means using it sends course excerpts off this
+# machine, and the UI says so once — it is the user's choice. Every
+# endpoint below speaks the OpenAI chat-completions API.
 
 [presets.local]
 label = "Local model (runs on this computer)"
@@ -13,13 +16,6 @@ default_model = "minicpm5-2b"
 requires_key = false
 disclosure = false
 
-[presets.openrouter]
-label = "OpenRouter"
-base_url = "https://openrouter.ai/api/v1"
-default_model = "inclusionai/ling-3.0-tiny:free"
-requires_key = true
-disclosure = true
-
 [presets.openai]
 label = "OpenAI"
 base_url = "https://api.openai.com/v1"
@@ -27,11 +23,55 @@ default_model = ""
 requires_key = true
 disclosure = true
 
+[presets.anthropic]
+label = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+default_model = ""
+requires_key = true
+disclosure = true
+
+[presets.google]
+label = "Google Gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+default_model = ""
+requires_key = true
+disclosure = true
+
+[presets.openrouter]
+label = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+default_model = "inclusionai/ling-3.0-tiny:free"
+requires_key = true
+disclosure = true
+
+[presets.groq]
+label = "Groq"
+base_url = "https://api.groq.com/openai/v1"
+default_model = ""
+requires_key = true
+disclosure = true
+
+# Runners on this computer: nothing leaves the machine.
+[presets.lmstudio]
+label = "LM Studio"
+base_url = "http://127.0.0.1:1234/v1"
+default_model = ""
+requires_key = false
+disclosure = false
+
+[presets.ollama]
+label = "Ollama"
+base_url = "http://127.0.0.1:11434/v1"
+default_model = ""
+requires_key = false
+disclosure = false
+
 [presets.custom]
 label = "Custom OpenAI-compatible endpoint"
 base_url = ""
 default_model = ""
 requires_key = false
+accepts_key = true
 disclosure = true
 
 # Generation defaults. Small local models deliberate at length when

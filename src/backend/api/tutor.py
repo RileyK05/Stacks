@@ -49,6 +49,22 @@ class AnswerView(BaseModel):
     # True when this exact question was answered before on unchanged
     # material and the stored answer was returned.
     cached: bool = False
+    # Answered by the Settings → "Bigger model" choice, at the user's request.
+    bigger: bool = False
+
+
+def answer_view(result: tutor_answer.Answer, *, bigger: bool = False) -> AnswerView:
+    return AnswerView(
+        text=result.body,
+        chunk_ids=[str(cid) for cid in result.chunk_ids],
+        trace_id=str(result.trace_id),
+        workspace=list(result.workspace_items),
+        withheld=list(result.withheld),
+        model=result.model,
+        fell_back_to_local=result.fell_back_to_local,
+        cached=result.cached,
+        bigger=bigger,
+    )
 
 
 class CitationView(BaseModel):
@@ -94,16 +110,7 @@ def ask(course_id: UUID, payload: AskRequest) -> AnswerView:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(err)) from err
     except usage_repo.BudgetExceededError as err:
         raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(err)) from err
-    return AnswerView(
-        text=result.body,
-        chunk_ids=[str(cid) for cid in result.chunk_ids],
-        trace_id=str(result.trace_id),
-        workspace=list(result.workspace_items),
-        withheld=list(result.withheld),
-        model=result.model,
-        fell_back_to_local=result.fell_back_to_local,
-        cached=result.cached,
-    )
+    return answer_view(result, bigger=payload.bigger_model)
 
 
 @router.get(
@@ -121,15 +128,11 @@ def trace_citations(course_id: UUID, trace_id: UUID) -> list[CitationView]:
             {"trace_id": trace_id, "course_id": course_id},
         ).fetchone()
         if trace is None:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND, "trace not found"
-            )
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "trace not found")
         payload = trace["retrieved_chunk_ids"]
         if not isinstance(payload, dict):
             payload = {}
-        chunk_ids = [
-            UUID(cid) for cid in payload.get("chunk_ids", [])
-        ]
+        chunk_ids = [UUID(cid) for cid in payload.get("chunk_ids", [])]
         if not chunk_ids:
             return []
         rows = conn.execute(

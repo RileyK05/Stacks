@@ -15,6 +15,7 @@ endpoint says so (503) rather than pretending.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Collection
 from typing import Any
 from uuid import UUID
 
@@ -83,6 +84,10 @@ def answer_question(
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
     bigger: bool = False,
+    choice: providers.ProviderChoice | None = None,
+    conversation: str = "",
+    source_ids: Collection[UUID] | None = None,
+    search_query: str | None = None,
 ) -> Answer:
     """One grounded answer: retrieve, frame + generate (compose.py), then
     record the trace.
@@ -94,9 +99,23 @@ def answer_question(
 
     A plain question asked before, on unchanged material, with the same
     model and settings, is answered from the cache (common/answer_cache.py)
-    without retrieval or generation."""
+    without retrieval or generation.
+
+    In a saved chat, `conversation` is the context block (tutor/chat.py),
+    `search_query` what to retrieve with (a follow-up searched together
+    with the previous question), `source_ids` the chat's source selection,
+    and `choice` its pinned model. An answer that depends on the chat
+    (context or a source selection) is neither read from nor written to
+    the cache."""
     answer_mode = AnswerMode(providers.load_models_config().generation.answer_mode)
-    cache = _cache_slot(conn, course_id, question, policy, answer_mode, bigger=bigger)
+    cacheable = not conversation and source_ids is None
+    cache = (
+        _cache_slot(
+            conn, course_id, question, policy, answer_mode, bigger=bigger, choice=choice
+        )
+        if cacheable
+        else None
+    )
     if cache is not None:
         hit = answer_cache.lookup(conn, cache.key)
         if hit is not None:
@@ -111,10 +130,11 @@ def answer_question(
     result = funnel.retrieve(
         conn,
         course_id,
-        question,
+        search_query or question,
         policy,
         query_embedding=query_embedding,
         embedding_model=embedding_model,
+        source_ids=source_ids,
     )
     if not result.candidates:
         raise NothingRelevantFoundError(
@@ -131,6 +151,7 @@ def answer_question(
             course_id=course_id,
             response_schema=response_schema,
             bigger=bigger,
+            choice=choice,
         )
         calls.append(generation)
         return generation.text
@@ -144,6 +165,7 @@ def answer_question(
         ),
         select=rerank.select_for_generation,
         answer_mode=answer_mode,
+        conversation=conversation,
     )
     used = dataclasses.replace(result, candidates=composed.candidates)
     stored = trace.record_trace(
@@ -195,14 +217,18 @@ def _cache_slot(
     answer_mode: AnswerMode,
     *,
     bigger: bool,
+    choice: providers.ProviderChoice | None = None,
 ) -> _CacheSlot | None:
     """The cache key for this question, or None when it must not be cached
     (a workspace request, or no endpoint configured to key it on)."""
     if classify_intent(question) not in (Intent.ANSWER, Intent.GRADED):
         return None
-    endpoint = providers.resolve(
-        providers.TaskClass.BIGGER if bigger else providers.TaskClass.INTERACTIVE
-    )
+    if choice is not None and not bigger:
+        endpoint = providers.resolve_choice(choice)
+    else:
+        endpoint = providers.resolve(
+            providers.TaskClass.BIGGER if bigger else providers.TaskClass.INTERACTIVE
+        )
     if endpoint is None:
         return None
     fingerprint = answer_cache.course_fingerprint(conn, course_id)
