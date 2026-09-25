@@ -7,6 +7,7 @@
   import Card from '$lib/components/Card.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import LocalModelCard from '$lib/components/LocalModelCard.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
   import TextInput from '$lib/components/TextInput.svelte';
@@ -306,6 +307,8 @@
   <div class="flex flex-col gap-6">
     {#if actionError}<ErrorBanner error={actionError} />{/if}
 
+    <LocalModelCard onchange={() => void load()} />
+
     {#each classes as cls (cls.id)}
       {@const draft = drafts[cls.id]}
       {@const chosen = preset(draft.preset)}
@@ -398,8 +401,8 @@
               <p class="text-sm text-danger-text">Could not connect: {result.error}</p>
               {#if draft.preset === 'local'}
                 <p class="text-xs text-subtle">
-                  The local model server isn't running yet. Start it with llama.cpp's
-                  <code>llama-server</code> on port 8081, or point "Custom" at Ollama or LM Studio.
+                  The local model isn't running yet — download one above and press Use,
+                  or point "Custom" at Ollama or LM Studio.
                 </p>
               {/if}
             {/if}
