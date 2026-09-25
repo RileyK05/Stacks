@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -14,6 +15,14 @@ from fastapi.testclient import TestClient
 for _name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "APP_API_TOKEN"):
     os.environ[_name] = ""
 os.environ["APP_ENV"] = "test"
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """A passing run leaves no scratch files behind; a failing one keeps
+    them (--basetemp, pyproject.toml) so the failure can be inspected."""
+    basetemp = session.config.option.basetemp
+    if exitstatus == 0 and basetemp:
+        shutil.rmtree(basetemp, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
