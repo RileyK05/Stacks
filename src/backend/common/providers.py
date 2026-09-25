@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from src.backend.common import secrets, settings_repo
@@ -63,6 +63,7 @@ class GenerationDefaults(BaseModel):
     max_output_tokens: int = Field(ge=1)
     enable_thinking: bool
     request_timeout_seconds: float = Field(gt=0)
+    answer_mode: Literal["plain", "quotes"] = "plain"
 
 
 class ModelsConfig(BaseModel):

@@ -207,7 +207,14 @@ def test_purge_removes_every_derived_row_and_the_files() -> None:
             "SELECT course_id, course_label FROM usage_ledger"
         ).fetchone()
         fts_rows = conn.execute("SELECT COUNT(*) AS n FROM chunks_fts").fetchone()["n"]
-    expected = {"course_memories": 1, "usage_ledger": 1, "schema_migrations": 1}
+    from src.backend.common.migrate import MIGRATIONS_DIR
+
+    migrations = len(list(MIGRATIONS_DIR.glob("*.sql")))
+    expected = {
+        "course_memories": 1,
+        "usage_ledger": 1,
+        "schema_migrations": migrations,
+    }
     assert {t: n for t, n in survivors.items() if n} == expected
     assert ledger["course_id"] is None and ledger["course_label"] == "Everything"
     assert fts_rows == 0

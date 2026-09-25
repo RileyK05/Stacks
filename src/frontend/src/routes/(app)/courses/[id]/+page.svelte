@@ -49,6 +49,8 @@
     /** Answered by the Settings → "Bigger model" choice, at the user's request. */
     bigger: boolean;
     model: string;
+    /** Same question, unchanged material: the stored answer came back. */
+    cached: boolean;
     citations: Citation[];
     citationsLoading: boolean;
     error: unknown;
@@ -195,6 +197,7 @@
       fellBackToLocal: false,
       bigger,
       model: '',
+      cached: false,
       citations: [],
       citationsLoading: false,
       error: null,
@@ -215,6 +218,7 @@
       turns[index].traceId = data.trace_id;
       turns[index].fellBackToLocal = data.fell_back_to_local ?? false;
       turns[index].model = data.model ?? '';
+      turns[index].cached = data.cached ?? false;
       // Fetch the evidence behind the answer immediately (golden rule
       // 1: every answer shows its sources, right under itself).
       turns[index].citationsLoading = true;
@@ -576,6 +580,11 @@
                           <p class="inline-flex items-center gap-1.5 self-start rounded-lg bg-warning-soft px-2.5 py-1 text-xs text-warning-text">
                             <Icon name="info" class="h-3.5 w-3.5" />
                             The cloud model hit its rate limit, so the local model answered this one.
+                          </p>
+                        {/if}
+                        {#if turn.cached}
+                          <p class="inline-flex items-center gap-1.5 self-start text-xs text-subtle">
+                            <Icon name="clock" class="h-3.5 w-3.5" /> Same answer as when you asked this before; your materials haven't changed since.
                           </p>
                         {/if}
                         {#if turn.bigger}

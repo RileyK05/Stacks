@@ -46,6 +46,9 @@ class AnswerView(BaseModel):
     model: str = ""
     # True when a rate-limited cloud provider fell back to the local model.
     fell_back_to_local: bool = False
+    # True when this exact question was answered before on unchanged
+    # material and the stored answer was returned.
+    cached: bool = False
 
 
 class CitationView(BaseModel):
@@ -99,6 +102,7 @@ def ask(course_id: UUID, payload: AskRequest) -> AnswerView:
         withheld=list(result.withheld),
         model=result.model,
         fell_back_to_local=result.fell_back_to_local,
+        cached=result.cached,
     )
 
 

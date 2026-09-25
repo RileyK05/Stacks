@@ -41,4 +41,8 @@ disclosure = true
 temperature = 0.2
 max_output_tokens = 2048
 enable_thinking = false
+# How plain questions are answered: "plain" ([n] markers) or "quotes"
+# (verified literal quotes first; tutor/quotes.py). Chosen by measurement
+# (scripts/eval_models.py --answer-mode).
+answer_mode = "plain"
 request_timeout_seconds = 600

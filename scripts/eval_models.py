@@ -140,6 +140,7 @@ def _run_model(args: argparse.Namespace, model: str, run_dir: Path) -> ModelRepo
             generate=generate,
             cases_path=Path(args.cases) if args.cases else None,
             log_dir=run_dir / model.replace("/", "_"),
+            answer_mode=args.answer_mode,
         )
     for result in summary.cases:
         kind = report.by_kind.setdefault(result.kind, {"passed": 0, "total": 0})
@@ -173,6 +174,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--course", action="append", default=[])
     parser.add_argument("--cases", default=None)
+    parser.add_argument(
+        "--answer-mode",
+        choices=["plain", "quotes"],
+        default="plain",
+        help="plain [n] citations, or verified quotes first (plan §6.2)",
+    )
     args = parser.parse_args(argv)
     if bool(args.model) == bool(args.runtime_model):
         parser.error("give --base-url with --model, or --runtime-model")

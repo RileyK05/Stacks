@@ -54,6 +54,12 @@ REFUSAL_MARKER_RE = re.compile(
             "doesn't contain",
             "not covered",
             "isn't covered",
+            # "The material does not cover X" — the refusal wording the
+            # tutor prompts themselves suggest (quote-mode eval, v10).
+            "does not cover",
+            "doesn't cover",
+            "does not provide",
+            "doesn't provide",
             "not in the material",
             # First person only: "if you feel you can't answer the
             # question" (quoted or paraphrased from a syllabus) is not a
@@ -398,6 +404,7 @@ def run_answer_eval(
     generate: GenerationFn,
     cases_path: Path | None = None,
     log_dir: Path | None = None,
+    answer_mode: str = "plain",
 ) -> AnswerEvalSummary:
     """Run every case: build the numbered-material prompt via the tutor's
     real prompt builder, call `generate`, score by kind. `generate(task,
@@ -407,6 +414,7 @@ def run_answer_eval(
     from src.backend.common.prompt_registry import load_prompt_policy
     from src.backend.retrieval.rerank import select_for_generation
     from src.backend.tutor.compose import (
+        AnswerMode,
         build_prompt,
         classify_intent,
         compose_answer,
@@ -452,7 +460,11 @@ def run_answer_eval(
             )
             continue
         composed = compose_answer(
-            case.question, candidates, generate, select=select_for_generation
+            case.question,
+            candidates,
+            generate,
+            select=select_for_generation,
+            answer_mode=AnswerMode(answer_mode),
         )
         candidates = composed.candidates
         answer_text = composed.text

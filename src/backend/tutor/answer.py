@@ -18,13 +18,21 @@ import dataclasses
 from typing import Any
 from uuid import UUID
 
-from src.backend.common import provider
+from src.backend.common import answer_cache, provider, providers
 from src.backend.common.db import Connection
-from src.backend.common.prompt_registry import strip_fence_echo
+from src.backend.common.prompt_registry import (
+    load_prompt_policy,
+    strip_fence_echo,
+)
 from src.backend.retrieval import funnel, rerank, trace
 from src.backend.retrieval.config import RetrievalPolicy
+from src.backend.tutor.compose import (
+    AnswerMode,
+    Intent,
+    classify_intent,
+    compose_answer,
+)
 from src.backend.tutor.compose import build_prompt as build_prompt
-from src.backend.tutor.compose import compose_answer
 from src.backend.tutor.workspace import (
     WorkspaceItem,
     extract_workspace_items,
@@ -51,6 +59,7 @@ class Answer:
         *,
         model: str = "",
         fell_back_to_local: bool = False,
+        cached: bool = False,
     ) -> None:
         self.text = strip_fence_echo(text)
         self.chunk_ids = chunk_ids
@@ -58,6 +67,7 @@ class Answer:
         self.layer_contribution = layer_contribution
         self.model = model
         self.fell_back_to_local = fell_back_to_local
+        self.cached = cached
         extracted = extract_workspace_items(self.text, len(chunk_ids))
         self.body = extracted.body
         self.workspace_items: tuple[WorkspaceItem, ...] = extracted.items
@@ -80,7 +90,24 @@ def answer_question(
     The trace is written only after generation succeeds, so an answer
     that never happened leaves no evidence-shaped noise — and no write
     transaction is held open during the (possibly minutes-long, on a
-    laptop) model call. The caller commits."""
+    laptop) model call. The caller commits.
+
+    A plain question asked before, on unchanged material, with the same
+    model and settings, is answered from the cache (common/answer_cache.py)
+    without retrieval or generation."""
+    answer_mode = AnswerMode(providers.load_models_config().generation.answer_mode)
+    cache = _cache_slot(conn, course_id, question, policy, answer_mode, bigger=bigger)
+    if cache is not None:
+        hit = answer_cache.lookup(conn, cache.key)
+        if hit is not None:
+            return Answer(
+                text=hit.text,
+                chunk_ids=hit.chunk_ids,
+                trace_id=hit.trace_id,
+                layer_contribution={},
+                model=hit.model,
+                cached=True,
+            )
     result = funnel.retrieve(
         conn,
         course_id,
@@ -116,6 +143,7 @@ def answer_question(
             err, provider.ProviderRequestRejectedError
         ),
         select=rerank.select_for_generation,
+        answer_mode=answer_mode,
     )
     used = dataclasses.replace(result, candidates=composed.candidates)
     stored = trace.record_trace(
@@ -127,7 +155,7 @@ def answer_question(
         toc_entry_ids=result.matched_toc_entry_ids,
     )
     last = calls[-1]
-    return Answer(
+    answer = Answer(
         text=composed.text,
         chunk_ids=tuple(c.chunk_id for c in composed.candidates),
         trace_id=stored.trace_id,
@@ -135,3 +163,59 @@ def answer_question(
         model=last.model,
         fell_back_to_local=any(call.fell_back_to_local for call in calls),
     )
+    if (
+        cache is not None
+        and not answer.fell_back_to_local
+        and not answer.workspace_items
+    ):
+        answer_cache.store(
+            conn,
+            key=cache.key,
+            course_id=course_id,
+            fingerprint=cache.fingerprint,
+            trace_id=answer.trace_id,
+            text=composed.text,
+            chunk_ids=answer.chunk_ids,
+            model=answer.model,
+        )
+    return answer
+
+
+@dataclasses.dataclass(frozen=True)
+class _CacheSlot:
+    key: str
+    fingerprint: str
+
+
+def _cache_slot(
+    conn: Connection,
+    course_id: UUID,
+    question: str,
+    policy: RetrievalPolicy,
+    answer_mode: AnswerMode,
+    *,
+    bigger: bool,
+) -> _CacheSlot | None:
+    """The cache key for this question, or None when it must not be cached
+    (a workspace request, or no endpoint configured to key it on)."""
+    if classify_intent(question) not in (Intent.ANSWER, Intent.GRADED):
+        return None
+    endpoint = providers.resolve(
+        providers.TaskClass.BIGGER if bigger else providers.TaskClass.INTERACTIVE
+    )
+    if endpoint is None:
+        return None
+    fingerprint = answer_cache.course_fingerprint(conn, course_id)
+    key = answer_cache.cache_key(
+        course_id=course_id,
+        fingerprint=fingerprint,
+        question=question,
+        endpoint=endpoint,
+        versions={
+            "prompts": load_prompt_policy().prompts_config_version,
+            "retrieval": policy.retrieval_config_version,
+            "models": providers.load_models_config().models_config_version,
+            "answer_mode": answer_mode.value,
+        },
+    )
+    return _CacheSlot(key=key, fingerprint=fingerprint)

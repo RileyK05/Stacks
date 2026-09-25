@@ -14,7 +14,10 @@ from src.backend.common.schemas.base import KNOWN_GENERATION_TASKS
 WORKSPACE_PROMPTS = frozenset(
     f"workspace_{kind}" for kind in ("quiz", "document", "sheet", "slides", "code")
 )
-KNOWN_PROMPTS = KNOWN_GENERATION_TASKS | WORKSPACE_PROMPTS | {"tutor_steer"}
+KNOWN_PROMPTS = KNOWN_GENERATION_TASKS | WORKSPACE_PROMPTS | {
+    "tutor_steer",
+    "tutor_answer_quotes",
+}
 
 DEFAULT_PROMPTS_PATH = PROJECT_ROOT / "configs" / "prompts.toml"
 

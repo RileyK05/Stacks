@@ -546,13 +546,26 @@ Found and fixed along the way:
       — intent rules (graded work → steer prompt; quiz/notes/table/
       slides/code → narrow prompt + JSON schema with citation numbers
       bounded to the material); eval runs the same path
-- [ ] Quote-anchored citations with JSON schema + mechanical verification
+- [x] Quote-anchored answers built and measured (`tutor/quotes.py`,
+      `answer_mode = "quotes"`): `quotes` before `answer` in the schema,
+      verbatim verification (formatting-insensitive, `...` elisions; no
+      fuzzy ratio — "five" for "three" must fail). With an optional empty
+      `quotes` list MiniCPM5-2B refused everything (5/13); with
+      `minItems: 1` it ties plain on the 13 real-course cases (13/13 and
+      13/13 vs plain 13/13 and 13/13) at +25–35% time. **Plain stays the
+      default**; quotes mode is there for models that over-refuse in plain
+      mode or when verified evidence is worth the time
 - [x] Cross-encoder reranker between retrieval and generation (keeps 6 of
       10; −16% answer time, fixed a measured over-refusal)
 - [ ] Sentence-level extraction inside chunks
 - [ ] Decomposed `ask` pipeline where the eval shows single-shot failing
 - [ ] Per-model capability profiles in `configs/models/`
-- [ ] Prompt-prefix stability for KV-cache reuse; answer cache
+- [x] Answer cache (migration 002, `common/answer_cache.py`): plain
+      answers keyed on the normalised question, the course's content
+      fingerprint, the endpoint + model, and the prompt / retrieval / model
+      config versions + answer mode. Workspace items and local-fallback
+      answers are never cached; stale rows drop when the course changes
+- [ ] Prompt-prefix stability for KV-cache reuse
 - [x] TOC builder without the chat model, step 1 — author structure
       (`ingest/toc.py`): markdown sections, PDF bookmarks, and PDF headings
       detected from typography (≥1.12× body size, wrapped lines merged).
@@ -565,8 +578,10 @@ Found and fixed along the way:
 - [ ] Decomposed knowledge extraction over the whole document (§10a)
 - [ ] Study pack generated at ingestion
 - [x] Fence-echo stripping; 4xx-rejected schema → unconstrained retry
-- [ ] Re-run Phase 0 eval; beat the Phase 0 numbers (over-refusal on
-      real material is the target: reranker + top-k + quote-first)
+- [x] Re-run Phase 0 eval: MiniCPM5-2B, plain mode, 13/13 on the real
+      course cases in two consecutive runs (Phase 0: 10–13/13), ~6 s/case.
+      The scorer also learned "does not cover / does not provide" as
+      refusal wording (correct refusals were being scored as failures)
 
 ### Phase 4 — providers and settings
 

@@ -29,7 +29,7 @@ def _source(conn: sqlite3.Connection, course_id: UUID) -> UUID:
 
 def test_migrations_apply_to_a_fresh_file_and_are_idempotent(tmp_path: Path) -> None:
     path = tmp_path / "fresh.db"
-    assert migrate(path) == ["001"]
+    assert migrate(path) == ["001", "002"]
     assert migrate(path) == []
     conn = connect(path)
     try:

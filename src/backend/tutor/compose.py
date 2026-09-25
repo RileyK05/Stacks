@@ -34,6 +34,7 @@ from src.backend.common.prompt_registry import (
     strip_fence_echo,
 )
 from src.backend.retrieval.funnel import Candidate
+from src.backend.tutor import quotes as quote_anchors
 
 
 class Intent(StrEnum):
@@ -114,6 +115,14 @@ def classify_intent(question: str) -> Intent:
     return Intent.ANSWER
 
 
+class AnswerMode(StrEnum):
+    """How a plain question is answered: `plain` asks for `[n]` markers;
+    `quotes` asks for verified literal quotes first (tutor/quotes.py)."""
+
+    PLAIN = "plain"
+    QUOTES = "quotes"
+
+
 class Generate(Protocol):
     """The model call: task + prompt in, text out. `response_schema`, when
     given, asks the endpoint to constrain output to that JSON schema."""
@@ -134,6 +143,10 @@ class Composed:
     # The chunks the model read, in the order they were numbered: [1] is
     # candidates[0]. Citations, the trace and scoring all use this.
     candidates: tuple[Candidate, ...] = ()
+    # Quote-anchored mode only: evidence that was / was not found verbatim
+    # in the chunk it named. Rejected quotes are never shown.
+    quotes: tuple[quote_anchors.Quote, ...] = ()
+    rejected_quotes: tuple[quote_anchors.Quote, ...] = ()
 
 
 def numbered_material(question: str, candidates: tuple[Candidate, ...]) -> str:
@@ -301,6 +314,7 @@ def compose_answer(
     *,
     on_schema_rejected: Callable[[Exception], bool] | None = None,
     select: Callable[[str, tuple[Candidate, ...]], tuple[Candidate, ...]] | None = None,
+    answer_mode: AnswerMode = AnswerMode.PLAIN,
 ) -> Composed:
     """Frame the task, generate, and return standard answer text.
 
@@ -310,6 +324,8 @@ def compose_answer(
     if select is not None:
         candidates = select(question, candidates)
     intent = classify_intent(question)
+    if intent is Intent.ANSWER and answer_mode is AnswerMode.QUOTES:
+        return _compose_quoted(question, candidates, generate, on_schema_rejected)
     if intent in (Intent.ANSWER, Intent.GRADED):
         instruction = "tutor_steer" if intent is Intent.GRADED else "tutor_answer"
         prompt = grounded_prompt(
@@ -344,4 +360,52 @@ def compose_answer(
     text = f"{reply}\n\n```workspace\n{block}\n```".strip()
     return Composed(
         strip_fence_echo(text), intent, structured=True, candidates=candidates
+    )
+
+
+def _compose_quoted(
+    question: str,
+    candidates: tuple[Candidate, ...],
+    generate: Generate,
+    on_schema_rejected: Callable[[Exception], bool] | None,
+) -> Composed:
+    """Quote-first answer: evidence, then the answer; quotes verified
+    against their chunks. An endpoint that rejects the schema, or a reply
+    that is not the requested JSON, falls back to the plain answer."""
+    material = numbered_material(question, candidates)
+    prompt = grounded_prompt(load_prompt("tutor_answer_quotes"), material)
+    try:
+        raw = generate(
+            "tutor_answer",
+            prompt,
+            response_schema=quote_anchors.answer_schema(len(candidates)),
+        )
+    except Exception as err:
+        if on_schema_rejected is None or not on_schema_rejected(err):
+            raise
+        raw = None
+    parsed = parse_json_object(raw) if raw is not None else None
+    answer = parsed.get("answer") if parsed else None
+    if not isinstance(answer, str) or not answer.strip():
+        text = generate(
+            "tutor_answer", grounded_prompt(load_prompt("tutor_answer"), material)
+        )
+        return Composed(
+            strip_fence_echo(text),
+            Intent.ANSWER,
+            structured=False,
+            candidates=candidates,
+        )
+    verified, rejected = quote_anchors.verify(
+        quote_anchors.parse_quotes(parsed.get("quotes") if parsed else None),
+        tuple(candidate.text for candidate in candidates),
+    )
+    text = quote_anchors.anchor_citations(strip_fence_echo(answer.strip()), verified)
+    return Composed(
+        text,
+        Intent.ANSWER,
+        structured=True,
+        candidates=candidates,
+        quotes=tuple(verified),
+        rejected_quotes=tuple(rejected),
     )
