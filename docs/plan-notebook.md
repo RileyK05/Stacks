@@ -451,3 +451,128 @@ original author review the result afterwards.
 - Next implementation work: Phase C concept extraction and study pack,
   then Phase D practice/memory and Phase E course home. The rest of §10.3
   records the original handoff and should be read as historical context.
+
+## 11. Native Office files (planned, 2026-09-25; not started)
+
+Owner's goal: work on a real paper in Word format, a real PowerPoint deck,
+and real Excel homework (formulas) inside Stacks, together with the model.
+What Phase B built is not that. It built our own formats that export to
+Office:
+
+| Type | What it is today | Gap |
+|---|---|---|
+| Doc | TipTap editor storing Markdown; exports .docx | Can't open a .docx; Word styles, footnotes, comments, headers, margins don't exist |
+| Sheet | Grid of text cells (`rows: list[list[str]]`) | No formulas, number formats, or multiple sheets |
+| Slides | Title / body / notes per slide | No layouts, images, positions, themes; can't open a .pptx |
+
+### 11.1 Principle: the file is the artifact
+
+- A **Word document**, **Excel workbook** or **PowerPoint deck** artifact
+  *is* its .docx / .xlsx / .pptx file. Create one blank, or import one the
+  student already has (their paper, the professor's homework template).
+- Every version is the complete file (stored in the data folder,
+  content-addressed by sha256; the DB row keeps the hash, author, note).
+  Version restore, the 409 on stale saves, and proposals work as now.
+- **Fidelity rule:** Stacks rewrites only what it understands and changed.
+  Opening and saving without an edit must give back the same file; editing
+  one paragraph, cell range or slide must leave every other part of the
+  zip unchanged. This is the acceptance test for every library below.
+- **Model edits** are narrow operations on the file, done in the backend,
+  shown as a proposal (accept / undo), cited, and gated as today:
+  - Word: replace / insert / delete paragraphs or a section, addressed by
+    paragraph index or heading (python-docx edits the XML in place and
+    keeps parts it doesn't know).
+  - Excel: set values or formulas on a range, add a sheet, add rows
+    (see 11.3 for which library writes the file).
+  - PowerPoint: edit a slide's text boxes and notes, add or remove a slide
+    from the deck's own layouts (python-pptx, in place).
+  - The model reads a compact outline (headings + paragraphs; used ranges
+    with formulas; slide texts), never raw XML. Small models get one
+    section, range or slide at a time.
+- **Citations:** `[n]` markers as ordinary text plus the artifact's
+  ordered `sources` list, exactly as today; export appends the sources
+  list. Nothing new is invented inside the Office file.
+- **Open in Word / Excel / PowerPoint:** always offered. The Tauri shell
+  opens a working copy with the system app and watches it; a save there
+  becomes a new version ("edited in Word"). Heavy layout work happens in
+  the real apps; Stacks stays useful without them.
+- **Keep the current editors as lighter types.** The TipTap doc becomes
+  **Notes** (fast, Markdown, citation chips); the grid and simple slides
+  remain for quick model-made tables and outlines. Quiz, flashcards, code
+  and chart are unchanged. Existing docs stay Notes; "Convert to Word
+  document" uses the existing .docx export.
+
+### 11.2 Candidates (researched 2026-09-25; verify before adopting)
+
+Stacks is MIT and ships a desktop binary, so AGPL components are ruled out
+unless the owner chooses to relicense Stacks. Our frontend is Svelte 5; a
+React component can be mounted as an island inside a Svelte component
+(adds React to the bundle; acceptable for these editors).
+
+| Format | Candidate | License | Notes | Verdict |
+|---|---|---|---|---|
+| .docx | [docx-editor (EigenPal)](https://github.com/eigenpal/docx-editor) | Apache-2.0 core (React/Vue); comments, tracked changes and the programmatic editor-api are paid "Pro" | Parses OOXML directly, paged layout, claims byte-for-byte preservation of untouched content; v2.x, active | **Spike first** |
+| .docx | [SuperDoc](https://github.com/superdoc-dev/superdoc) | AGPLv3 or commercial | Most complete (tracked changes, comments, Python SDK) | Excluded (AGPL) unless the owner decides otherwise |
+| .docx/.xlsx/.pptx | [Oxi](https://github.com/Ryujiyasu/oxi) | MPL-2.0 core | Rust/WASM, measured Word fidelity, patches only changed XML; v0.8, tiny community | Watch; don't depend on it yet |
+| .xlsx | [IronCalc](https://github.com/ironcalc/IronCalc) | MIT / Apache-2.0 | Rust engine with native xlsx reader/writer, WASM + Python bindings, React workbook UI; pre-1.0 (v0.8) | **Spike** (fits Tauri/Rust and the Python backend) |
+| .xlsx | [FortuneSheet](https://github.com/ruilisi/fortune-sheet) + [FortuneExcel](https://github.com/corbe30/fortuneexcel) | MIT | Mature Excel-like React UI, formulas via a formula-parser fork; xlsx converted in and out (lossy) | **Spike** as the UI fallback |
+| .xlsx | [Univer](https://github.com/dream-num/univer) | Apache-2.0 core | xlsx import/export is in paid Pro packages and needs a conversion server | Excluded |
+| .xlsx (backend) | openpyxl (already a dependency) | MIT | Drops charts and images when an existing file is saved | Only for files Stacks created; never to save an imported workbook |
+| .pptx | [pptx-viewer](https://github.com/ChristopherVR/pptx-viewer) | Apache-2.0 | Parse, render, edit (text, shapes, images, notes, layouts), save; ships a Svelte 5 package; small community | **Spike** |
+| .pptx | [PPTist](https://github.com/pipipi-pikachu/PPTist) | AGPLv3 | Full editor, ~70-80% import fidelity | Excluded (AGPL, lossy) |
+| .docx/.pptx (backend) | python-docx, python-pptx (already dependencies) | MIT | Edit XML in place, keep unknown parts | Model edits |
+
+### 11.3 Plan
+
+**N0 — spike and decide (no product code).** A throwaway page per format
+in the dev app; run each candidate against a fidelity corpus: the owner's
+real files (a paper, an accounting homework workbook, a class deck) kept
+in gitignored `runs/fidelity/`, plus small synthetic files committed under
+`data/eval/office/` (styles, footnotes, tables, images, headers; formulas,
+number formats, charts, several sheets; layouts, images, notes). Measure
+per candidate: no-edit round trip (zip parts identical), one-edit round
+trip (only the touched part changes), opens in Word/LibreOffice without
+repair, bundle size, first-open time on the 8 GB machine. For Excel also
+decide who writes the file for model edits: IronCalc (Python bindings) or
+a small cell-level XML patcher (keeps charts; IronCalc then only
+evaluates formulas for display). Record results and choices in
+`docs/notes.md`.
+
+**N1 — storage and API.** Artifact kinds `word`, `excel`, `powerpoint`
+with file-backed versions (migration 006), import/upload, download, the
+fidelity round-trip tests in pytest, and `.course` format v3 carrying the
+version files (importer keeps v1 and v2).
+
+**N2 — Excel first** (clearest gap, best libraries): in-app workbook
+editor with formulas; model edits on ranges ("fill column D with the
+depreciation formula", "check my totals"), recalculated before the
+proposal is shown; citations for anything taken from sources.
+
+**N3 — Word:** the in-app document editor; model edits by paragraph or
+section, and additions never rewrite the student's text (the Phase B rule
+carries over).
+
+**N4 — PowerPoint:** in-app deck editor/preview; model edits per slide
+using the deck's own layouts; the presenter from Phase B.
+
+**N5 — Open in Office + watching**, "Convert Notes to Word document",
+save-from-chat into the new kinds, installer size check.
+
+Each step ships only with its fidelity tests green in CI.
+
+### 11.4 Risks and owner questions
+
+- Third-party maturity: IronCalc and pptx-viewer are young. The file stays
+  the truth and "Open in Office" always works, so a weak editor degrades
+  to preview + model edits rather than data loss.
+- Apache-2.0 components need their LICENSE/NOTICE files shipped; add a
+  third-party notices screen in Settings → About.
+- A 2B model editing a real paper: keep operations narrow and
+  section-scoped; the bigger-model button is the escape hatch.
+- **Owner decisions needed before N1:** (1) AGPL stays ruled out
+  (recommended: yes)? (2) Keep Notes / simple grid / simple slides beside
+  the native types (recommended: yes)? (3) Paid tiers such as
+  docx-editor's comments and tracked changes: not for now?
+
+Also stale: `docs/AGENTS.md` still points at `docs/decisions/` and
+`plan-local-first.md`, which were removed; fix those references.
