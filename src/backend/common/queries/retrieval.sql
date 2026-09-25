@@ -26,9 +26,11 @@ LIMIT :limit;
 -- name: toc_candidates
 -- TOC seam (static matching): entries of the course's current TOC whose
 -- title/description match the query (same stemming as the keyword seam),
--- plus the chunks under those entries' locators. Entries with a NULL
--- locator drop out via the chunks join, which also bounds the seam to
--- entries that actually have text behind them.
+-- plus the chunks under those entries' locators. The join goes through
+-- chunk_locators (a chunk's FULL locator span), not chunks.locator_id (its
+-- primary locator only): a section that starts mid-chunk would otherwise
+-- match no chunk at all. Entries with a NULL locator drop out via the
+-- join, which also bounds the seam to entries with text behind them.
 WITH current_toc AS (
     SELECT toc_id
     FROM tables_of_contents
@@ -52,8 +54,8 @@ SELECT chunk.chunk_id,
        matched_entries.entry_id,
        matched_entries.title
 FROM matched_entries
-JOIN chunks AS chunk ON chunk.source_id = matched_entries.source_id
-     AND chunk.locator_id = matched_entries.locator_id
+JOIN chunk_locators AS span ON span.locator_id = matched_entries.locator_id
+JOIN chunks AS chunk ON chunk.chunk_id = span.chunk_id
 JOIN sources AS source ON source.source_id = chunk.source_id
 WHERE source.course_id = :course_id
   AND source.status = 'indexed'

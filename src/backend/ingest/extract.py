@@ -306,6 +306,18 @@ def extract(
     raise UnsupportedSourceTypeError(mime_type)
 
 
+def read_pdf_bytes(
+    course_id: UUID, source_id: UUID, stored_encoding: str | None
+) -> bytes:
+    """A stored PDF's bytes through the decompression-capped seam."""
+    return storage.read_stored(
+        course_id,
+        source_id,
+        stored_encoding,
+        max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+    )
+
+
 def _pdf_page_texts(
     course_id: UUID,
     source_id: UUID,

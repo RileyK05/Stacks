@@ -194,3 +194,25 @@ SELECT pending.source_id, pending.claimed_at, pending.heartbeat_at,
 FROM pending_ingestion AS pending
 WHERE pending.course_id = :course_id
 ORDER BY pending.created_at;
+
+-- name: course_toc
+-- The course's table of contents (one per course; entries are replaced
+-- per source as sources are ingested).
+SELECT toc_id FROM tables_of_contents
+WHERE course_id = :course_id
+ORDER BY version DESC
+LIMIT 1;
+
+-- name: insert_toc
+INSERT INTO tables_of_contents (toc_id, course_id, version)
+VALUES (:toc_id, :course_id, 1);
+
+-- name: delete_source_toc_entries
+DELETE FROM toc_entries WHERE source_id = :source_id;
+
+-- name: insert_toc_entry
+INSERT INTO toc_entries
+    (entry_id, toc_id, source_id, locator_id, title, description, position)
+VALUES
+    (:entry_id, :toc_id, :source_id, :locator_id, :title, :description, :position);
+

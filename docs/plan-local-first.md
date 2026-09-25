@@ -553,8 +553,15 @@ Found and fixed along the way:
 - [ ] Decomposed `ask` pipeline where the eval shows single-shot failing
 - [ ] Per-model capability profiles in `configs/models/`
 - [ ] Prompt-prefix stability for KV-cache reuse; answer cache
-- [ ] TOC builder without the chat model: author structure → encoder
-      boundaries/clustering → titles (§10a)
+- [x] TOC builder without the chat model, step 1 — author structure
+      (`ingest/toc.py`): markdown sections, PDF bookmarks, and PDF headings
+      detected from typography (≥1.12× body size, wrapped lines merged).
+      On the owner's two PDFs (no bookmarks): 11 + 13 correct entries; the
+      TOC seam contributes on real questions for the first time. Also fixed
+      the seam to join through `chunk_locators` (a section starting mid-chunk
+      previously matched nothing)
+- [ ] TOC step 2: encoder boundaries/clustering + titles for unstructured
+      sources (§10a)
 - [ ] Decomposed knowledge extraction over the whole document (§10a)
 - [ ] Study pack generated at ingestion
 - [x] Fence-echo stripping; 4xx-rejected schema → unconstrained retry

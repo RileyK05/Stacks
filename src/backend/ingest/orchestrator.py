@@ -4,9 +4,10 @@ Binds the pipeline executor, the run ledger, and the stage handlers into
 `run_ingestion`: extract_text → ocr (scanned PDFs only) → build_locators →
 build_chunks → embed_chunks run deterministically (embeddings run
 in-process). update_toc and extract_knowledge are enrichment stages: they
-record a skip until their local-first implementations land (plan §10a —
-a TOC built without the chat model, and decomposed per-chunk knowledge
-extraction), instead of spending model calls whose output nothing stores.
+run without the chat model where possible: the TOC comes from the
+author's own headings/bookmarks (plan §10a), and knowledge extraction
+records a skip until decomposed per-chunk extraction lands, instead of
+spending model calls whose output nothing stores.
 
 A full retry re-executes every stage from the top — the executor has no
 resume logic — but each stage is delete-your-rows-first idempotent, so
@@ -32,7 +33,7 @@ from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.common.prompt_registry import load_prompt
 from src.backend.common.queries import get
 from src.backend.common.schemas.base import IngestionStage, IngestionStatus
-from src.backend.ingest import chunking, extract, runs
+from src.backend.ingest import chunking, extract, runs, toc
 from src.backend.ingest.config import load_ingestion_config
 from src.backend.ingest.pipeline import (
     IngestionPipelineError,
@@ -242,8 +243,46 @@ class IngestionHandlers:
         self.conn.executemany(get(_FILE, "insert_chunk_locator"), link_rows)
 
     def update_toc(self) -> None:
-        raise StageSkipped(
-            "TOC building lands with the local-first TOC builder (plan §10a)"
+        """TOC entries from the author's own structure (ingest/toc.py) — no
+        model call. Replaces this source's entries in the course TOC."""
+        if self.extracted is None:
+            raise StageSkipped("no extracted text")
+        if self.source.mime_type == "application/pdf":
+            pdf_bytes = extract.read_pdf_bytes(
+                self.source.course_id,
+                self.source.source_id,
+                self.source.stored_encoding,
+            )
+            drafts = toc.pdf_entries(self.extracted, pdf_bytes)
+        else:
+            drafts = toc.markdown_entries(self.extracted)
+        source_param = {"source_id": self.source.source_id}
+        self.conn.execute(get(_FILE, "delete_source_toc_entries"), source_param)
+        if not drafts:
+            raise StageSkipped("no headings or bookmarks found in this source")
+        row = self.conn.execute(
+            get(_FILE, "course_toc"), {"course_id": self.source.course_id}
+        ).fetchone()
+        toc_id = row["toc_id"] if row else uuid4()
+        if row is None:
+            self.conn.execute(
+                get(_FILE, "insert_toc"),
+                {"toc_id": toc_id, "course_id": self.source.course_id},
+            )
+        self.conn.executemany(
+            get(_FILE, "insert_toc_entry"),
+            [
+                {
+                    "entry_id": uuid4(),
+                    "toc_id": toc_id,
+                    "source_id": self.source.source_id,
+                    "locator_id": draft.locator_id,
+                    "title": draft.title,
+                    "description": draft.description,
+                    "position": position,
+                }
+                for position, draft in enumerate(drafts)
+            ],
         )
 
     def embed_chunks(self) -> None:
