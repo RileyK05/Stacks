@@ -8,15 +8,20 @@ should be questioned, not the file ignored.
 
 Stacks is an academic assistant that accumulates a source-grounded course memory and a student
 error model, then recommends what to study next. **A local-first desktop tool**
-(decision 012, `docs/plan-local-first.md`): one user per SQLite file on their
-own machine, a bundled llama.cpp server running a small open model by default,
-and optional cloud providers the user chooses. Encoders (embeddings, reranker)
-run in-process on ONNX Runtime. See `docs/project.md` for the product plan,
-`docs/system.md` for architecture (its hosted-era sections are superseded by
-decision 012). Read them before making structural decisions.
+(Tauri app): one user per SQLite file on their own machine, a bundled
+llama.cpp server running a small open model by default, and optional cloud
+providers the user chooses. Encoders (embeddings, reranker) run in-process
+on ONNX Runtime. See `docs/project.md` for the product plan,
+`docs/system.md` for architecture (its hosted-era, multi-user sections are
+superseded by the local-first app), and `docs/plan-notebook.md` for the
+current plan and handoff (**start at its "Start here" section**). Read them
+before making structural decisions.
 
-> All three docs (this file, `docs/project.md`, `docs/system.md`) live in
-> `docs/` — paths in code/tests refer to them as `docs/...`.
+> The five docs (this file, `project.md`, `system.md`, `notes.md`,
+> `plan-notebook.md`) are the only docs; all live in `docs/`. Older
+> decision records and plans were removed on 2026-09-25 and survive in git
+> history; code and docs that cite "decision 0NN", `docs/decisions/` or
+> `plan-local-first.md` refer to those (`git log --all -- <path>`).
 
 ## Golden rules
 
@@ -40,8 +45,8 @@ decision 012). Read them before making structural decisions.
 
 ## Memory vocabulary (read before touching anything named "memory")
 
-Full definition: `docs/decisions/007_memory_model.md`. That file wins over
-any other doc or code name. Summary:
+This section is the definition (it condenses the removed decision 007) and
+wins over any other doc or code name:
 
 - **User memory (root)** — per-user, lifelong, behavioral ("teach THIS
   person with visuals/analogies") + cross-course history. The ONLY layer
@@ -108,8 +113,11 @@ src/
 tests/           # pytest; mirrors src/backend/ layout
 runs/            # experiment + eval logs — GITIGNORED
 docs/
+  AGENTS.md      # this file
+  project.md     # product plan
+  system.md      # architecture
   notes.md       # append-only decision log (never delete entries)
-  decisions/     # resolved design decisions
+  plan-notebook.md # current plan + handoff (start here)
 ```
 
 The six subsystems map 1:1 to `src/backend/<package>`. Cross-cutting code

@@ -4,7 +4,32 @@ Created: 2026-09-25. **Approved direction** (owner review 2026-09-25; the
 answers are in §8 and decision 013). Builds on `docs/plan-local-first.md`
 (the desktop app, done through Phase 6's installer) and decisions 007
 (memory), 009 (three zones), 011 (workspace items). Check items off as
-they land.
+they land. (Those decision records and `plan-local-first.md` were removed
+on 2026-09-25; git history keeps them.)
+
+## Start here (next contributor, updated 2026-09-25)
+
+Work in this order; stop and leave a note in §10 rather than guess past a
+point marked **owner**.
+
+1. **Checks green:** pytest, ruff, mypy, `npm run check`, clippy (§10.4).
+   CI runs the same on every push (`.github/workflows/ci.yml`).
+2. **§10.2 live checks** that need the owner's model: run them if a model
+   is available, otherwise leave them listed.
+3. **§11 native Office files, step N0 (the spike)** is the top priority:
+   it answers the owner's biggest concern. It is research plus a
+   throwaway test page; no product code, no migration. Record results in
+   `docs/notes.md` and a recommendation in §11.
+4. **Owner** decides the §11.4 questions before N1 starts. Until then
+   assume the recommended answers only for the spike: no AGPL, keep
+   Notes / simple grid / simple slides, no paid tiers.
+5. Only after the owner signs off on N0: N1 onward in §11.3. Phase C
+   (§7, concept extraction) comes after the Office work unless the owner
+   says otherwise.
+
+Releases: bump with `python -m scripts.set_version`, add the CHANGELOG
+entry, push a `vX.Y.Z` tag; `.github/workflows/release.yml` builds the
+installer into a draft release for the owner to publish.
 
 ---
 
@@ -448,8 +473,8 @@ original author review the result afterwards.
   that isolated course, and the Windows installer built. The
   model-dependent checks in §10.2 still need the owner's model; the
   installer itself has not been installed and run.
-- Next implementation work: Phase C concept extraction and study pack,
-  then Phase D practice/memory and Phase E course home. The rest of §10.3
+- Next implementation work: superseded by "Start here" at the top (the
+  Office-files spike in §11 comes before Phase C). The rest of §10.3
   records the original handoff and should be read as historical context.
 
 ## 11. Native Office files (planned, 2026-09-25; not started)
@@ -574,5 +599,6 @@ Each step ships only with its fidelity tests green in CI.
   the native types (recommended: yes)? (3) Paid tiers such as
   docx-editor's comments and tracked changes: not for now?
 
-Also stale: `docs/AGENTS.md` still points at `docs/decisions/` and
-`plan-local-first.md`, which were removed; fix those references.
+`docs/AGENTS.md` was updated for the removed docs; `system.md` and
+`project.md` still cite some removed records by path, and those citations
+are historical (see AGENTS.md).
