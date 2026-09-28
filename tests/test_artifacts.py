@@ -503,6 +503,8 @@ def test_formats_are_checked_and_charts_lose_scripts(client: TestClient) -> None
         encoding="utf-8"
     )
     assert "<script" not in html and "onload" not in html and "javascript:" not in html
+    assert "<iframe sandbox" in html
+    assert "Content-Security-Policy" in html
 
 
 def test_deleting_the_course_removes_its_artifacts(client: TestClient) -> None:

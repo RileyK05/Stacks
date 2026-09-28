@@ -48,7 +48,7 @@ jobs:
       - name: Version
         id: version
         run: |
-          version=$(python -c "import re,pathlib; print(re.search(r'__version__ = \"(.+)\"', pathlib.Path('src/backend/version.py').read_text()).group(1))")
+          version=$(python -c "from src.backend.version import __version__; print(__version__)")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
             echo "::error::tag $GITHUB_REF_NAME does not match the app version $version (run scripts/set_version.py first)"

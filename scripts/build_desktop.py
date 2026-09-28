@@ -87,19 +87,32 @@ def build_backend() -> Path:
     subprocess.run(command, cwd=ROOT, check=True)
 
     target = SHELL / "backend"
-    shutil.rmtree(target, ignore_errors=True)
+    if target.exists():
+        shutil.rmtree(target)
     shutil.copytree(work / "dist" / BACKEND_NAME, target)
     return target
 
 
 def build_installer() -> list[Path]:
     npm = "npm.cmd" if sys.platform == "win32" else "npm"
+    bundle = SHELL / "target" / "release" / "bundle"
+    if bundle.exists():
+        shutil.rmtree(bundle)
     subprocess.run(
-        [npm, "run", "tauri", "--", "build", "--config", str(BUNDLE_CONFIG)],
+        [
+            npm,
+            "run",
+            "tauri",
+            "--",
+            "build",
+            "--config",
+            str(BUNDLE_CONFIG),
+            "--",
+            "--locked",
+        ],
         cwd=FRONTEND,
         check=True,
     )
-    bundle = SHELL / "target" / "release" / "bundle"
     return sorted(
         p
         for p in bundle.rglob("*")
@@ -136,7 +149,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         backend = build_backend()
     print(f"backend: {backend} ({_size(backend)})")
-    for installer in build_installer():
+    installers = build_installer()
+    if len(installers) != 1:
+        raise SystemExit(
+            f"Tauri must produce exactly one installer; found {len(installers)}"
+        )
+    for installer in installers:
         print(f"installer: {installer} ({_size(installer)})")
     return 0
 

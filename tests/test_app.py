@@ -62,6 +62,41 @@ def test_cross_origin_requests_still_need_the_token(
     assert ok.status_code == 200
 
 
+def test_production_api_fails_closed_without_a_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.backend.main import create_app
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_API_TOKEN", "")
+    response = TestClient(create_app()).get("/api/health")
+    assert response.status_code == 503
+
+
+def test_non_ascii_token_is_rejected_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.backend.main import create_app
+
+    monkeypatch.setenv("APP_API_TOKEN", "launch-secret")
+    response = TestClient(create_app()).get(
+        "/api/health", headers=[(b"x-app-token", b"caf\xe9")]
+    )
+    assert response.status_code == 401
+
+
+def test_production_api_does_not_publish_schema_or_docs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.backend.main import create_app
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("APP_API_TOKEN", "launch-secret")
+    client = TestClient(create_app())
+    assert client.get("/api/openapi.json").status_code == 404
+    assert client.get("/api/docs").status_code == 404
+
+
 def test_serve_announces_its_port_and_stops_when_stdin_closes() -> None:
     process = subprocess.Popen(
         [sys.executable, "-m", "src.backend.serve", "--watch-stdin"],

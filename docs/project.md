@@ -3,10 +3,11 @@
 ## One-line idea
 
 A desktop study tool that ingests a student's course materials, keeps
-source-grounded course knowledge plus a course-memory focus record
-(decision 007), and helps the student decide what to study next. It runs
-on the student's own laptop, with a small open model by default and any
-cloud model the student chooses (decision 012).
+source-grounded course knowledge plus a course-memory focus record, and helps
+the student decide what to study next. A docked companion stays beside the
+student's current work; the full library handles course management. It runs on
+the student's own laptop, with a small open model by default and any cloud
+model the student chooses.
 
 This is **not** just "chat with PDFs." The useful output is an inspectable, evolving model of:
 
@@ -50,6 +51,8 @@ that can be evaluated on real courses. The target is an ordinary laptop
   output schema, bounded citations) so a ~2B local model does narrow,
   checkable work. Every model call is recorded in a local usage ledger.
 - **Learning over completion:** the tool helps practice and diagnose understanding, not produce assignments for submission.
+- **Present where the work happens:** the companion is the primary interface;
+  the full library manages courses, and the Office add-in is a document bridge.
 - **ML earns its role:** begin with retrieval, structure, and simple measurable baselines; add fine-tuning only for documented failures.
 - **Extensible by design:** new content kinds, locator types, and formats are free strings — they insert without schema redesign.
 - **Destruction leaves a distilled record:** a deleted course sits in the
@@ -145,16 +148,18 @@ A single-course MVP for one student on their own laptop.
 ### MVP user stories
 
 1. I can install the app, create a course, and upload PDFs, Markdown notes, and text.
-2. I can keep separate saved conversations in a course, choose their
+2. I can keep a narrow companion beside Word, a browser, or a PDF, collapse it
+   to the screen edge, and ask about copied context without changing apps.
+3. I can keep separate saved conversations in a course, choose their
    sources and model, and open an answer's cited passage in the source.
-3. I can create and edit cited course notes, schedules, study decks, quizzes,
+4. I can create and edit cited course notes, schedules, study decks, quizzes,
    and flashcards, review model edits, and restore an earlier version.
-4. I can view a concept page containing a course-specific definition, prerequisite links, examples, and source evidence.
-5. I can request a short closed-notes diagnostic constrained to selected topics.
-6. I can answer the diagnostic, state my confidence beforehand, and receive feedback.
-7. The system stores my errors by concept and displays the evidence behind any recommendation.
-8. I can ask, "What should I work on next?" and get a transparent answer grounded in my attempts and the course's current material.
-9. I can delete a course (30 days in the trash; its course memory survives the purge) and export or import a course as one file.
+5. I can view a concept page containing a course-specific definition, prerequisite links, examples, and source evidence.
+6. I can request a short closed-notes diagnostic constrained to selected topics.
+7. I can answer the diagnostic, state my confidence beforehand, and receive feedback.
+8. The system stores my errors by concept and displays the evidence behind any recommendation.
+9. I can ask, "What should I work on next?" and get a transparent answer grounded in my attempts and the course's current material.
+10. I can delete a course (30 days in the trash; its course memory survives the purge) and export or import a course as one file.
 
 ### MVP success criteria
 
@@ -169,10 +174,10 @@ The MVP is useful if, for one real course:
 
 ## Technical requirements (agreed)
 
-- **App:** a Tauri v2 shell showing the SvelteKit SPA, with the FastAPI
-  backend (frozen by PyInstaller) as a child process; shipped as a
-  per-user installer. A per-launch token between the window and the
-  backend is the only auth.
+- **App:** a Tauri v2 shell with a docked companion window and a hidden-until-
+  opened full library window, both showing the SvelteKit SPA. The FastAPI
+  backend (frozen by PyInstaller) is a child process in the per-user installer.
+  A per-launch token between the webviews and backend is the desktop API auth.
 - **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem.
 - **Database:** SQLite (WAL, foreign keys, FTS5) via raw SQL, no ORM.
   Versioned, append-only migrations (`common/migrations/00X_*.sql`) applied

@@ -12,13 +12,13 @@ error model, then recommends what to study next. **A local-first desktop tool**
 llama.cpp server running a small open model by default, and optional cloud
 providers the user chooses. Encoders (embeddings, reranker) run in-process
 on ONNX Runtime. See `docs/project.md` for the product plan,
-`docs/system.md` for architecture (its hosted-era, multi-user sections are
-superseded by the local-first app), and `docs/plan-notebook.md` for the
-current plan and handoff (**start at its "Start here" section**). Read them
-before making structural decisions.
+`docs/system.md` for the current local architecture, and
+`docs/plan-notebook.md` for the release plan and handoff (**start at its
+"Start here" section**). Read them before making structural decisions.
 
-> The five docs (this file, `project.md`, `system.md`, `notes.md`,
-> `plan-notebook.md`) are the only docs; all live in `docs/`. Older
+> The six working docs (this file, `project.md`, `system.md`, `notes.md`,
+> `plan-notebook.md`, and `docket.md`) all live in `docs/`. `docket.md` is a
+> triaged engineering ledger; candidate findings are not facts until verified. Older
 > decision records and plans were removed on 2026-09-25 and survive in git
 > history; code and docs that cite "decision 0NN", `docs/decisions/` or
 > `plan-local-first.md` refer to those (`git log --all -- <path>`).
@@ -86,14 +86,13 @@ src/
     retrieval/     # four-seam funnel + traces
     memory/        # concept/dependency store + table of contents
     artifacts/     # typed content (notes/decks/schedules/quizzes), cited model edits, exports
-    office_reader/ # redundant, read-only Office readers (package/OCR/scrape) + merge
     student_model/ # attempts, mastery, error model (schema live; subsystem M3-4)
     tutor/         # task framing, saved-chat context, grounded answers
     evals/         # answer eval harness (retrieval evals live in retrieval/)
     runtime/       # bundled llama.cpp server, model catalog, user GGUF models
     office_addin/  # connect Office: certificate, registration, HTTPS pane host
     office_reader/ # read-only Office text readers (package / OCR / scrape)
-    api/           # FastAPI routers including conversations and artifacts
+    api/           # FastAPI routers including companion, conversations, artifacts
     main.py        # ASGI app: the API at /api, the Office bridge at /office
     serve.py       # the backend process the desktop shell runs
     version.py     # app name + version (scripts/set_version.py)
@@ -111,8 +110,8 @@ src/
       encoders.py    # ONNX Runtime embedder + cross-encoder (pinned, verified)
       prompt_registry.py  # prompt loading + untrusted-material fencing
       repos          # per-aggregate SQL callers (courses_repo, sources_repo, ...)
-  frontend/        # SvelteKit + TS SPA; talks to backend only via its API
-    src-tauri/     # Tauri v2 desktop shell (Rust): window, backend process
+  frontend/        # SvelteKit + TS SPA; companion + full library
+    src-tauri/     # Tauri v2 desktop shell: two windows, backend process
   office-addin/    # Office.js task pane for Word, Excel, PowerPoint (public/ is served);
                    # npm run check (Office.js types) + npm test; Office owns the file
 tests/           # pytest; mirrors src/backend/ layout
@@ -122,7 +121,8 @@ docs/
   project.md     # product plan
   system.md      # architecture
   notes.md       # append-only decision log (never delete entries)
-  plan-notebook.md # current plan (Office editing; start here)
+  plan-notebook.md # current release plan; start here
+  docket.md      # triaged bug/release ledger; verify candidates before acting
 ```
 
 The six subsystems map 1:1 to `src/backend/<package>`. Cross-cutting code
@@ -185,6 +185,13 @@ npm run check    # svelte-check typecheck/diagnostics (must pass)
 npm run desktop  # the desktop app in dev (tauri dev; starts the backend)
 npm run build    # static SPA into build/
 npm run gen:api  # regenerate API types from the backend's OpenAPI schema
+```
+
+Office add-in (run from `src/office-addin/`):
+
+```
+npm run check    # Office.js API type-check
+npm test         # pane bridge logic
 ```
 
 `src/frontend/src/lib/api/schema.d.ts` is generated from the backend — never

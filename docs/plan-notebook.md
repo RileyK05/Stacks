@@ -1,177 +1,160 @@
-# Plan: Stacks inside Microsoft Office
+# Plan: prepare the Stacks companion for release
 
-Updated 2026-09-27. This file is **only the current plan**. History and
-decisions live in `docs/notes.md` (append-only); when the direction changes,
-rewrite this file rather than letting it grow.
+Updated 2026-09-28. This is the current plan and handoff. Implementation
+history belongs in `docs/notes.md`; candidate bugs belong in `docs/docket.md`.
 
-## Start here (next contributor)
+## Start here
 
-1. Checks green: `pytest`, `ruff check .`, `mypy src`, `npm run check` in
-   `src/frontend`, `npm run check` + `npm test` in `src/office-addin`,
-   `cargo clippy` in `src/frontend/src-tauri`. CI runs the same
-   (`.github/workflows/ci.yml`).
-2. Read "How it works" and "Code map" below, then the latest `notes.md`
-   entries ("One-click Office", "Office assistant", "Retiring the file-backed
-   Office editors").
-3. The gate for everything under "Next" is the **owner's first run in real
-   Office** (checklist below). Fix what it finds before building more.
+1. The companion is the primary product surface. Preserve its right-edge,
+   pin, collapse, open-library, and explicit Quit behavior.
+2. The full library manages courses, sources, saved work, models, data, and
+   setup. It starts hidden and is opened from the companion.
+3. The Office add-in is an optional live document bridge. Office owns and
+   saves Office files; Stacks never reserializes them.
+4. Work the **Release gate** in order. Do not return to large feature work
+   until the installer and clean-install smoke test pass.
 
-## Direction
+## Current state
 
-**Stacks knows the student; Office knows the document.** Instead of
-rebuilding Word, Excel and PowerPoint inside Stacks (tried and retired: every
-editor either lost authored content on save or could not render real files),
-Stacks goes into Office as a task pane. Office renders, edits and saves its
-own files; Stacks reads what the student is looking at, answers from their
-course with citations, and hands text back for Office to insert. Stacks never
-writes an Office file, so a feature Stacks doesn't understand is a missing
-capability, never a corrupted document.
+The owner approved the companion's layout and interaction model after a live
+Windows pass. The 420 px view, pin, collapse/restore, full-library button,
+course selection, context actions, free question input, and error recovery are
+implemented. The companion and Office pane share the same grounded assistant
+contract and citation rules.
 
-- The retired editors are deleted (code, branch, and their test artifacts).
-  Their migration numbers 006/007 stay reserved (`migrate.RETIRED_VERSIONS`):
-  databases from those builds recorded them.
-- The JSON artifact kinds stay as Stacks-side study tools: `doc` → course
-  notes, `sheet` → schedules/trackers, `slides` → study decks, plus quizzes,
-  flashcards, code, charts.
-- Windows desktop Office (Microsoft 365 / Office 2016+) only, for now.
+The full library, local backend, model runtime, course storage, ingestion,
+retrieval, saved chats, artifacts, course archives, and Office setup remain in
+place. Previous file-backed Office editors remain retired.
 
-## Status
+Release cleanup completed in the current working tree:
 
-Built and machine-tested end to end: setup, hosting, the bridge, the grounded
-answers, the pane logic and its Office.js calls (type-checked against
-Microsoft's `@types/office-js`), and the manifest (passes Microsoft's
-`office-addin-manifest validate`). **Not yet done: a run inside real Office.**
-The certificate prompt, Office picking up the registration, and the pane
-reading/writing a live document can only be proven there.
+- public, contributor, frontend, system, and changelog docs now describe the
+  companion-first product;
+- Tauri permissions are split so the companion does not receive file dialogs
+  or external opener access;
+- chart HTML export is isolated in a sandboxed iframe with a restrictive CSP;
+- version bumps update npm and Cargo lockfiles;
+- installer builds use the locked Rust graph, clear stale output, and require
+  exactly one installer;
+- direct `lxml` production and typing dependencies are declared;
+- packaged-backend startup errors point to the actual stderr log.
+
+## Release gate
+
+### A. Land one coherent change
+
+- [x] Review `git diff` and remove accidental/generated files.
+- [ ] Include the companion's tracked modifications and new files in the same
+      commit. A partial commit does not build from a clean checkout.
+- [ ] Keep `docs/docket.md` as the verified/deferred ledger, not a claim that
+      every static-review candidate is reproduced.
+
+### B. Quality checks
+
+- [x] `python -m pytest -q` (499 passed)
+- [x] `python -m ruff check .`
+- [x] `python -m mypy src`
+- [x] regenerate the frontend API schema from the current backend
+- [x] `npm run check` and `npm run build` in `src/frontend`
+- [x] `npm run check` and `npm test` in `src/office-addin`
+- [x] `cargo clippy --all-targets --locked -- -D warnings`
+
+### C. Installer
+
+- [x] Run `.venv/Scripts/python -m scripts.build_desktop` without
+      `--skip-backend`.
+- [x] Confirm exactly one NSIS installer is produced under
+      `src/frontend/src-tauri/target/release/bundle/nsis/`.
+- [ ] Install for the current user and launch without the checkout, virtualenv,
+      Node, or Vite running.
+- [ ] Confirm Quit removes Stacks, its Python backend, Office host, and local
+      model child processes.
+- [ ] Uninstall and confirm user data is handled as documented.
+
+### D. Product smoke test
+
+- [ ] Companion opens on the right work area and remains usable at 100%, 125%,
+      and 150% display scaling.
+- [ ] Pin and collapse/restore work across a monitor change.
+- [ ] Open the full library, create or select a course, and add a source.
+- [ ] With a ready model, run Explain, Find in course, Quiz me, Summarize, and a
+      free question. Every substantive answer shows valid source passages.
+- [ ] Switch courses and confirm the visible companion conversation clears.
+- [ ] Restart Stacks and confirm remembered course, pin, and collapsed state.
+- [ ] Export and re-import a disposable `.course` archive.
+
+### E. Office bridge smoke test
+
+- [ ] Connect Office from an installed Stacks build and restart Office once.
+- [ ] Word: selection read, cited answer, insert below, replace selection, save,
+      close, and reopen.
+- [ ] Excel: selected values/formulas, cited answer, comment or notes sheet,
+      replace active cell, save, close, and reopen.
+- [ ] PowerPoint: selected text/slide read, cited answer, text-box insert,
+      replace selected text, save, close, and reopen.
+- [ ] Disconnect Office and verify the registration disappears after Office
+      restarts.
+
+### F. Release metadata
+
+- [ ] Choose the release version.
+- [ ] Run `.venv/Scripts/python -m scripts.set_version X.Y.Z`.
+- [ ] Finish that version's `CHANGELOG.md` entry.
+- [ ] Push a matching `vX.Y.Z` tag only after the clean-install smoke test.
+- [ ] Review the draft GitHub release and installer before publishing.
 
 ## How it works
 
 ```text
-Stacks app                                  Word / Excel / PowerPoint
-─────────                                   ─────────────────────────
-Settings → Microsoft Office → Connect   ──▶ Home tab → Stacks → pane
-  or a course → Open in Office                reads the selection
-                                              asks /office/assist
-backend (already running with the app)        inserts / replaces text
-  serves https://localhost:47831              through Office.js
-    /            the pane (src/office-addin/public)
-    /office/*    the bridge (api/office.py)
+Any Windows app                Stacks companion             Stacks library
+---------------                ----------------             --------------
+copy text / ask a question --> /api/companion/assist  -->  courses + sources
+                               cited answer                  settings + setup
+                               pin / collapse / expand
+
+Word / Excel / PowerPoint      Office task pane
+-------------------------      ----------------
+live selection <-------------> Office.js adapter
+document insertion             /office/assist -> grounded assistant
 ```
 
-**Connect Office** (`office_addin/service.connect`; idempotent, "Repair" runs
-the same thing), per-user, no admin rights:
-
-1. Issue a `localhost` certificate signed by a fresh CA whose private key is
-   discarded immediately, so trusting it cannot be abused for other sites.
-2. Ask Windows to trust that CA (`certutil -user -addstore Root`: one system
-   dialog). Office only loads panes over trusted HTTPS.
-3. Render the manifest for this port and app version into the data folder
-   and register it under `HKCU\Software\Microsoft\Office\16.0\WEF\Developer`,
-   the per-user developer add-in key Office reads at start (all three apps).
-4. Serve pane and bridge from the backend process (own thread, fixed port
-   `APP_OFFICE_PORT`, default 47831). Later launches re-serve automatically
-   and never prompt; an expired or untrusted certificate shows "Needs
-   attention" → Repair.
-
-**Open in Office** (course header menu, or Settings) launches Word, Excel or
-PowerPoint with a new document or a picked file, connecting first if needed,
-and remembers the course so the pane opens on it. Office only picks up a newly
-registered add-in when it starts, so the first time, an already-open app needs
-one restart (the app says so).
-
-**The pane** follows the selection, remembers the course per document, and
-offers Explain / Find in my course / Quiz me / Summarize or a free question.
-
-| Host | Reads | Insert | Replace |
-| --- | --- | --- | --- |
-| Word | selection, or the paragraph at the cursor | paragraphs below the selection | the selection |
-| Excel | selected range: address, values, formulas (first 100×20 cells) | a comment on the active cell, else a row in a "Stacks notes" sheet | the active cell |
-| PowerPoint | selected text, else every text shape on the slide | a text box on the slide | the selected text |
-
-Every host falls back to Office's Common API (`get/setSelectedDataAsync`) when
-its richer API isn't available. Inserted text is plain text plus a "Sources:"
-list for the citations it uses. Graded work is refused; empty retrieval is
-refused (source grounding, AGENTS.md rules 1 and 4).
-
-**Stacks must be open** while the pane is used: the app serves it. Disconnect
-(Settings) unregisters, stops serving, untrusts the CA and deletes its files.
+The desktop creates two Tauri windows. `companion` is visible and docks to the
+right work area. `main` starts hidden. Both use one authenticated loopback
+backend. The installed build packages that backend with PyInstaller and stores
+user data under the app's local data directory.
 
 ## Code map
 
-| Piece | Where |
+| Piece | Location |
 | --- | --- |
-| Setup, certificate, Windows trust/registry/launch, HTTPS host | `src/backend/office_addin/` (`service`, `certs`, `windows`, `manifest`, `host`, `app`) |
-| App API: status / connect / disconnect / open | `src/backend/api/office_setup.py` → `/api/office/*` |
-| Bridge the pane calls: health, courses, assist, read | `src/backend/api/office.py` → `/office/*` on the add-in origin |
-| Grounded answers for the pane actions | `src/backend/tutor/office.py`, prompts `office_*` in `configs/prompts.toml` |
-| Redundant readers (scrape / package / screenshot OCR, merged) | `src/backend/office_reader/`, `POST /office/read` |
-| The pane (served and bundled as-is, no build step) | `src/office-addin/public/` (`manifest.xml`, `taskpane.*`, `bridge.js`, `assets/`) |
-| Pane tooling: Office.js type-check, logic tests | `src/office-addin/` (`npm run check`, `npm test`) |
-| App UI | `lib/components/settings/OfficeCard.svelte`, `lib/components/course/OfficeMenu.svelte`, `lib/stores/office.ts` |
-| Tests | `tests/test_office_addin_setup.py`, `test_office_addin_manifest.py`, `test_office_bridge_api.py`, `test_office_assistant.py`, `test_office_reader.py`, `src/office-addin/bridge.test.js` |
+| Companion route | `src/frontend/src/routes/companion/+page.svelte` |
+| Dock, pin, collapse, library, quit | `src/frontend/src-tauri/src/companion.rs` |
+| Window/process lifecycle | `src/frontend/src-tauri/src/lib.rs`, `backend.rs` |
+| Tauri windows and installer | `src/frontend/src-tauri/tauri.conf.json` |
+| Companion API | `src/backend/api/companion.py` |
+| Grounded Office/companion assistant | `src/backend/api/office.py`, `src/backend/tutor/office.py` |
+| Full library | `src/frontend/src/routes/(app)/` |
+| Office host and setup | `src/backend/office_addin/` |
+| Office task pane | `src/office-addin/public/` |
+| Installer script | `scripts/build_desktop.py` |
+| Version script | `scripts/set_version.py` |
 
-Tests fake the Windows layer (`FakeWindows`); nothing in the suite touches
-the real trust store or registry.
+## After the first release
 
-## Owner's first run (the gate)
+1. Use daily companion feedback to decide whether an always-on-top edge window
+   is sufficient or a Windows AppBar should reserve desktop space.
+2. Add one-click clipboard capture or a global hotkey only after defining its
+   privacy and focus behavior.
+3. Decide whether closing the companion should quit or leave a tray process for
+   the Office pane.
+4. Return to concept extraction, diagnostics, the student error model, and
+   transparent study recommendations in `docs/project.md`.
 
-Use `npm run desktop` (or an installed build) with a course that has sources
-and a model ready.
+## Product rules
 
-1. Settings → Microsoft Office → **Connect Office**. Windows asks to install
-   a certificate → Yes. The card shows **Connected**.
-2. On the course: **Open in Office** → New PowerPoint deck (or open a lecture
-   `.pptx`). If PowerPoint was already open, close it and reopen once.
-3. Home tab → **Stacks**. The pane says "Connected to Stacks …" with the
-   course selected.
-4. Select text on a slide: "Looking at" fills in. **Explain** → an answer
-   with citations. **Add to slide** → a text box with a Sources list;
-   **Replace selected text** → the selection changes.
-5. Same in Word (select a paragraph; Insert below / Replace selection) and
-   Excel (select cells with formulas; Add as comment / Write into cell).
-6. Save, close and reopen each file in Office: everything else is intact.
-7. Close Stacks: the pane can't load. Reopen Stacks, reopen the pane: works.
-8. Settings → **Disconnect** → confirm Windows' prompt. After an Office
-   restart the Stacks button is gone.
-
-If something fails: the backend log is `backend.log` in the data folder
-(Settings → Your data → Open folder); the card's "Needs attention" list names
-the broken step. Record the result in `notes.md`.
-
-## Next (in order, after the first run)
-
-1. **Fix what the first run finds.** Likely spots: Office not showing the
-   button (registration / cache), the certificate prompt, host-specific
-   Office.js behaviour.
-2. **Installed build.** Build with `scripts.build_desktop`, install, repeat
-   the checklist once; the installer has never been run end to end.
-3. **Save from the pane into the course.** "Save to course notes" turns a
-   pane answer into a cited `doc` artifact, so work done in Office feeds the
-   course notebook.
-4. **Deeper reads.** The pane sends only the scrape today; send the package
-   bytes (Office's `getFileAsync`) and slide renders to `/office/read` so the
-   merged read catches what text scraping misses (charts, images, scans).
-5. **Per-host actions.** Excel: explain a formula chain; Word: add the answer
-   as a comment; PowerPoint: speaker notes once Office.js exposes them.
-6. **Keep the pane available.** Today the pane needs the Stacks window open;
-   decide whether Stacks keeps running in the tray (owner question).
-7. Then back to the product plan (`project.md`): concept extraction and the
-   student model.
-
-## Open questions (owner)
-
-1. Keep Stacks running in the tray when the window closes, so the Office pane
-   always works?
-2. Office on the web and on Mac are out of scope for now: confirm.
-
-## Rules for this work
-
-- Office owns the file: no Stacks code writes, exports or re-serializes a
-  `.docx`/`.xlsx`/`.pptx`. Document changes go through Office.js only.
-- Every Office.js call must type-check against `@types/office-js`
-  (`npm run check` in `src/office-addin`); requirement sets are checked at
-  runtime (`isSetSupported`) with a Common API fallback.
-- Only `src/office-addin/public/` is served and bundled; keep tooling and
-  tests outside it.
-- The bridge returns text and citations only, and every answer is grounded
-  in the course (the same fence and graded-work rule as the tutor).
+- Every substantive academic answer stays grounded in the selected course.
+- Office owns Office files; all document edits go through Office.js.
+- Local data stays local unless the user explicitly selects a cloud provider or
+  exports a course.
+- Do not silently solve graded work.
+- Do not publish a release that has only been run from the checkout.

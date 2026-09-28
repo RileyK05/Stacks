@@ -29,6 +29,8 @@ dependencies = [
     "openpyxl>=3.1",
     "python-pptx>=1.0",
     "markdown-it-py>=3.0",
+    # Imported directly by the Office add-in manifest renderer.
+    "lxml>=5.0",
     # The Office add-in's local HTTPS certificate (src/backend/office_addin).
     "cryptography>=43",
 ]
@@ -48,6 +50,7 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
     "types-openpyxl",
+    "lxml-stubs>=0.5",
 ]
 
 [tool.setuptools.packages.find]

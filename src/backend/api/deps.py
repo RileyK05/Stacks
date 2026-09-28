@@ -18,10 +18,18 @@ def require_app_token(
     can reach 127.0.0.1 but cannot read the secret, so they cannot drive
     the API (DNS-rebinding / CSRF protection). Disabled when no token is
     configured (development, tests)."""
-    expected = get_settings().api_token
+    settings = get_settings()
+    expected = settings.api_token
     if not expected:
+        if settings.app_env == "production":
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "the desktop API token is not configured",
+            )
         return
-    if x_app_token is None or not hmac.compare_digest(x_app_token, expected):
+    if x_app_token is None or not hmac.compare_digest(
+        x_app_token.encode("utf-8"), expected.encode("utf-8")
+    ):
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED, "missing or invalid app token"
         )

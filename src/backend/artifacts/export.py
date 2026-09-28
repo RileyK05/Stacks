@@ -51,9 +51,9 @@ _CODE_EXTENSIONS = {
 }
 _UNSAFE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _MD = MarkdownIt("commonmark").enable("table").enable("strikethrough")
-# A chart is model-written HTML. In the app it is sanitized (DOMPurify);
-# in an exported file nothing sanitizes it, so scripts, inline handlers
-# and javascript: URLs are removed here.
+# A chart is model-written HTML. The quick filters remove ordinary active
+# content; chart_html also places the result in a sandboxed iframe because
+# regex filtering alone is not a security boundary.
 _SCRIPT = re.compile(r"<\s*script\b.*?<\s*/\s*script\s*>", re.IGNORECASE | re.DOTALL)
 _HANDLER = re.compile(r"\s+on[a-z]+\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE)
 _JS_URL = re.compile(r"javascript:", re.IGNORECASE)
@@ -390,11 +390,18 @@ def to_pptx(
 
 def chart_html(title: str, body: str, sources: Sequence[SourceLabel]) -> str:
     safe = _JS_URL.sub("", _HANDLER.sub("", _SCRIPT.sub("", body)))
+    isolated = html.escape(safe, quote=True)
     cited = "".join(f"<li>{html.escape(line)}</li>" for line in _source_lines(sources))
     footer = f"<h2>Sources</h2><ol>{cited}</ol>" if sources else ""
     return (
-        f"<!doctype html><meta charset='utf-8'><title>{html.escape(title)}</title>"
-        f"{safe}{footer}"
+        "<!doctype html><meta charset='utf-8'>"
+        "<meta http-equiv='Content-Security-Policy' "
+        "content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+        "font-src data:; base-uri 'none'; form-action 'none'\">"
+        f"<title>{html.escape(title)}</title>"
+        "<style>body{font:16px system-ui;margin:24px;color:#171717}"
+        "iframe{width:100%;min-height:70vh;border:0}</style>"
+        f"<iframe sandbox title='Chart' srcdoc=\"{isolated}\"></iframe>{footer}"
     )
 
 

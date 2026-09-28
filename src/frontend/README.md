@@ -14,8 +14,13 @@ process with a per-launch token, learns the port it bound, and waits for
 (`src/lib/api/backend.ts`), which asks the shell for the address and token
 (`backend_info`); every request carries the token (`X-App-Token`). Until
 then `app.html` shows a start-up splash; if the backend never answers, the
-root layout shows why. Quitting the app closes the backend's stdin, which
-shuts it down.
+root layout shows why.
+
+The shell creates two windows. `companion` is the primary 420 px surface: it
+snaps to the right work area, can stay on top, and collapses to a 56 px tab.
+`main` is the full course library and starts hidden until the companion opens
+it. Closing the library hides it; Quit in the companion exits the app, closes
+the backend's stdin, and shuts the backend down.
 
 ## Setup
 
@@ -83,6 +88,7 @@ src/lib/components/  Button, Card, TextInput, Select, Spinner, Skeleton, ErrorBa
                      Open in Office menu
   settings/          settings cards: models, connections, Microsoft Office
 src/routes/
+  companion/         docked cross-app assistant: course, context, actions, chat
   (app)/             the app shell: my courses, trash, settings
     courses/[id]/    a course: saved chats, side panel, artifacts, sources
                      with live indexing state, export, Open in Office
@@ -162,4 +168,5 @@ with **Ctrl+Shift+.** (period); the setting persists in localStorage
 menu entry for it.
 
 Backend docs live in the repo's `docs/` (`AGENTS.md`, `project.md`,
-`system.md`, `decisions/`, `notes.md`).
+`system.md`, `plan-notebook.md`, `docket.md`, and `notes.md`). Historical
+decision files were removed and remain available through git history.

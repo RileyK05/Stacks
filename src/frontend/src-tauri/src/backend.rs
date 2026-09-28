@@ -227,10 +227,14 @@ fn watch_startup(stdout: impl Read, token: String, log_dir: Option<String>, stat
 
 fn failure(reason: &str, log_dir: &Option<String>) -> String {
     match log_dir {
-        Some(dir) => format!(
-            "{reason}. Details are in {}",
-            PathBuf::from(dir).join("backend.log").display()
-        ),
+        Some(dir) => {
+            let dir = PathBuf::from(dir);
+            format!(
+                "{reason}. Startup details are in {}; runtime details are in {}",
+                dir.join("backend-stderr.log").display(),
+                dir.join("backend.log").display()
+            )
+        }
         None => reason.to_string(),
     }
 }

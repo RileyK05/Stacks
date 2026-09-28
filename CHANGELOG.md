@@ -17,6 +17,11 @@ All notable changes to Stacks. Versions follow [semantic versioning](https://sem
 - `.course` exports now carry the format id `stacks/course`.
 
 ### Added
+- A docked Windows companion is now the primary interface. It snaps to the
+  right work area, can stay on top, collapses to a narrow edge tab, opens the
+  full course library on demand, and works beside any app from pasted context.
+- The companion shares the grounded Office assistant path for Explain, Find in
+  course, Quiz me, Summarize, free questions, and cited answers.
 - The app shows its version in Settings, and the API reports it.
 - A start-up screen while the backend loads, and a clear message if it
   fails to start.

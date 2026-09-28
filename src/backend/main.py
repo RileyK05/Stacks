@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.backend.api import (
     artifacts,
+    companion,
     conversations,
     courses,
     data,
@@ -33,6 +34,7 @@ from src.backend.api import (
 )
 from src.backend.api.deps import require_app_token
 from src.backend.common import maintenance
+from src.backend.common.config import get_settings
 from src.backend.common.migrate import migrate
 from src.backend.ingest import worker as ingestion_worker
 from src.backend.office_addin import service as office_addin
@@ -53,16 +55,21 @@ TAURI_ORIGINS = (
 
 def create_api() -> FastAPI:
     """The JSON API (mounted at /api). Tests drive this app directly."""
+    production = get_settings().app_env == "production"
     api = FastAPI(
         title=APP_NAME,
         version=__version__,
         dependencies=[Depends(require_app_token)],
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None if production else "/openapi.json",
     )
     api.include_router(courses.router)
     api.include_router(sources.router)
     api.include_router(tutor.router)
     api.include_router(conversations.router)
     api.include_router(artifacts.router)
+    api.include_router(companion.router)
     api.include_router(settings.router)
     api.include_router(runtime.router)
     api.include_router(data.router)

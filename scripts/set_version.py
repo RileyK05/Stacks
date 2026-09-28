@@ -5,8 +5,8 @@
 The version lives in src/backend/version.py (what the API reports),
 pyproject.toml, src/frontend/package.json (+ its lockfile; the Tauri
 config reads the version from package.json) and the Tauri crate's
-Cargo.toml. tests/test_version.py fails if they disagree. Add the
-release's notes to CHANGELOG.md alongside.
+Cargo.toml + Cargo.lock. tests/test_version.py fails if they disagree.
+Add the release's notes to CHANGELOG.md alongside.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ PYPROJECT = ROOT / "pyproject.toml"
 PACKAGE_JSON = ROOT / "src" / "frontend" / "package.json"
 PACKAGE_LOCK = ROOT / "src" / "frontend" / "package-lock.json"
 CARGO_TOML = ROOT / "src" / "frontend" / "src-tauri" / "Cargo.toml"
+CARGO_LOCK = ROOT / "src" / "frontend" / "src-tauri" / "Cargo.lock"
 
 
 def _replace_once(path: Path, pattern: str, replacement: str) -> None:
@@ -45,15 +46,26 @@ def _set_json(path: Path, version: str) -> None:
     )
 
 
+def _set_cargo_lock(path: Path, version: str) -> None:
+    text = path.read_text(encoding="utf-8")
+    pattern = r'(?ms)(^\[\[package\]\]\nname = "stacks"\nversion = ")[^"]+("$)'
+    updated, count = re.subn(pattern, rf"\g<1>{version}\2", text, count=1)
+    if count != 1:
+        raise SystemExit(f"no Stacks package entry found in {path}")
+    path.write_text(updated, encoding="utf-8")
+
+
 def set_version(version: str) -> None:
     if not SEMVER.match(version):
         raise SystemExit(f"not a semantic version: {version!r}")
     _replace_once(VERSION_PY, r'^__version__ = ".*"$', f'__version__ = "{version}"')
     _replace_once(PYPROJECT, r'^version = ".*"$', f'version = "{version}"')
     _replace_once(CARGO_TOML, r'^version = ".*"$', f'version = "{version}"')
+    _set_cargo_lock(CARGO_LOCK, version)
     _set_json(PACKAGE_JSON, version)
-    if PACKAGE_LOCK.exists():
-        _set_json(PACKAGE_LOCK, version)
+    if not PACKAGE_LOCK.is_file():
+        raise SystemExit(f"missing required lockfile: {PACKAGE_LOCK}")
+    _set_json(PACKAGE_LOCK, version)
 
 
 def main(argv: list[str] | None = None) -> int:

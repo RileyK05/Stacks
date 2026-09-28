@@ -3349,3 +3349,70 @@ untouched. Also deleted: the old file store `data/artifacts/` and the stale
 `build/` and `dist/` installer output. The nullable `file_*`/`ops` columns
 those builds added stay in old databases, unused and harmless; migrations
 006/007 stay reserved.
+
+## Dockable desktop companion (2026-09-27)
+
+**Problem.** The Office add-in could launch Word, but the product still gave
+the owner no obvious everyday surface. Finding a ribbon button and opening a
+task pane felt like setup work rather than a companion. The intended experience
+is closer to the ChatGPT Windows sidebar: visible beside the current app,
+available outside Office, and easy to collapse.
+
+**Decision.** The Tauri app now starts with a 420 px `companion` window snapped
+to the right Windows work area. It can stay on top, collapses to a 56 px edge
+tab, opens the existing full library on demand, and owns the explicit Quit
+action. The full `main` library window starts hidden and hides on close. This
+keeps one cross-app interface while preserving the Office task pane as the
+live document read/write bridge. A true Windows AppBar that reserves desktop
+space is deferred until daily use shows the always-on-top window is inadequate.
+
+**Product flow.** The companion chooses a course, accepts pasted context from
+Word, a browser, a PDF, or another app, and offers Explain, Find in course,
+Quiz me, Summarize, and a free question. `/api/companion/assist` delegates to
+the existing Office assistant pipeline so citations, empty-retrieval refusal,
+and the graded-work fence stay identical. Conversation UI is session-local;
+answers and citation traces retain the backend's existing behavior.
+
+**Verification.** The Svelte and Rust sides compile. A browser click-through
+at the real 420 x 800 dock size verified course loading, disabled/enabled
+actions, collapse/restore, and error rendering. That pass caught and fixed a
+Svelte reactivity bug where a completed failed request stayed visually stuck
+on "Reading your course" because a turn object inside the array was mutated in
+place. Turn updates now replace the array item immutably. The remaining owner
+gate is a grounded answer with a ready model/course and live Office selection,
+insert, and replace.
+
+## Companion release cleanup (2026-09-28)
+
+**Direction confirmed.** After the live Windows preview, the owner approved the
+docked companion as the main interface. The full library remains the management
+surface and the Office add-in remains an optional document bridge. The current
+plan is now a release gate rather than an Office feature backlog.
+
+**Documentation reset.** `system.md` was replaced with the current local
+SQLite/Tauri architecture; it no longer interleaves retired hosted/Postgres
+design. The root and frontend READMEs, `project.md`, `AGENTS.md`, changelog, and
+environment template now describe the companion-first product. `docket.md`
+keeps its original static-review findings but begins with a dated triage table,
+so unverified candidates are not mistaken for reproduced blockers.
+
+**Release hardening.** Version changes now update and test both npm and Cargo
+lockfiles. Missing lockfiles and missing installer output fail loudly. Release
+builds use Cargo's locked graph. Direct `lxml` dependencies are declared. The
+library and companion have separate Tauri capabilities, external URL opening
+uses the plugin's scoped default permission, and backend startup errors identify
+the correct stderr log. The desktop API refuses production requests without a
+launch token, non-ASCII token input returns 401, and the mounted API publishes
+no documentation routes. Exported chart HTML is placed in a sandboxed iframe
+under a restrictive CSP; the old regex filters remain defense in depth.
+
+**Build proof.** The full PyInstaller backend and NSIS path produced one 83 MB
+`Stacks_0.2.0_x64-setup.exe`. That run exposed an incorrect `--locked`
+placement in the npm/Tauri command; the runner argument is now passed after
+Tauri's separator. Installer output is cleared first and the script requires
+exactly one artifact, preventing a stale installer from looking like a new
+successful build.
+
+**Still required.** The companion files and their references must be committed
+together. A clean install/uninstall smoke test, grounded companion run, and
+Word/Excel/PowerPoint read-write-save-reopen pass remain the release gate.
