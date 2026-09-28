@@ -260,7 +260,11 @@ class LlamaServer:
         log_path = runtime_dir() / "llama-server.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log = log_path.open("ab")
-        creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+        creationflags = (
+            int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            if sys.platform == "win32"
+            else 0
+        )
         process = subprocess.Popen(
             command,
             stdout=log,
