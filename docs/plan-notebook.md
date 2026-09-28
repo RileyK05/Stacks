@@ -42,10 +42,9 @@ GitHub Actions run:
 - `Stacks_0.3.1_amd64.AppImage`
 - `Stacks_0.3.1_amd64.deb`
 
-That proves native packaging for the prior code. The current window-lifecycle
-change still needs the matrix CI and installed UI checks below. CI now runs the
-backend and Tauri/frontend gates on Windows x64, macOS arm64, and Linux x64 so
-platform regressions are caught before a release tag.
+That proves native packaging for the prior code. The current window lifecycle
+passed all six backend and Tauri/frontend jobs on Windows x64, macOS arm64, and
+Linux x64 in CI run `36490786861`. Installed UI checks remain below.
 
 ## Release gate
 
@@ -79,7 +78,8 @@ platform regressions are caught before a release tag.
 - [x] `npm run check` and `npm test` in `src/office-addin` (12 passed)
 - [x] `cargo clippy --all-targets --locked -- -D warnings`
 - [x] Build the Windows installer from this tree (83 MB NSIS bundle).
-- [ ] Let the next pushed commit pass the three-platform CI matrix.
+- [x] Three-platform CI matrix passed for the current lifecycle implementation
+      (run `36490786861`, commit `8c1bf97`).
 
 ### D. Core product smoke
 

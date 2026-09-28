@@ -3438,3 +3438,13 @@ The shared CI gate now runs backend and Tauri/frontend checks on Windows x64,
 macOS arm64, and Linux x64. Release jobs assert the runner architecture before
 packaging. The Office bridge remains Windows-specific; the library, companion,
 and local-model paths are platform targets in their own right.
+
+## Cross-platform lifecycle CI proof (2026-09-28)
+
+The first three-platform CI run exposed a direct reference to Windows-only
+`subprocess.CREATE_NO_WINDOW` in shared Python runtime code. The launch path now
+uses a guarded lookup, and mypy passes locally for `win32`, `darwin`, and
+`linux`. CI run `36490786861` then passed all six backend and frontend/shell
+jobs on Windows x64, Apple Silicon macOS, and Linux x64. The packaged Windows
+shell also started its authenticated backend and shut that backend down when
+the shell process closed.
