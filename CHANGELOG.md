@@ -3,6 +3,17 @@
 All notable changes to Stacks. Versions follow [semantic versioning](https://semver.org);
 `scripts/set_version.py` sets a new one everywhere it is written down.
 
+## Unreleased
+
+### Changed
+- Stacks now opens to the central course and memory library. The companion is
+  created only after the user presses **Open companion**.
+- The companion is a normal native window with platform title-bar movement,
+  resizing, minimizing, and maximizing instead of a fixed Windows edge dock.
+- Backend, frontend, and Tauri CI gates now run on Windows x64, Apple Silicon
+  macOS, and Linux x64. Release jobs assert their native architecture before
+  packaging.
+
 ## [0.3.1] - 2026-09-28
 
 ### Added

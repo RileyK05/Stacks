@@ -110,8 +110,8 @@ src/
       encoders.py    # ONNX Runtime embedder + cross-encoder (pinned, verified)
       prompt_registry.py  # prompt loading + untrusted-material fencing
       repos          # per-aggregate SQL callers (courses_repo, sources_repo, ...)
-  frontend/        # SvelteKit + TS SPA; companion + full library
-    src-tauri/     # Tauri v2 desktop shell: two windows, backend process
+  frontend/        # SvelteKit + TS SPA; full library + optional companion
+    src-tauri/     # Tauri shell: primary library, on-demand companion, backend
   office-addin/    # Office.js task pane for Word, Excel, PowerPoint (public/ is served);
                    # npm run check (Office.js types) + npm test; Office owns the file
 tests/           # pytest; mirrors src/backend/ layout

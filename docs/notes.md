@@ -3416,3 +3416,25 @@ successful build.
 **Still required.** The companion files and their references must be committed
 together. A clean install/uninstall smoke test, grounded companion run, and
 Word/Excel/PowerPoint read-write-save-reopen pass remain the release gate.
+
+## Library-first cross-platform correction (2026-09-28)
+
+**Direction corrected.** The owner rejected the companion-first launch model.
+Stacks is a centralized course, knowledge, memory, and saved-work application;
+the companion is an optional tool the user opens from that home. The previous
+decision to launch a fixed Windows edge dock is superseded.
+
+**Lifecycle.** Tauri now creates only the visible library at startup. The
+library's persistent navigation invokes `show_companion`, which dynamically
+creates one companion webview and focuses the existing one on repeated calls.
+The companion uses native decorations, can move and resize, defaults to normal
+z-order, and may still be pinned on top. Closing it destroys only that window;
+closing the library exits Stacks and shuts down the supervised backend. A second
+app launch focuses the library.
+
+**Platform baseline.** The prior `v0.3.1` Actions run already built a Windows
+NSIS installer, Apple Silicon DMG, Linux AppImage, and Linux deb successfully.
+The shared CI gate now runs backend and Tauri/frontend checks on Windows x64,
+macOS arm64, and Linux x64. Release jobs assert the runner architecture before
+packaging. The Office bridge remains Windows-specific; the library, companion,
+and local-model paths are platform targets in their own right.

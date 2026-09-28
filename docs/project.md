@@ -4,8 +4,8 @@
 
 A desktop study tool that ingests a student's course materials, keeps
 source-grounded course knowledge plus a course-memory focus record, and helps
-the student decide what to study next. A docked companion stays beside the
-student's current work; the full library handles course management. It runs on
+the student decide what to study next. The central library is the product home;
+an optional companion can be opened beside the student's current work. It runs on
 the student's own laptop, with a small open model by default and any cloud
 model the student chooses.
 
@@ -51,8 +51,9 @@ that can be evaluated on real courses. The target is an ordinary laptop
   output schema, bounded citations) so a ~2B local model does narrow,
   checkable work. Every model call is recorded in a local usage ledger.
 - **Learning over completion:** the tool helps practice and diagnose understanding, not produce assignments for submission.
-- **Present where the work happens:** the companion is the primary interface;
-  the full library manages courses, and the Office add-in is a document bridge.
+- **One inspectable home:** the library is the primary interface for courses,
+  knowledge, memory, saved work, and setup. The companion is an optional
+  pop-out for focused help, and the Office add-in is a document bridge.
 - **ML earns its role:** begin with retrieval, structure, and simple measurable baselines; add fine-tuning only for documented failures.
 - **Extensible by design:** new content kinds, locator types, and formats are free strings — they insert without schema redesign.
 - **Destruction leaves a distilled record:** a deleted course sits in the
@@ -148,8 +149,8 @@ A single-course MVP for one student on their own laptop.
 ### MVP user stories
 
 1. I can install the app, create a course, and upload PDFs, Markdown notes, and text.
-2. I can keep a narrow companion beside Word, a browser, or a PDF, collapse it
-   to the screen edge, and ask about copied context without changing apps.
+2. I can open a movable, resizable companion beside another app and ask about
+   copied context without leaving the central library running in the background.
 3. I can keep separate saved conversations in a course, choose their
    sources and model, and open an answer's cited passage in the source.
 4. I can create and edit cited course notes, schedules, study decks, quizzes,
@@ -174,8 +175,8 @@ The MVP is useful if, for one real course:
 
 ## Technical requirements (agreed)
 
-- **App:** a Tauri v2 shell with a docked companion window and a hidden-until-
-  opened full library window, both showing the SvelteKit SPA. The FastAPI
+- **App:** a Tauri v2 shell that opens the SvelteKit library as its primary
+  window and creates an optional native companion window on request. The FastAPI
   backend (frozen by PyInstaller) is a child process in the per-user installer.
   A per-launch token between the webviews and backend is the desktop API auth.
 - **Backend:** Python / FastAPI under `src/backend/`, one package per subsystem.

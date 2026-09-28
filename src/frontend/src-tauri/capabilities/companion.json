@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "companion",
-  "description": "Minimal permissions used by the docked companion window.",
+  "description": "Minimal permissions used by the optional companion window.",
   "windows": ["companion"],
   "permissions": ["core:default"]
 }

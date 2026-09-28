@@ -39,7 +39,7 @@ jobs:
         include:
           # Apple Silicon: the only Mac the llama.cpp runtime ships for.
           - name: macOS
-            os: macos-latest
+            os: macos-15
             artifact: macos-arm64
           # The oldest supported Ubuntu, so the AppImage runs on older glibc.
           - name: Linux
@@ -50,6 +50,24 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Assert runner architecture
+        env:
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          case "$ARTIFACT" in
+            macos-arm64)
+              test "$(uname -m)" = "arm64" || {
+                echo "Expected an Apple Silicon runner; got $(uname -m)" >&2
+                exit 1
+              }
+              ;;
+            linux-x64)
+              test "$(uname -m)" = "x86_64" || {
+                echo "Expected a Linux x64 runner; got $(uname -m)" >&2
+                exit 1
+              }
+              ;;
+          esac
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

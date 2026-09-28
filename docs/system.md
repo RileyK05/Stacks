@@ -9,23 +9,22 @@ retired and remain only in git history.
 Stacks is one desktop application for one user and one local data directory.
 It has three user-facing surfaces:
 
-1. **Companion window**: the primary 420 px Windows sidebar. It docks to the
-   right work area, can stay above other apps, collapses to a 56 px tab, and
-   accepts context copied from any application.
-2. **Library window**: the full course interface for sources, saved chats,
-   artifacts, models, data controls, and Office setup. It starts hidden and is
-   opened from the companion.
+1. **Library window**: the primary course and memory interface for sources,
+   saved chats, artifacts, models, data controls, and setup.
+2. **Companion window**: an optional movable and resizable native window. The
+   library creates it only after the user presses **Open companion**; it accepts
+   context copied from any application and can stay above other apps.
 3. **Office task pane**: an optional Word, Excel, and PowerPoint bridge. Office
    reads and writes its own documents through Office.js; Stacks supplies cited
    answers.
 
-The companion and library are SvelteKit routes in two Tauri WebView2 windows.
+The companion and library are SvelteKit routes in Tauri webviews.
 They share one Python backend child process and one SQLite database.
 
 ```mermaid
 flowchart LR
     APP["Word / browser / PDF"] -->|copy context| COMP["Companion window"]
-    COMP -->|open| LIB["Full library window"]
+    LIB["Central library window"] -->|open on request| COMP
     COMP --> API["FastAPI /api"]
     LIB --> API
     OFFICE["Office task pane"] --> BRIDGE["HTTPS /office bridge"]
@@ -39,8 +38,8 @@ flowchart LR
 
 ## 2. Process topology
 
-The Tauri shell starts first. It creates `companion` and a hidden `main`
-window, then launches `src.backend.serve`:
+The Tauri shell starts first. It creates the visible `main` library window,
+then launches `src.backend.serve`:
 
 - Development uses the checkout virtualenv and `data/`.
 - A packaged build uses the PyInstaller backend under Tauri resources and the
@@ -51,11 +50,12 @@ window, then launches `src.backend.serve`:
 - API requests carry the token in `X-App-Token`.
 - Closing backend stdin requests a clean shutdown. The shell kills the child if
   it does not stop within the shutdown deadline.
-- The single-instance plugin brings the existing companion forward instead of
+- The single-instance plugin brings the existing library forward instead of
   starting a second backend on the same database.
 
-The companion owns the explicit Quit action. Closing the library hides that
-window. There is currently no tray process.
+The companion is created on demand and closing it destroys only that webview.
+Closing the library exits Stacks and shuts down the backend. There is no tray
+process.
 
 ## 3. Data and storage
 
@@ -162,7 +162,7 @@ Uploaded material is untrusted data. It is fenced by
 
 ## 9. Office bridge
 
-Connecting Office performs per-user setup:
+On Windows, connecting Office performs per-user setup:
 
 1. Create a localhost certificate from a throwaway local CA.
 2. Ask Windows to trust the CA.
@@ -193,17 +193,18 @@ the backend never rewrites a `.docx`, `.xlsx`, or `.pptx`.
 
 1. PyInstaller freezes the backend, configs, SQL, encoders, and Office pane.
 2. Tauri builds the static frontend and Rust shell with the locked Cargo graph.
-3. NSIS creates a current-user Windows installer.
-4. The script fails if the build produces no installer.
+3. Tauri creates the native installer set: NSIS on Windows, DMG on Apple
+   Silicon macOS, and AppImage plus deb on x64 Linux.
+4. The script fails unless every expected installer appears exactly once.
 
 `scripts/set_version.py` updates the backend, Python package, frontend package
 and lockfile, Rust package and Cargo.lock. `tests/test_version.py` verifies the
 manifests agree and the changelog has the version.
 
 CI runs Python tests, Ruff, mypy, generated API types, Svelte diagnostics, the
-Office.js type and logic checks, the production frontend build, and Rust clippy.
-A version tag triggers the same gate before an installer and draft release are
-created.
+Office.js type and logic checks, the production frontend build, and Rust clippy
+on Windows x64, Apple Silicon macOS, and Linux x64. Version tags trigger native
+build jobs and attach each platform's installers to the same release.
 
 ## 12. Planned subsystem
 

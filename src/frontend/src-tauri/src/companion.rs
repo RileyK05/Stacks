@@ -1,41 +1,34 @@
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
-const EXPANDED_WIDTH: f64 = 420.0;
-const COLLAPSED_WIDTH: f64 = 56.0;
+const COMPANION_WIDTH: f64 = 420.0;
+const COMPANION_HEIGHT: f64 = 760.0;
+const COMPANION_MIN_WIDTH: f64 = 340.0;
+const COMPANION_MIN_HEIGHT: f64 = 420.0;
 
-fn dock(window: &WebviewWindow, collapsed: bool) -> tauri::Result<()> {
-    let monitor = window
-        .current_monitor()?
-        .or(window.primary_monitor()?)
-        .ok_or_else(|| tauri::Error::WindowNotFound)?;
-    let work_area = monitor.work_area();
-    let scale = monitor.scale_factor();
-    let logical_width = if collapsed {
-        COLLAPSED_WIDTH
-    } else {
-        EXPANDED_WIDTH
-    };
-    let width = (logical_width * scale).round() as u32;
-    let x = work_area.position.x + work_area.size.width as i32 - width as i32;
-
-    window.set_size(PhysicalSize::new(width, work_area.size.height))?;
-    window.set_position(PhysicalPosition::new(x, work_area.position.y))?;
-    Ok(())
+fn bring_forward(window: &WebviewWindow) -> Result<(), String> {
+    window.show().map_err(|error| error.to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
 }
 
-pub fn initialize(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window("companion") {
-        dock(&window, false)?;
-    }
-    Ok(())
-}
-
+/// Create the optional companion only after the user asks for it. Repeated
+/// requests focus the existing window instead of creating another webview.
 #[tauri::command]
-pub fn set_companion_collapsed(
-    window: WebviewWindow,
-    collapsed: bool,
-) -> Result<(), String> {
-    dock(&window, collapsed).map_err(|error| error.to_string())
+pub fn show_companion(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("companion") {
+        return bring_forward(&window);
+    }
+    let window = WebviewWindowBuilder::new(&app, "companion", WebviewUrl::App("companion".into()))
+        .title("Stacks Companion")
+        .inner_size(COMPANION_WIDTH, COMPANION_HEIGHT)
+        .min_inner_size(COMPANION_MIN_WIDTH, COMPANION_MIN_HEIGHT)
+        .center()
+        .resizable(true)
+        .decorations(true)
+        .always_on_top(false)
+        .build()
+        .map_err(|error| error.to_string())?;
+    bring_forward(&window)
 }
 
 #[tauri::command]
@@ -53,9 +46,4 @@ pub fn show_library(app: AppHandle) -> Result<(), String> {
     window.show().map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn quit_app(app: AppHandle) {
-    app.exit(0);
 }

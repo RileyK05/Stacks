@@ -6,6 +6,7 @@
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
   import Icon, { type IconName } from '$lib/components/Icon.svelte';
   import RichText from '$lib/components/RichText.svelte';
+  import { toast } from '$lib/stores/toast.svelte';
 
   type CourseView =
     paths['/courses']['get']['responses'][200]['content']['application/json'][number];
@@ -34,8 +35,7 @@
   let loading = $state(true);
   let sending = $state(false);
   let error = $state<unknown>(null);
-  let collapsed = $state(false);
-  let pinned = $state(true);
+  let pinned = $state(false);
   let nextTurnId = 1;
   let conversationEnd = $state<HTMLElement | null>(null);
 
@@ -44,17 +44,22 @@
   );
 
   onMount(() => {
-    collapsed = localStorage.getItem('companion-collapsed') === 'true';
-    pinned = localStorage.getItem('companion-pinned') !== 'false';
-    void initialize();
+    pinned = localStorage.getItem('companion-pinned') === 'true';
+    void initialize().catch((caught) => {
+      error = caught;
+      loading = false;
+    });
   });
 
   async function initialize(): Promise<void> {
     if (isTauri()) {
-      await Promise.all([
-        invoke('set_companion_collapsed', { collapsed }),
-        invoke('set_companion_pinned', { pinned })
-      ]);
+      try {
+        await invoke('set_companion_pinned', { pinned });
+      } catch {
+        pinned = false;
+        localStorage.setItem('companion-pinned', 'false');
+        toast('Could not restore the companion pin setting.', 'error');
+      }
     }
     await loadCourses();
   }
@@ -83,26 +88,23 @@
     turns = [];
   }
 
-  async function setCollapsed(value: boolean): Promise<void> {
-    collapsed = value;
-    localStorage.setItem('companion-collapsed', String(value));
-    if (isTauri()) await invoke('set_companion_collapsed', { collapsed: value });
-  }
-
   async function togglePinned(): Promise<void> {
+    const previous = pinned;
     pinned = !pinned;
     localStorage.setItem('companion-pinned', String(pinned));
-    if (isTauri()) await invoke('set_companion_pinned', { pinned });
+    if (!isTauri()) return;
+    try {
+      await invoke('set_companion_pinned', { pinned });
+    } catch {
+      pinned = previous;
+      localStorage.setItem('companion-pinned', String(previous));
+      toast('Could not change the companion pin setting.', 'error');
+    }
   }
 
   async function showLibrary(): Promise<void> {
     if (isTauri()) await invoke('show_library');
     else window.open('/', '_blank', 'noopener,noreferrer');
-  }
-
-  async function quit(): Promise<void> {
-    if (isTauri()) await invoke('quit_app');
-    else window.close();
   }
 
   async function ask(action: Action, instruction = ''): Promise<void> {
@@ -168,22 +170,7 @@
 
 <svelte:head><title>Stacks Companion</title></svelte:head>
 
-{#if collapsed}
-  <button
-    type="button"
-    onclick={() => setCollapsed(false)}
-    class="flex h-dvh w-full flex-col items-center gap-3 border-l border-line bg-surface py-4 text-accent-text shadow-pop transition-colors hover:bg-accent-soft"
-    aria-label="Open Stacks companion"
-    title="Open Stacks"
-  >
-    <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-accent text-on-accent shadow-card">
-      <Icon name="book" class="h-5 w-5" />
-    </span>
-    <span class="mt-2 text-xs font-semibold tracking-[0.18em] [writing-mode:vertical-rl]">STACKS</span>
-    <Icon name="chevron-left" class="mt-auto h-4 w-4" />
-  </button>
-{:else}
-  <div class="flex h-dvh flex-col overflow-hidden border-l border-line bg-bg shadow-pop">
+<div class="flex h-dvh flex-col overflow-hidden bg-bg">
     <header
       data-tauri-drag-region
       class="flex h-14 shrink-0 items-center gap-2 border-b border-line bg-surface px-3"
@@ -212,20 +199,6 @@
         aria-label="Open full Stacks library"
         title="Open library"
       ><Icon name="panel-right" class="h-4 w-4" /></button>
-      <button
-        type="button"
-        onclick={() => setCollapsed(true)}
-        class="rounded-lg p-2 text-subtle transition-colors hover:bg-surface-2 hover:text-fg"
-        aria-label="Collapse Stacks to the screen edge"
-        title="Collapse"
-      ><Icon name="chevron-right" class="h-4 w-4" /></button>
-      <button
-        type="button"
-        onclick={quit}
-        class="rounded-lg p-2 text-subtle transition-colors hover:bg-danger-soft hover:text-danger-text"
-        aria-label="Quit Stacks"
-        title="Quit Stacks"
-      ><Icon name="x" class="h-4 w-4" /></button>
     </header>
 
     {#if loading}
@@ -373,5 +346,4 @@
         </form>
       </div>
     {/if}
-  </div>
-{/if}
+</div>

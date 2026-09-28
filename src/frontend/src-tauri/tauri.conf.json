@@ -19,25 +19,7 @@
         "minWidth": 900,
         "minHeight": 600,
         "center": true,
-        "visible": false,
-        "dragDropEnabled": false
-      },
-      {
-        "label": "companion",
-        "title": "Stacks Companion",
-        "url": "companion",
-        "width": 420,
-        "height": 800,
-        "minWidth": 56,
-        "minHeight": 320,
-        "resizable": false,
-        "maximizable": false,
-        "minimizable": false,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": false,
-        "shadow": true,
-        "preventOverflow": true,
+        "visible": true,
         "dragDropEnabled": false
       }
     ],
@@ -54,7 +36,6 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
     "publisher": "Riley Kehoe",
     "copyright": "Copyright (c) 2026 Riley Kehoe",
     "category": "Education",

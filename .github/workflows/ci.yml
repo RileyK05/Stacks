@@ -1,5 +1,4 @@
 # The gate: every push and pull request must pass these before it counts.
-# Windows runners, because Windows (NSIS installer) is the shipping target.
 name: CI
 
 on:
@@ -20,8 +19,18 @@ concurrency:
 
 jobs:
   backend:
-    name: Backend (pytest, ruff, mypy)
-    runs-on: windows-latest
+    name: Backend / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+          - name: macOS arm64
+            os: macos-15
+          - name: Linux x64
+            os: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -31,6 +40,9 @@ jobs:
           cache-dependency-path: pyproject.toml
       - name: Install
         run: python -m pip install -e ".[dev]"
+      - name: Linux runtime library
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgomp1
       - name: Ruff
         run: python -m ruff check .
       - name: Mypy
@@ -39,8 +51,18 @@ jobs:
         run: python -m pytest -q
 
   frontend:
-    name: Frontend and shell (svelte-check, build, clippy)
-    runs-on: windows-latest
+    name: Frontend and shell / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+          - name: macOS arm64
+            os: macos-15
+          - name: Linux x64
+            os: ubuntu-22.04
     defaults:
       run:
         shell: bash
@@ -69,6 +91,12 @@ jobs:
           python -m pip install -e .
           npm ci --prefix src/frontend
           npm ci --prefix src/office-addin
+      - name: Linux Tauri libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf file
       # schema.d.ts is generated, not committed: dump the backend's API
       # spec and build the frontend types from it.
       - name: API types

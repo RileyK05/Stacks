@@ -115,7 +115,7 @@
 
 <PageHeader
   title="My courses"
-  description="Everything stays on this computer. Upload your materials and ask questions about them."
+  description="Your source-grounded courses, saved work, and course memory live here on this computer."
 >
   {#snippet actions()}
     {#if !loading && !error}

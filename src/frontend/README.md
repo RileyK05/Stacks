@@ -16,17 +16,17 @@ process with a per-launch token, learns the port it bound, and waits for
 then `app.html` shows a start-up splash; if the backend never answers, the
 root layout shows why.
 
-The shell creates two windows. `companion` is the primary 420 px surface: it
-snaps to the right work area, can stay on top, and collapses to a 56 px tab.
-`main` is the full course library and starts hidden until the companion opens
-it. Closing the library hides it; Quit in the companion exits the app, closes
-the backend's stdin, and shuts the backend down.
+The shell starts with one `main` window: the full course and memory library.
+The persistent app sidebar has an **Open companion** action. That command
+creates the companion webview only when requested; repeated presses focus the
+existing window. The companion uses native decorations so it can move, resize,
+minimize, and maximize on Windows, macOS, and Linux. Closing the library exits
+the app, closes the backend's stdin, and shuts the backend down.
 
 ## Setup
 
-Needs Node.js 22+, a Rust toolchain (rustup; on Windows also the MSVC
-build tools), and the repo's Python virtualenv (`.venv`) with the backend
-installed.
+Needs Node.js 22+, a Rust toolchain, the platform's Tauri build prerequisites,
+and the repo's Python virtualenv (`.venv`) with the backend installed.
 
 ```bash
 npm install
@@ -88,7 +88,7 @@ src/lib/components/  Button, Card, TextInput, Select, Spinner, Skeleton, ErrorBa
                      Open in Office menu
   settings/          settings cards: models, connections, Microsoft Office
 src/routes/
-  companion/         docked cross-app assistant: course, context, actions, chat
+  companion/         optional cross-app assistant: course, context, actions, chat
   (app)/             the app shell: my courses, trash, settings
     courses/[id]/    a course: saved chats, side panel, artifacts, sources
                      with live indexing state, export, Open in Office

@@ -1,8 +1,10 @@
 # docket.md — Bugs, latent bugs, and optimizations
 
 > **Status: static-review ledger, triaged for the companion release on
-> 2026-09-28.** Findings remain candidates until reproduced or verified. The
-> release snapshot below is authoritative when it conflicts with older wording.
+> 2026-09-28 and superseded by the central-library direction later that day.**
+> Findings remain candidates until reproduced or verified. The current product
+> direction in `plan-notebook.md` is authoritative when it conflicts with this
+> older snapshot or finding wording.
 >
 > Generated from a full read of the tree at commit `7c61147` (working tree dirty:
 > `companion.py`, `companion.rs`, and `routes/companion/` are untracked; several
@@ -22,10 +24,22 @@
 
 ---
 
-## Release triage snapshot (2026-09-28)
+## Product direction correction (2026-09-28)
 
-The companion is now the approved primary surface. The Office add-in remains an
-optional read/write bridge. Release work is tracked in `plan-notebook.md`.
+The library is again the launch and primary product surface. The companion is
+created only after the user presses **Open companion** and now behaves as a
+normal movable, resizable native window. The previous right-edge docking,
+collapse tab, hidden library, and companion-owned Quit behavior are retired.
+Windows x64, Apple Silicon macOS, and Linux x64 are core build targets; only the
+optional Microsoft Office bridge remains Windows-specific.
+
+---
+
+## Historical companion-release snapshot (2026-09-28)
+
+This snapshot predates the product-direction correction above. Its companion
+first assumptions and release decisions are retained only as audit history.
+Current release work is tracked in `plan-notebook.md`.
 
 ### Resolved or cleared in this pass
 
@@ -53,8 +67,8 @@ optional read/write bridge. Release work is tracked in `plan-notebook.md`.
 
 | ID | Release decision |
 | --- | --- |
-| T-01 / D-02 | All companion files and their references must land in one commit. They remain untracked until the owner asks for a commit. |
-| Installer proof | The full PyInstaller + NSIS path now produces one 83 MB installer. Install it and smoke-test it without the checkout or Vite. |
+| T-01 / D-02 | At the time of this snapshot, companion files and their references had not landed together. |
+| Installer proof | The snapshot's PyInstaller + NSIS build still needed installed smoke testing without the checkout or Vite. |
 | Office proof | Complete selection/read/write/save/reopen tests in Word, Excel, and PowerPoint from the installed build before advertising all three as verified. |
 | S-01 | The native save dialog intentionally permits user-chosen export paths. Before wider distribution, move file writing behind a Tauri capability or formally document this desktop trust boundary. |
 | S-04 | The Office pane is same-origin with its fixed HTTPS bridge but does not yet use a per-install bridge token. Define and test that boundary before wider distribution. |
