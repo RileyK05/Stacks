@@ -1,6 +1,7 @@
 # Builds the macOS and Linux installers after the CI gate passes. Kept
 # apart from the Windows release so neither holds up the other. Both are
-# experimental: CI builds them, but nobody has tested them by hand yet.
+# native targets: CI builds them on their own operating systems. Installed UI
+# smoke testing remains a release gate.
 #
 # - Push a tag `vX.Y.Z`: the installers are attached to that tag's GitHub
 #   release (a draft is created if the Windows workflow hasn't made it yet).
