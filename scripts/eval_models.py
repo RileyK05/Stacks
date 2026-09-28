@@ -1,4 +1,4 @@
-"""Phase 0 model bake-off (docs/plan-local-first.md §12).
+"""Phase 0 model bake-off.
 
 Runs the answer eval (decision 010) against one or more models behind any
 OpenAI-compatible endpoint — a local llama-server, Ollama, LM Studio, or

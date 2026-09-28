@@ -1,5 +1,4 @@
-"""Which model endpoint serves which task (docs/plan-local-first.md §7,
-docs/plan-notebook.md §4.8).
+"""Which model endpoint serves which task.
 
 **Connections.** The user adds as many endpoints as they like — OpenAI,
 Anthropic, OpenRouter, a custom server, their LM Studio — each a

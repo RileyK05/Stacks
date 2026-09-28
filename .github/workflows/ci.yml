@@ -53,7 +53,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: src/frontend/package-lock.json
+          cache-dependency-path: |
+            src/frontend/package-lock.json
+            src/office-addin/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -64,6 +66,7 @@ jobs:
         run: |
           python -m pip install -e .
           npm ci --prefix src/frontend
+          npm ci --prefix src/office-addin
       # schema.d.ts is generated, not committed: dump the backend's API
       # spec and build the frontend types from it.
       - name: API types
@@ -72,6 +75,13 @@ jobs:
           cd src/frontend && OPENAPI_FILE=../../runs/openapi.json npm run gen:api
       - name: svelte-check
         run: npm run check --prefix src/frontend
+      # The pane is plain JS: type-check it against Microsoft's Office.js
+      # types (an Office API that doesn't exist fails here, not in Word)
+      # and run its logic tests.
+      - name: Office add-in
+        run: |
+          npm run check --prefix src/office-addin
+          npm test --prefix src/office-addin
       # The shell embeds the built SPA, so the build comes before clippy.
       - name: Build SPA
         run: npm run build --prefix src/frontend

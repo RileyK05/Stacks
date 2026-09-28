@@ -1,6 +1,5 @@
-"""Connections (docs/plan-notebook.md §4.8): many endpoints, one key each,
-the pre-connection form still working, per-model profiles, and the chat
-model picker's options."""
+"""Connections: many endpoints, one key each, the pre-connection form
+still working, per-model profiles, and the chat model picker's options."""
 
 from __future__ import annotations
 

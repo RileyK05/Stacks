@@ -69,18 +69,28 @@ client is an `ApiError`, including network failures.
 ```
 src-tauri/           the desktop shell (Rust): window, backend process, plugins
 src/lib/api/         backend connection, generated schema, typed client, ApiError
-src/lib/stores/      runes stores: theme, toast, confirm, debug, workspace
+src/lib/stores/      runes stores: theme, toast, confirm, debug, chat,
+                     artifact, workspace, panel; office.ts (Office add-in API)
 src/lib/components/  Button, Card, TextInput, Select, Spinner, Skeleton, ErrorBanner,
-                     EmptyState, Icon, Badge, Monogram, PageHeader, RichText (markdown + LaTeX + sanitized HTML for
-                     model output; pipeline in $lib/utils/render.ts), Quiz +
+                     EmptyState, Icon, Badge, Monogram, PageHeader, Popover,
+                     ResizableSplit, RichText (markdown + LaTeX + sanitized HTML
+                     for model output; pipeline in $lib/utils/render.ts), Quiz +
                      EditableDocument + WorkspaceHtmlView + CodeView +
-                     SheetView + SlidesView + SourceChips + WorkspacePanel,
+                     SheetView + SlidesView + SourceChips, ModelPicker,
                      LocalModelCard, Toaster, ConfirmHost
+  artifacts/         the artifact editors (notes, schedules, study decks, ...)
+  course/            the course page: chats, sources, artifacts, side panel,
+                     Open in Office menu
+  settings/          settings cards: models, connections, Microsoft Office
 src/routes/
   (app)/             the app shell: my courses, trash, settings
-    courses/[id]/    a course: tutor chat + workspace pane with cited
-                     sources, uploads with live indexing state, export
+    courses/[id]/    a course: saved chats, side panel, artifacts, sources
+                     with live indexing state, export, Open in Office
 ```
+
+The Office add-in itself (the task pane inside Word, Excel and PowerPoint)
+is plain HTML/JS in `src/office-addin/public/`, served by the backend; see
+`docs/plan-notebook.md`.
 
 Global UI feedback: `toast()` (`$lib/stores/toast.svelte`) for success/error
 snackbars, `confirmDialog()` (`$lib/stores/confirm.svelte`) for destructive

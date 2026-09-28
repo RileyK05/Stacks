@@ -9,6 +9,11 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 _MIGRATION_RE = re.compile(r"^(\d{3})_.+\.sql$")
 
+# Numbers used by the retired Office-editor builds (removed 2026-09-27).
+# Databases from those builds record them as applied, so a new migration
+# with one of these numbers would be silently skipped there.
+RETIRED_VERSIONS = frozenset({"006", "007"})
+
 
 def _ensure_tracking_table(conn: Connection) -> None:
     conn.execute(

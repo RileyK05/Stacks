@@ -197,6 +197,48 @@ def save(
     return saved
 
 
+def rename(
+    course_id: UUID, artifact_id: UUID, *, expected_version: int, title: str
+) -> Artifact:
+    """Change only the title: content and sources stay, and the rename is
+    a version in the history like any other save."""
+    clean_title = title.strip()[:TITLE_MAX_LENGTH]
+    with connection() as conn:
+        current = load(conn, course_id, artifact_id)
+        if current is None:
+            raise StaleVersionError("artifact not found")
+        cursor = conn.execute(
+            get(_FILE, "rename"),
+            {
+                "artifact_id": artifact_id,
+                "course_id": course_id,
+                "expected_version": expected_version,
+                "title": clean_title,
+            },
+        )
+        if cursor.rowcount == 0:
+            conn.rollback()
+            raise StaleVersionError(
+                "this artifact changed since it was opened; reload it to see the latest"
+            )
+        conn.execute(
+            get(_FILE, "add_version"),
+            {
+                "artifact_id": artifact_id,
+                "version": expected_version + 1,
+                "title": clean_title,
+                "content": json.dumps(current.content, ensure_ascii=False),
+                "sources": _json_ids(current.sources),
+                "author": "you",
+                "note": "Renamed",
+            },
+        )
+        conn.commit()
+        renamed = load(conn, course_id, artifact_id)
+    assert renamed is not None
+    return renamed
+
+
 def versions(artifact_id: UUID) -> list[ArtifactVersion]:
     with connection() as conn:
         rows = conn.execute(

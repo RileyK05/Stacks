@@ -2426,3 +2426,926 @@ clean; UI flow verified in both themes with a mocked API (Playwright).
 - Review fix: saving an artifact re-checked every source it cites, so
   deleting a source made its artifacts unsavable (422). Only newly added
   sources are checked now.
+
+## N0 Office-fidelity spike (2026-09-25)
+
+Plan §11 step N0: measure, per format, which library can open and edit a
+real Office file without disturbing the rest of it. This is research and a
+throwaway setup only: no product code, no migration, no artifact kinds.
+All spike code lives in gitignored `runs/spike-office/`.
+
+**Corpus and harness (committed).** `scripts/make_office_corpus.py`
+generates `data/eval/office/sample.{docx,xlsx,pptx}` plus `sample.png` from
+invented data (each < 40 KB). The DOCX has a custom style, bold/italic
+runs, a merged table, an image, header/footer, margins and a numbered list;
+the XLSX two sheets, cross-sheet formulas, currency/date formats, a merge,
+column widths, a chart, an image and a defined name; the PPTX two layouts,
+bullets, an image, a table and speaker notes. One documented gap: the DOCX
+has **no footnote** because python-docx cannot author one through its
+public API. `scripts/office_fidelity.py` unzips both files, classifies
+every part as identical / equal after XML C14N / changed (with a diff
+summary) / added / missing, flags parts changed outside `--expected`, and
+reopens the saved file with python-docx/openpyxl/python-pptx; it converts
+to PDF with `soffice` when available. `tests/test_office_fidelity.py` has
+nine tests; the full gate is now 431 pytest passed, ruff clean, mypy clean
+(89 files), svelte-check 0/0, clippy clean.
+
+**Review-hardening pass (same day).** Review found and fixed four real
+defects in the committed seed, so the numbers above are from the corrected
+code:
+
+1. **Corpus was not reproducible.** Every regeneration changed ZIP entry
+   timestamps and `docProps/core.xml` (`modified`), so the committed fixture
+   could not be byte-compared. `make_office_corpus.py` now pins core
+   properties and rewrites ZIP entry times to a constant; the XLSX writes
+   through `openpyxl.writer.excel.ExcelWriter` directly because
+   `Workbook.save()` stamps `modified` with the wall clock regardless of the
+   property. A test asserts byte-identity across two generations.
+2. **`main()` crashed outside the repo.** The summary line called
+   `path.relative_to(ROOT)`, which raised `ValueError` for any `OUTPUT`
+   outside the checkout (the old test passed only because pytest's
+   `--basetemp` sits inside the repo). It now falls back to an absolute
+   path, with a test using a temp dir.
+3. **A dropped expected part could pass.** `unexpected` only considered
+   non-expected parts, so a save that deleted the very part an edit was
+   supposed to touch was not flagged. `FidelityReport` gained
+   `missing_expected` (deleted expected parts, plus expected globs that
+   matched nothing) and an `ok` property; the CLI exits non-zero when not
+   `ok`. Tests cover a dropped part and a no-match glob.
+4. **Comments/PIs were erased by C14N.** lxml's default canonicalization
+   drops comments, so a save that removed a comment looked "equal". It now
+   canonicalizes with `with_comments=True`; a test pins it.
+
+Also: `compare()` now raises `FileNotFoundError` for a missing input
+instead of a raw `zipfile` error, and `_reopen` compares suffixes
+case-insensitively.
+
+
+**Commands run.**
+
+- `python -m scripts.make_office_corpus`
+- `python -m scripts.office_fidelity ORIGINAL SAVED --expected GLOB`
+- round trips: `runs/spike-office/run_backend_writers.py`,
+  `measure_docx.py`, `measure_pptx.py`, `run_excel_writers.py`,
+  `measure_excel.py`, `run_docx_headless.mjs` (the docx-editor headless
+  automation host from `@docx-editor.dev/core/automation`), `run_pptx.mjs`
+- browser: `py -3 drive_pages.py`, `drive_roundtrips.py`, `drive_preview.py`
+- bundles: `SPIKE_PAGE=docx|excel|pptx npm run build` then
+  `py -3 measure_bundles.py docx excel pptx`
+- licenses: `npm view`, package-lock parsing, `pip show ironcalc`
+
+**Round-trip results (synthetic files only; real files absent).**
+
+- **python-docx / python-pptx (backend, recommended writers):** no-edit
+  save changed **0** parts; a one-paragraph / one-title edit changed only
+  `word/document.xml` / `ppt/slides/slide1.xml`. Both reopen. This is the
+  only pair that passes the strict untouched-part rule.
+- **docx-editor 2.22.0** (UI + headless host): renders the sample
+  correctly (text, merged table, image, header/footer). No-edit save
+  changed **8** parts — `customXml/item1.xml`, `customXml/itemProps1.xml`,
+  `docProps/app.xml`, `word/document.xml`, `word/fontTable.xml`,
+  `word/stylesWithEffects.xml`, `word/theme/theme1.xml`,
+  `word/webSettings.xml` — and an edit changed the same 8, of which only
+  `word/document.xml` was intended. Reopens, styles/tables/images intact.
+  **Fails** the strict check. The v2.22 UI command that used to be
+  `replaceMatch` is gone/serializer-changed; the supported edit seam is
+  the headless `automation` host (`replaceSpan`), which worked.
+- **pptx-viewer-core 4.6.0:** no-edit save changed **3** unexpected parts
+  (`docProps/app.xml`, `docProps/core.xml`, `ppt/_rels/presentation.xml.rels`);
+  a title edit changed those 3 plus the intended `slide1.xml`. Reopens
+  with both slides, layouts, image, table and notes intact. **Fails** the
+  strict check. The Svelte 5.57.1 page now loads (the earlier
+  `target.exclude.includes is not a function` crash did not recur) and
+  reports "Loaded 2 slides in 644 ms".
+- **IronCalc 0.8.3** (Python wheel, scratch venv): `=SUM(Inputs!B2:B3)`
+  recalculates 1200→1580 after setting the input, persists, and reopens.
+  But no-edit save changed **26** parts and dropped `xl/charts/chart1.xml`
+  and `xl/media/image1.png`; edited save changed 24 and also dropped them.
+  The read cache came back 0 until the model evaluated. Only useful as a
+  formula engine, never as the writer.
+- **FortuneSheet + FortuneExcel:** workbook renders (two sheet tabs,
+  shortcut help) but `transformFortuneToExcel` throws
+  `TypeError: Cannot read properties of undefined (reading 'forEach')` in
+  its inline-string style handling for **both** no-edit and edited saves.
+  No roundtrip file at all. Dates show as serials and the image is not
+  shown. A browser Excel editor is not viable on this version.
+- **Cell-XML patch prototype:** changed only the two intended worksheet
+  parts; formula cache (1580), chart and image survived and the file
+  reopened. Explicitly **not production-ready**: it hardcodes two known
+  numeric cells and needs sheet relationships, all cell types, shared
+  formulas, calc chain and signature handling. It is the direction
+  recommended for N1.
+
+**Cost (synthetic; production builds; dev machine, not the 8 GB floor).**
+docx-editor 3.46 MiB js+css min / 979 KiB gzip, plus 417 KiB HarfBuzz WASM
+(168 KiB gzip); FortuneSheet 3.99 MiB / 934 KiB; pptx-viewer 8.45 MiB /
+2.25 MiB. First-open: docx 0.65 s, excel 1.70 s, pptx 7.2 s page / 0.64 s
+viewer-reported load. These are spike bundles, not the app delta (React
+and Svelte are shared with existing code). No real-file timing exists.
+
+**Dependency / license audit (scratch lockfile, 390 packages).** 326 MIT,
+19 ISC, 15 Apache-2.0, 13 MPL-2.0, 5 BSD-3-Clause, 2 unlicensed, plus
+singletons. Direct: docx-editor core/react and pptx-viewer-core /
+pptx-svelte-viewer are Apache-2.0; FortuneSheet and FortuneExcel are MIT;
+ironcalc wheel is MIT/Apache-2.0 (both `LICENSE-MIT.md` and
+`LICENSE-Apache-2.0.md`). Apache NOTICE obligations: docx-editor ships
+`THIRD_PARTY_NOTICES.md` + `licenses/HarfBuzz-COPYING.txt`; pptx-viewer
+ships `NOTICE` and discloses bundled **MPL-2.0 `mtx-decompressor`**
+(ported from libeot). Transitive copyleft: 13 MPL-2.0 (mostly
+`lightningcss` platform binaries), `dompurify` (MPL-2.0 OR Apache-2.0),
+`jszip` (MIT OR GPL-3.0-or-later) — take the permissive arm where offered.
+Unresolved: **`buffers@0.1.1`** declares no license in npm metadata or its
+repo README (only reachable via `binary` ← `unzipper` ← FortuneExcel);
+`jstat` likewise lacks a package.json license field but its LICENSE file is
+MIT. The paid docx-editor Pro editor-api/comments/tracked-changes packages
+are **not** present in the lockfile; exclude them. Confirm all of this by
+reading shipped LICENSE/NOTICE files, not metadata alone.
+
+**Surprises.** (1) The docx-editor UI command API changed under us:
+`replaceMatch` is rejected by the tree editor, so the UI page's "edit"
+button does nothing; the headless automation host is the real seam. (2)
+Every browser serializer except pptx-viewer's round-trip output touches
+metadata/relationships it was never asked to change, so "byte-for-byte
+preservation" README claims did not hold on this corpus. (3) FortuneExcel
+could not save at all, which is a harder failure than lossiness. (4)
+IronCalc's write path silently drops charts and images, confirming the
+existing openpyxl warning applies to more writers than openpyxl. (5) The
+pptx-viewer Svelte crash was version-specific and cleared on 5.57.1.
+
+**Not run / unverified.** Real owner files (`runs/fidelity/` does not
+exist). LibreOffice (no `soffice` installed) — `libreoffice_pdf` is
+reported "not run (soffice unavailable)" for every result. Tauri WebView2:
+an attempted `tauri` run compiled and started but the native UI was not
+reachable by automation and the remote-debugging endpoint on port 9333 did
+not respond. Bundle/first-open numbers are Chromium on the development
+machine, not WebView2 on the floor machine. Nothing here should be read as
+a real-file or WebView2 result.
+
+**Provisional recommendation.** Treat the file as the artifact and write
+it in the backend: python-docx and python-pptx for Word/PowerPoint model
+edits (measured clean), and a hardened cell-level XLSX patcher for Excel
+(prototype clean; must be productionized in N1). Use docx-editor,
+pptx-viewer and (if it is ever fixed) FortuneSheet as preview/edit
+surfaces that submit narrow operations back to the backend writer, not as
+serializers. IronCalc is an evaluation engine for display only. This stays
+provisional until the owner's real files and a WebView2 run confirm it.
+
+
+## N1 real Office files: the file IS the artifact (2026-09-25)
+
+Owner's call after the N0 spike: real .docx/.xlsx/.pptx must work as the
+artifact, with no version mismatch, and the course layout becomes
+resizable popout panes. Built the backend writer first — that is where the
+fidelity guarantee lives — then the frontend editors and the layout.
+Nothing is committed; the working tree is left for review.
+
+**The rule.** The artifact *is* the Office file. Every version keeps the
+whole file, content-addressed by sha256; `content` is a projection derived
+from the file, never the source of truth. The backend writes; the browser
+only previews and submits narrow edits. This is why no mismatch is possible:
+the browser never serializes OOXML.
+
+**Backend.**
+- `006_office_artifacts.sql`: added kinds `word`/`excel`/`powerpoint`. SQLite
+  cannot alter a CHECK, and `artifact_versions` is a child of `artifacts`,
+  so the migration drops the child first (no cascade fires), copies both
+  tables into rebuilt ones with the wider CHECK plus file columns, and
+  renames. Verified: old kinds intact, new kind accepted, bogus rejected,
+  delete-course cascades through both tables.
+- `common/artifact_files.py`: raw (not gzipped — OOXML is already a zip)
+  bytes under `data/artifacts/<first2>/<sha256>.bin`, atomic write,
+  `prune_bytes` that removes a blob only when no artifact or version still
+  references it.
+- `artifacts/office.py` — the single writer:
+  - Word: python-docx edits `word/document.xml` in place.
+  - PowerPoint: python-pptx edits the slide part in place.
+  - Excel: **cell-level XML patch.** openpyxl and IronCalc both rebuild the
+    package and drop the chart/image (N0 measured this), so a `set_cell`
+    edit patches the worksheet part, extends `sharedStrings.xml` when the
+    workbook uses it (else writes an inline string), and sets
+    `fullCalcOnLoad` so Excel recalculates the patched formula instead of
+    showing a stale cache. Everything else is copied byte-for-byte.
+  - `outline()` regenerates the small JSON the UI shows and the model will
+    read; `validate()` reopens the produced bytes.
+- `artifacts/files.py` + API routes: `POST /artifacts/office` (import a
+  file or create blank), `GET /artifacts/{id}/file`,
+  `POST .../office-edits` (narrow edits → a new version, 409 on stale),
+  `POST .../save-file` (write to a dialog path for Open in Office),
+  `GET .../versions/{n}/file`, `POST .../rename`. The JSON `PUT` and the
+  JSON create route now **refuse** file kinds — a JSON save would clear the
+  file pointer (this was a real bug in the rename path until the dedicated
+  route replaced it).
+- `.course` **v3**: the manifest lists artifact blobs by sha256
+  (`artifacts/<sha>.bin`, stored, not recompressed), validates each hash on
+  import, and the importer still accepts v1/v2.
+
+**Fidelity, measured (synthetic corpus).** `tests/test_office_artifacts.py`
+pins the N0 result on the real files generated by the app's own writer:
+Word one-paragraph edit changes only `word/document.xml`; PowerPoint only
+`ppt/slides/slide1.xml`; Excel changes only the worksheet parts **plus**
+`xl/workbook.xml` (the intended `fullCalcOnLoad`), with the chart and image
+still present. Shared-string extension is covered by a hand-built workbook.
+
+**Frontend.** `OfficeArtifact.svelte` is the editing surface: Word renders
+per-paragraph text fields (committing on blur), Excel a formula-aware grid
+(value as text; `=`-prefixed cells shown mono), PowerPoint a slide list with
+title/body/notes. Each commit sends one narrow edit to the backend. The
+artifact panel gained "New blank"/"Import file" tiles and an "Open in
+Office" action. `.course` import and download use the existing Tauri
+dialog/reveal patterns.
+
+**Layout.** New `ResizableSplit.svelte` (pointer-drag divider, arrow keys,
+stacks below 1100px), `stores/panel.svelte.ts` (artifact tabs + width +
+hidden, persisted to localStorage), and `Panel.svelte`, which merges the
+artifacts the student popped open with the chat's transient workspace tabs
+into one right-hand tab strip. `WorkspacePanel.svelte` is deleted; the
+course page still has the chats | chat | panel columns but the panel is now
+resizable, collapsible, and persistent. Clicking an artifact card opens it
+in the panel instead of navigating away.
+
+**Verified live.** Backend endpoints exercised against a running uvicorn:
+import → byte-exact download, Word/Excel/PowerPoint edits, Excel chart+image
+kept, stale save 409, rename preserving the file, v3 archive round trip.
+The browser UI was driven with Playwright: opening an artifact from the
+Artifacts tab shows the panel, editing a paragraph writes to the real .docx
+(v2, table and image intact), the panel toggle persists to localStorage, and
+there were **zero console errors**. `npm run desktop` compiles and launches
+(needs `~/.cargo/bin` on PATH). Servers were stopped afterward.
+
+**Gates.** 453 pytest passed (1 pre-existing warning), ruff clean, mypy
+clean (92 files), svelte-check 0/0, `npm run build` clean, clippy clean.
+
+**Still open / risks.**
+- Real owner files remain untested (`runs/fidelity/` absent). The Excel
+  patcher is the sharp edge: it needs shared-formula groups, the calc
+  chain, and digital-signature handling before it is trusted on arbitrary
+  workbooks.
+- Model edits as proposals are NOT wired for file kinds yet — the in-app
+  editors do direct narrow edits; `propose-edit` stays JSON-only. The
+  "Ask Stacks" form is hidden for Office files.
+- Large sheets are truncated in the outline (first 200 rows) for display;
+  the file keeps everything. No virtualization yet.
+- The save-back watcher ("Open in Office", edit there, it becomes a version)
+  is not built; today the student re-imports or uses save-file.
+- WebView2 specifically was exercised only via Chromium and a short Tauri
+  launch, not a scripted in-window run.
+
+## Office editing: anchored dirty-block splice (2026-09-26)
+
+**plan-notebook.md reset.** The file had accreted into a constantly updated
+project notebook (phases, handoffs, status of everything). It is now only
+the current plan — real Office editing — per the owner's ruling; the removed
+history is safe in git and in this log (N0/N1 below and all earlier
+entries). Convention going forward: plan-notebook.md describes the work at
+hand and is replaced when the work changes, not appended to forever.
+
+**Direction being tried (not yet built): anchored dirty-block splicing.**
+The problem statement: N1 made the real .docx/.xlsx/.pptx file the artifact
+with backend-only writers, but the in-app editing surfaces are narrow-edit
+projections (paragraph textareas, an HTML table, title/body/notes boxes),
+not Office editors. The new approach, decided after reviewing the options:
+the browser never serializes from an editor model. Instead, parse the
+original part into a block tree anchored by position + original XML slice,
+track dirty blocks in the editor, regenerate only dirty blocks as OOXML
+fragments (referencing existing styles only), and splice them into the
+original part bytes — every other part copied byte-for-byte. Safety: compare-
+and-swap per anchor (a stale anchor fails loudly, never clobbers), per-file
+capability detection (regions the op set can't edit render view-only with a
+reason), and no silent fallback to whole-part serialization.
+
+**Prior art:** GenOffice (genspark-ai/genoffice, Apache-2.0) ships exactly
+this mechanism — "byte-preserving round trip: only dirty paragraphs are
+regenerated (paragraph patch), everything else in the original file is kept
+byte-for-byte" — parse `word/document.xml` to a block tree anchored by index
++ original slice, Tiptap surface with dirty tracking, dirty blocks → OOXML
+fragments referencing existing styles, spliced back. Alpha proof the
+mechanism works, not a battle-tested engine; adopt the architecture, read
+their `docx-engine`, keep our own hostile-file discipline.
+
+**Supersedes, for human in-app editing:** the N0 provisional recommendation
+of "browser libraries as surfaces that submit narrow ops" — now formalized
+as dirty-block deltas, with the library serializer explicitly never in the
+save path. Consequence: FortuneSheet's broken save and docx-editor's 8-part
+churn stop mattering (renderers only); Univer (Apache-2.0, maintained) is
+the candidate render base over FortuneSheet; IronCalc stays display-
+evaluation only. The N1 backend writers remain the model-edit path and the
+foundation the splice engine extends (a dirty block is an op: replace-block /
+set_cell / move-shape at an anchor; versions and `.course` v3 can carry ops).
+
+**Per format:** Excel first (cells are addresses; harden the N1 patcher —
+shared formulas, calc chain, signatures — and never run a calc engine in the
+write path: patch formulas, drop calcChain, set fullCalcOnLoad). Word via
+the GenOffice block-tree pattern (decide last, hardest cascade). PowerPoint
+via shape anchors — text and move/resize (`a:off`/`a:ext`) are addressable;
+creating shapes/z-order/grouping are not, and stay out of scope at first.
+
+**Status: OPEN — being tried, spike first.** S1 spikes the splice engine
+(parse → anchor → dirty → splice → verify untouched parts byte-identical,
+LibreOffice render-diff) against real files in `runs/fidelity/`; real files
+remain the standing gate (still absent). The fidelity harness gains a
+semantic layer (bookkeeping vs content-bearing part changes; dropped-element
+detection) — a bare changed-parts count can't distinguish benign churn from
+loss. Failing formats keep their N1 narrow-edit surface + real render
+preview, honestly labeled, rather than shipping a lossy full editor.
+
+## S1 splice engine + S2 Excel deep: all three formats go (2026-09-26)
+
+**S1 done — go on all three formats (synthetic + hostile corpus).** The
+engine is `src/backend/artifacts/splice.py`: expat indexes every part as a
+tree of **byte spans** (expat's `CurrentByteIndex`, which lxml does not
+expose), and a save regenerates only the dirty blocks as OOXML fragments and
+splices them into the *original* bytes. Verified: an edit changes only the
+part it names; every other part — and every other byte of the edited part —
+is identical. Word replace/insert/delete/restyle, PowerPoint text and
+move/resize, Excel cell patches all pass; a stale anchor is refused
+(`SpliceConflictError`), never clobbered.
+
+Three engine facts worth remembering:
+
+- **Expat's EndElement index is not an exclusive end.** For `<c/>` it is
+  *past* `/>`; for `<a>...</a>` it points at the `<` of `</a>`. The span
+  index decides self-closing from the element's own start tag and normalises,
+  which is why multibyte text and empty elements both slice correctly.
+- **A same-part second op must re-index.** Changing an attribute's length
+  invalidates every downstream offset, so `set_attribute` callers re-locate
+  the span (PowerPoint ops are applied one at a time for this reason).
+- **Only the named part may change.** `rewrite_package` swaps named parts and
+  copies the rest byte-for-byte, preserving each `ZipInfo`; container bytes
+  still differ (recompression) — part-level identity is the standard, as N1
+  already said.
+
+**Hostile corpus is the gate.** `scripts/make_office_hostile.py` (committed,
+deterministic) builds `hostile.docx` (tracked change `w:ins`, comment range +
+`comments.xml`, footnote + `footnotes.xml`, custom XML), `hostile.xlsx` (line
+chart, conditional formatting, shared-formula-ready), `hostile.pptx` (title +
+body placeholders, two shapes, notes). Tests pin that an edit on one block
+leaves all of them byte-identical (`tests/test_office_splice.py`). The one
+allowed loss surface is an edited block's own content: replacing the
+tracked-change paragraph drops its `w:ins` — the semantic harness reports
+that as a lost feature, exactly as intended.
+
+**Semantic fidelity layer.** `scripts/office_fidelity.py` now classifies
+bookkeeping parts (rels, theme, docProps, settings, calcChain) apart from
+content-bearing ones and reports **feature survival** (`tracked_changes`,
+`comments`, `footnotes`, `custom_xml`, `charts`, `conditional_formatting`,
+`speaker_notes`). "8 parts changed" is no longer a fail signal by itself; a
+lost feature is. It also gained `render_diff()`: both files → PDF → PNG via
+headless LibreOffice + pypdfium2, first-page pixel compare. Runs in CI
+(`render-diff` job installs `libreoffice-fresh`); tests skip cleanly where
+soffice is absent.
+
+**S2 Excel deep.** The cell patcher now (a) **expands shared-formula groups**
+to plain formulas with correct A1 relative/absolute translation before
+editing, so replacing a member can't strand its `<f t="shared"/>` kin (which
+would reopen as an empty formula); (b) drops `calcChain.xml` (and its
+Content-Types override + workbook rel) and sets `fullCalcOnLoad` when a
+formula is written, so Excel recalculates rather than showing a stale cache;
+(c) **refuses a digitally signed workbook** (`_xmlsignatures/`) instead of
+silently invalidating the signature; (d) compare-and-swaps the target cell's
+bytes. Chart, image and conditional formatting survive every patch.
+
+**Ops are recorded.** Migration `007_artifact_version_ops.sql` adds
+`artifact_versions.ops` (JSON, nullable; additive). Every file save stores
+the op list that produced it, and the versions API returns it, so history can
+show which anchored block changed, not merely that the file did.
+
+**Integration.** `artifacts/office.py` is now a thin dispatcher over the
+engine; `OfficeEdit` gained `anchor`/`expected`/`style`/`role`/`after`/`shape`
+/geometry, exposed through `OfficeEditBody`; the outline projection carries
+per-block/per-shape `anchor` + `hash` and Word run formatting. The frontend
+surface addresses Word paragraphs by anchor+hash (CAS) and lists slide
+shapes. Gates: 476 pytest, ruff, mypy `src` clean, svelte-check 0/0, SPA
+build clean.
+
+**S2 caveat.** The workbook outline still uses openpyxl in read-only mode
+(display projection only, never a writer); the write path is the splice
+engine. Univer remains the candidate richer grid surface; nothing in the save
+path uses a library serializer.
+
+**Still the standing gate:** real owner files in `runs/fidelity/` (paper with
+tracked changes, accounting workbook, class deck). Every fidelity claim above
+is on synthetic/hostile fixtures until then.
+
+## Office editing surfaces and fidelity hardening (2026-09-26)
+
+The Word surface is now a Tiptap paragraph editor with run toggles, existing
+paragraph styles, paragraph insertion/deletion, anchored dirty-block saves,
+and locked read-only nodes for tables and paragraphs whose structure cannot
+survive a rich-run rewrite. The Excel surface is a coordinate-aware grid with
+sheet tabs, address navigation, a formula bar, keyboard editing, and 30-row
+paging. It edits only the projected first 200 rows and 40 columns; projected
+row numbers and cell hashes now address the real cells, including rows after
+blank gaps. The PowerPoint surface is a shape layout map with drag move/resize,
+keyboard nudges, simple-shape text edits, and speaker notes when a safe notes
+body exists. Artwork is shown as placeholders; this is not exact slide render.
+
+Backend corrections from integrating the surfaces: two Word ops on one
+paragraph compose rather than overwriting one another; insert_paragraph now
+uses rich runs and an explicitly requested style. The writer rejects a plain
+text edit that would flatten mixed run formatting, and rejects content edits
+to fields, hyperlinks, tracked changes, embedded items, or paragraphs with
+distinct non-toggle run formatting. This supersedes the earlier spike's
+intentional tracked-change paragraph replacement: the fidelity harness still
+tests that such a damaged file is detected, but the product writer refuses to
+create it. XML entities in projected text are decoded.
+
+Excel edits preserve an existing cell's number style, reject cells with
+unsupported metadata, array/data-table formulas or rich inline content, and
+use per-cell compare-and-swap against original bytes. A missing cell is
+addressed explicitly as `expected: absent`. Shared-formula expansion is now
+limited to the edited group; token-aware translation preserves absolute
+references and quoted text. Leading-zero identifiers and integers beyond
+Excel's 15 significant digits stay text rather than passing through float.
+Word and PowerPoint now refuse signed packages as Excel already did.
+
+PowerPoint edits now resolve slide parts through presentation relationships,
+so reordered slides edit the intended part. Shape text and notes capabilities
+are projected to the UI; complex text bodies and missing or unsafe notes are
+view-only. Regression tests cover reordered slides, signed packages, mixed
+Word runs, shared formulas, cell formatting, blank row addresses, and unsafe
+regions.
+
+The release gate remains open: no owner files have been placed in
+`runs/fidelity/`; no exact Word page or PowerPoint slide rendering, Word table
+editing, full-sheet Excel editing, or PowerPoint structural slide ops exist.
+Model edit proposals for file artifacts and live in-app UI verification also
+remain open. LibreOffice render-diff is skipped locally when `soffice` is
+unavailable; CI has the render-diff job.
+
+The PowerPoint layout map now gets effective positions for placeholders whose
+coordinates are inherited from a slide layout, and the shape writer can move
+graphic frames such as tables. A roundtrip test checks that the table content
+and every other package part survive such a move. The Excel API test exercises
+projected cell hashes through HTTP and reopens the edited workbook.
+
+Anchors are now unique per block ordinal, even when two Word paragraphs have
+identical XML; PowerPoint anchors use the shape's actual non-visual id plus
+ordinal and remain stable across a text or geometry edit. A duplicate-
+paragraph regression test prevents the old hash-only anchor from addressing
+the wrong block.
+
+**Verification:** 502 pytest tests passed, 2 render tests skipped locally
+without LibreOffice, 1 Starlette deprecation warning; Ruff and mypy (93
+source files) passed; Svelte check had 0 errors/0 warnings; the SPA built;
+four focused Word block tests passed; Rust Clippy passed. The live browser
+walkthrough was not completed in this session because automatic approval
+review rejected opening the test browser after an earlier stop request.
+The dev servers were stopped; ports 5173, 8000 and 9333 have no listener.
+
+## Office integration round 2: tables, windows, structure, proposals (2026-09-26)
+
+Two interrupted handoffs were reviewed before anything was integrated.
+`artifacts/excel_window.py` was **unfinished**: it did not typecheck (a
+shadowed `end` name, `BinaryIO` annotations mypy rejected) and returned zero
+rows for a window below the worksheet's used range, breaking its own "anywhere
+on the sheet" contract. Both were fixed: the expat byte offsets were confirmed
+cumulative across chunked `Parse()` calls (so the streaming index is sound),
+the projection now always returns the full requested rectangle with
+`expected="absent"` for blank cells, and its per-cell hashes were verified to
+be the exact bytes the writer compare-and-swaps. `artifacts/word_tables.py`
+was complete and correct; it was integrated rather than discarded.
+
+**Word table cells.** `word_tables.py` gained a batch splice
+(`replace_word_table_cells`) that resolves every cell against the original
+bytes and splices in one pass. This fixed a real bug the interrupted work
+introduced: a hash-anchored table's anchor changes as soon as one cell is
+written, so a two-cell edit failed with "no table found at anchor". Cells are
+projected with per-cell editability; merged, multi-paragraph, multi-run,
+field-bearing and structured cells are visibly view-only with a reason.
+Endpoint: `set_table_cell` (anchor + expected + row + column). Tests:
+`tests/test_word_tables.py`, plus a frontend round-trip case.
+
+**Excel full-sheet navigation.** New endpoint `GET …/excel-window` projects
+any bounded rectangle of any sheet with per-cell `expected` hashes. The Excel
+surface uses it when available: the address box and paging reach the real grid
+(1,048,576 × 16,384) instead of the 200×40 outline, and each edit carries the
+window's hash. Accurate cell *formatting* display is still not rendered.
+
+**PowerPoint structural ops.** `artifacts/pptx_structure.py` adds the two
+operations that stay fidelity-safe. **Reorder** rewrites only the
+`<p:sldId>` list in `ppt/presentation.xml`; every slide part is untouched.
+**Delete** removes the slide, its rels, its notes part, and media that no
+surviving slide references — media shared with a survivor is kept (verified
+with a fixture where both slides embed the same image). Adding a slide from a
+layout is deliberately out of scope. Tests: `tests/test_pptx_structure.py`.
+A visual, pixel-exact slide render was **not** added: the existing shape
+layout map remains the preview, and the ignored `pptx-svelte-viewer` spike
+was left unshipped because it adds ~8.45 MiB and needs an Apache-2.0 NOTICE
+and an MPL-2.0 dependency review.
+
+**Model edit proposals for file artifacts.** The JSON-artifact proposal flow
+rewrites content, which is wrong for a file. `artifacts/office_edit.py` asks
+the model for a small list of **anchored operations** instead ("do not return
+the whole file"). Every op is re-validated against the current file in code —
+an unknown anchor, an unsupported operation (adding a slide, deleting a sheet)
+or a non-editable cell is refused with a reason for the student to read, not
+applied. The student checks or unchecks each op; only the kept ones are posted
+to the normal `office-edits` path, so the splice writer still owns the write
+and every save is a version. Prompt `office_edit` lives in
+`configs/prompts.toml` and goes through `grounded_prompt`; the model call is
+`provider.generate("artifact_generation", …)`; retrieval reuses the JSON
+flow's numbered material so citations line up. Endpoint:
+`POST …/propose-office-edit`. Tests: `tests/test_office_proposals.py`
+(stubbed transport; nothing is written until acceptance, and a stubbed accept
+lands the op on the real file).
+
+**Per-op fidelity verification.** `tests/test_office_fidelity_ops.py` runs
+each supported edit through `scripts/office_fidelity`: parts changed ⊆ the
+parts the op names, no content-bearing feature lost, file reopens. Covered:
+Word paragraph/table/insert+delete, Excel cell and formula (calcChain
+dropped), PowerPoint shape/reorder/delete. Hostile features (tracked changes,
+comments, footnotes, customXml, charts, conditional formatting, notes) survive
+every op that does not target them.
+
+**Regression tests the handoff asked for.** Repeated shared-string references
+(one string used by two cells: rewriting either is a no-op, clearing one
+decrements `count` but not `uniqueCount`), and rich shared strings (multi-run
+`<si>` preserved byte-for-byte while a new string is appended) — in
+`tests/test_office_artifacts.py`.
+
+**Verification performed:** 556 pytest passed, 2 skipped (LibreOffice render
+tests, absent locally), 1 Starlette deprecation warning; Ruff clean; mypy
+clean (97 source files); `npm run check` 0 errors/0 warnings; SPA build clean;
+`cargo clippy --all-targets --locked -D warnings` clean; the frontend
+Word-block test script passed 5/5.
+
+**Release gate remains open.** `runs/fidelity/` still has no owner files
+(real paper, accounting workbook, class deck) — every fidelity claim above is
+on the committed synthetic and hostile corpora. The live in-app walkthrough
+was **not** run in this session (no browser approval). Exact Word page and
+PowerPoint slide rendering, Excel cell-format display, and adding
+paragraphs/slides/sheets as structural operations remain unimplemented. No
+test processes were left running; ports 5173, 8000 and 9333 have no listener.
+
+## First owner-file fidelity pass and release audit (2026-09-26)
+
+The owner supplied a 6.1 MB Word paper, a 13 KB two-sheet Excel workbook,
+and a 2.8 MB PowerPoint deck in `example_test_mat/`. These are private local
+materials and were never edited in place. `.gitignore` now excludes that
+folder, the local artifact byte store, and loose Office test files in the
+Tauri source tree. Test outputs and an isolated API database are under ignored
+`runs/`.
+
+**Real-file inventory.** The paper projects 171 paragraphs and one table;
+145 paragraphs and 9 simple table cells are safely editable. The deck has
+45 slides, 136 shapes, notes parts and 17 media parts; 30 shapes project as
+editable text. The workbook has two sheets and 296 hashed cells in its
+initial outlines, but no chart, pivot or conditional-formatting parts. The
+paper has two tracked insertion nodes and the deck has two grouped shape
+nodes; both survive edits outside those structures. These counts show meaningful
+editing coverage and a substantial view-only remainder, not full Office
+parity.
+
+**Round trips.** `runs/real_office_roundtrip.py` wrote only copies, then
+compared each to its original with `scripts.office_fidelity`. Real Word
+paragraph replacement, paragraph insert/delete and table-cell replacement
+reopened with only `word/document.xml` changed. A numeric Excel input edit
+reopened with only `xl/worksheets/sheet1.xml` and `xl/workbook.xml` changed;
+the latter is the calculation setting. PowerPoint shape text and move edits
+changed only the targeted slide part. Reorder changed only
+`ppt/presentation.xml`. Deleting the first slide reopened as 44 slides, with
+no missing relationship targets; the deleted slide, its notes and rels, the
+presentation list/rels, and content types changed as expected. The generic
+fidelity report marks this intentional deletion as a loss, so the deletion
+case was judged by surviving parts and relationship integrity instead.
+No untouched package part changed in these narrow cases.
+
+**API check.** `runs/real_office_api.py` used an isolated local database to
+import each real file, apply an anchored edit, download it, reject a stale
+version, and restore version 1. All three restored the exact original bytes.
+This revealed that stale edits with cell/block hashes returned 422 before the
+version check. `artifacts/files.py` now returns a 409 for a stale base version
+before trying the writer; the repository still performs its final atomic
+compare-and-swap.
+
+**Other fixes from the audit.** The Excel grid now fetches horizontal windows
+through XFD, discards stale window responses, and refreshes cell hashes after
+a save. The backend Excel window iterator requests only the target rectangle;
+the far-corner XFD1048576 projection and write passed. Office model proposals
+are preflighted against the actual in-memory writer and require a checksum,
+so incompatible or stale ops are refused before review. The semantic
+fidelity checker now checks only features actually present in the original
+and detects a partial drop; previously it falsely reported conditional
+formatting lost from any real sheet1 without that feature.
+
+**Gates:** 560 pytest passed, 2 LibreOffice render tests skipped locally
+(`soffice` absent); Ruff and mypy passed (97 source files); `npm run check`
+reported 0 errors/0 warnings; the SPA built; Clippy passed. The build has
+an existing large-chunk warning. `git diff --check` passed. Browser opening
+was rejected by automatic approval review after an earlier stop request;
+an explicit new approval was requested, so no live UI or WebView2 walkthrough
+was performed. Dev servers were stopped after the rejection.
+
+**Release remains blocked.** The app still approximates Word pages and
+PowerPoint slides, shows PPTX artwork as placeholders, does not render
+native Excel cell formats/charts/pivots, and leaves complex Word and
+PowerPoint regions view-only. The supplied workbook does not exercise real
+charts, pivots or conditional formatting; the owner may add one later.
+These checks prove narrow, fidelity-safe editing on the supplied files, not
+a full DOCX/XLSX/PPTX editor or readiness for a 0.3.0 build.
+
+## Full editor correction (2026-09-26)
+
+The owner compared the imported lecture deck in Stacks with PowerPoint.
+Stacks rendered plain overlapping text boxes on white; PowerPoint rendered
+the themed backgrounds, artwork, typography, and structured text. This is a
+decisive failure of the interactive editor requirement. The previous S1-S5
+completion labels described safe narrow operations, not complete Office
+editing. `docs/plan-notebook.md` was reset to a NO-GO full-engine plan.
+
+Two offline OnlyOffice derivatives were inspected as candidates. The
+`sok-o/officesuite` embed protocol accepts a file or buffer and returns a
+saved `File`; its source has an `embedOrigin` allowlist and bundled fonts.
+`agentbridges-ai/onlyoffice-browser` provides a component callback but needs
+generated font assets and an independent-origin editor host. Both are AGPL;
+neither has been proven on the owner's three files or in Stacks' Tauri
+WebView2. The former source is sparse-checked out under ignored
+`runs/officesuite_spike`; the latter has an ignored runtime spike under
+`runs/office_engine_spike`. Do not bundle either before the license and
+Tauri/visual proof.
+
+The backend gained a `replace-file` endpoint so a complete editor can return
+OOXML bytes as one compare-and-swap artifact version, preserving the old
+version. This does not itself provide full editing. The screenshot's HTTP 500
+when exporting a file to a locked or unwritable path now maps to a useful
+422 response. No build or release claim follows from these changes.
+
+## Isolated full-engine owner-file probe (2026-09-26)
+
+The `sok-o/officesuite` source at `8c85c60` was installed only under ignored
+`runs/officesuite_spike` (its public runtime is 442.2 MiB). Its automated
+real-file corpus test passed open, edit, and save on all three owner files.
+A first-slide screenshot shows authored PPTX backgrounds, artwork, and a
+complete presentation toolbar, which is substantially closer to PowerPoint
+than Stacks' current shape map. Font weight is still visibly different.
+
+The same candidate fails a stricter no-edit save comparison. The owner's deck
+was 2,813,448 bytes with 45 slides, 136 shapes, 17 media files, 10 embedded
+font files, 45 notes parts, and a comment-author part. The candidate's saved
+file is 1,620,060 bytes with 45 slides, 140 shapes, 13 media files, no
+embedded font files, 45 notes parts, and no comment-author part. The four
+missing images were referenced from slides 5, 11, 13, and 25 in the original.
+Python-pptx can reopen the result, but reopening alone did not detect that
+data loss. This candidate cannot be used as the production writer as tested.
+The backend `replace-file` API accepted and versioned these output bytes and
+rejected a stale save; that proves only the storage bridge, not fidelity.
+
+## Pivot: Stacks as an Office add-in (2026-09-26)
+
+The Office-editing effort changed direction, and `docs/plan-notebook.md` was
+rewritten around the new one (it now opens with "Bring Stacks to Office").
+
+**Why.** Third-party engines (OnlyOffice, then native Collabora Office 26.04)
+must translate an OOXML file into their own document model and re-serialize on
+save. Measured on the owner's real files, a **no-edit** save destroyed
+committed content — 24 equations to 0, 10 embedded fonts to 3 (survivors were
+Collabora brand fonts), all 45 speaker-notes parts and the comment-author part
+dropped, four images re-encoded — on the PPTX, and tracked changes plus
+customXML on the DOCX. The saved files still reopened in real PowerPoint,
+Word and Excel with no repair warning, which is exactly why reopen-based
+checks never caught it. An editor that round-trips through a foreign model
+cannot preserve what that model does not represent; the loss surface is
+whatever lies outside the editor's model, and it is unbounded. Collabora's
+native Windows build was tested deliberately (not Docker) because Docker/WSL/
+a VM cannot be a runtime requirement for a consumer desktop app.
+
+**New direction.** Stacks does not become Word/Excel/PowerPoint. Microsoft
+Office keeps the document and performs every mutation; Stacks becomes the
+intelligence layer beside it, through Office task panes. Stacks never
+serializes an Office file, so an unsupported feature becomes a missing Stacks
+capability instead of a document-corruption risk. The existing custom Office
+editors are frozen, not deleted; they remain useful as previews and for
+environments without Office.
+
+**What was built (first spike scaffold).** A backend Office bridge
+(`src/backend/api/office.py`) mounted at `/office` — a separate local trust
+boundary with its own token (`APP_OFFICE_TOKEN`) and origin allow-list
+(`APP_OFFICE_ORIGINS`), because an Office task pane is a web page Microsoft
+Office loads and cannot hold the desktop shell's per-launch token. It exposes
+`GET /office/health` and `POST /office/process-selection`, the latter
+returning `STACKS TEST: <text>` per the plan. A PowerPoint task-pane add-in
+lives in `src/office-addin/` (manifest, task pane, tested pure logic in
+`bridge.js`), with a development HTTPS server at
+`scripts/office_addin/serve.mjs`. Tests: `tests/test_office_bridge_api.py`
+(7), `tests/test_office_addin_manifest.py` (manifest structure and that every
+referenced file exists), and `node --test src/office-addin/bridge.test.js`
+(8).
+
+**Gates:** 584 pytest passed, 2 skipped (LibreOffice render, absent locally),
+1 Starlette deprecation warning; Ruff clean; mypy clean (98 source files);
+`npm run check` 0/0; SPA build clean; `cargo clippy -D warnings` clean.
+
+**Still open.** The live PowerPoint sideload onto the owner's 45-slide deck
+(the decisive check in the plan's first spike) was not run. `process_selection`
+is still the echo seam, not real retrieval. Word and Excel hosts are not
+wired. Nothing was committed; the existing uncommitted work is preserved.
+
+**Also this session:** `scripts/office_fidelity.py` gained a relationship-
+graph, content-addressed asset check (matched by sha256, not filename) that
+catches an editor deleting a part *and* its relationship — the blind spot that
+let the earlier no-edit saves pass. A Collabora spike worktree
+(`../stacks-collabora`, branch `spike/collabora-office`) holds the isolated
+evidence and its own `docs/collabora/` write-up; the main tree is untouched by
+it.
+
+## Retiring the file-backed Office editors (2026-09-27)
+
+Following the pivot to "Office owns the file" (entry above), the frozen
+file-backed editors are removed from `main`. Removed: `artifacts/splice.py`,
+`artifacts/office.py`, `artifacts/files.py`, `artifacts/office_edit.py`,
+`artifacts/word_tables.py`, `artifacts/pptx_structure.py`,
+`artifacts/excel_window.py`, `common/artifact_files.py`, migrations
+`006_office_artifacts.sql` and `007_artifact_version_ops.sql`, the frontend
+`WordEditor`/`ExcelEditor`/`PowerPointEditor`/`OfficeArtifact` components and
+`wordBlocks.ts`, the fidelity/roundtrip scripts, `data/eval/office/`, and the
+seven frozen-editor test modules. Office file-kind fields (`file_sha256`,
+`filename`, `file_size`, `mime_type`, `ops`) are gone from the artifacts repo
+and its SQL; the archive format stays at v2. The `word`/`excel`/`powerpoint`
+artifact kinds are gone from `content.py`, `KINDS`, `DEFAULT_TITLES`, and the
+generated OpenAPI types.
+
+The JSON artifact kinds were kept and repurposed as lightweight study tools:
+`doc` → course notes, `slides` → study decks, `sheet` → schedules / trackers.
+Display labels and blank titles follow (`KIND_LABELS`, `DEFAULT_TITLES`,
+`ArtifactsPanel` hints). These are typed JSON generated, cited, and edited
+inside Stacks; they never represent a real Office file.
+
+**Safety net.** All removed work plus the first add-in spike was committed on
+a new `old-office` branch (`3a806c6`) before deletion, and the untracked
+editor code was copied to `runs/attic/office-editors/` (with the full tracked
+diff at `runs/attic/tracked-changes.patch`). `main` kept every unrelated
+uncommitted change — the doc-reference cleanups, the resizable-panel
+refactor, the title-only rename route/repo method, and the entire Office
+add-in. The branch and attic are to be pruned once this direction is proven.
+
+**Gates after retirement:** 436 pytest passed, 1 Starlette warning; Ruff
+clean; mypy clean (90 source files); `npm run check` 0/0; SPA build clean;
+`cargo clippy -D warnings` clean; `node --test src/office-addin/bridge.test.js`
+8/8; add-in bridge/manifest tests 14 passed.
+
+## Office assistant: grounded pane actions + redundant readers (2026-09-27)
+
+The "big one" from the pivot: Stacks as an assistant living inside the
+student's Office applications. Built the whole reasoning path behind the
+PowerPoint task pane, host-parameterized for Word/Excel.
+
+**Grounded actions.** `src/backend/tutor/office.py` answers explain / find /
+quiz / summarize. It reuses the existing seams — `funnel.retrieve` for
+course material, `provider.generate` through `tutor_answer` for the call,
+`trace.record_trace` for the audit record — so a pane answer is as grounded
+and inspectable as one from the built-in tutor. It returns real citations
+(chunk text + locator + filename), refuses graded work with the tutor's own
+classifier, and refuses empty retrieval (Fork B). Four prompts added to
+`configs/prompts.toml` (`office_explain/find/quiz/summarize`, prompts
+version 13 → 14) and registered in `prompt_registry.OFFICE_PROMPTS`.
+
+**Redundant readers.** New `src/backend/office_reader/` reads a document by
+several independent methods and merges them, keeping the redundancy
+inspectable rather than hiding it: `package.read_package` (unzip a
+`.docx`/`.xlsx`/`.pptx` in memory, read paragraphs / cells / slide text —
+read-only, never re-serialized), `screens.read_screens` (OCR PNG renders via
+the same multimodal `ocr` seam the ingest pipeline uses),
+and the host's own `scrape`. `merge.merge_reads` unions them in document
+order and reports per-method agreement ("agreed on 12 of 14 units"), so a bad
+read in one method is caught by another. The OCR page-splitter was extracted
+to `src/backend/ingest/ocr_pages.py` so ingest and the Office reader share
+one implementation.
+
+**Bridge.** `src/backend/api/office.py` gained `GET /courses`,
+`POST /assist`, and `POST /read` (the merge), all behind the Office token
+when configured; the first-spike `POST /process-selection` echo is kept.
+The task pane (`src/office-addin/`) is now a real assistant: course picker,
+the four actions, an optional question, an answer with rendered citations,
+and Insert/Replace through Office.js; the echo round trip moved under
+"Connection test". `bridge.js` gained `listCourses`, `sendAssist`,
+`assistRequest`, `assistError`, `citationLines`, multi-host `writeSelection`.
+
+**Tests:** `tests/test_office_assistant.py` (11), `tests/test_office_reader.py`
+(11, with synthetic in-memory OOXML fixtures — no external libs, no real
+files), `tests/test_office_bridge_api.py` grew to 17; `node --test
+src/office-addin/bridge.test.js` 16. Gates: 468 pytest passed, 1 Starlette
+warning; Ruff clean; mypy clean (97 source files); `npm run check` 0/0; SPA
+build clean; `cargo clippy -D warnings` clean.
+
+**Still open.** The live PowerPoint sideload onto the owner's deck — the pane
+UI and its Office.js wiring have not run in a real host (the pure logic is
+Node-tested; the wiring is not machine-tested). The pane does not yet send
+screenshots or package bytes to `/office/read` (only the scrape); the
+endpoints already accept them. Speaker-notes insertion is not wired.
+
+## One-click Office: the backend hosts the add-in (2026-09-27)
+
+**Problem.** The add-in could not actually be launched. The pane called
+`http://127.0.0.1:8000`, but the desktop backend binds a random port; the
+Tauri shell started a "dev server" through a PowerShell script pointing at a
+file that did not exist, serving plain HTTP (Office refuses it); the register
+script wrote a `TrustedCatalogs` entry with an HTTPS URL (catalogs are
+network shares — Office ignores it); every path was `CARGO_MANIFEST_DIR`, so
+none of it existed in an installed build; the manifest test still pinned
+PowerPoint only; and the pane called `PowerPoint.getSelection()`, which is
+not an Office.js API. Separately the home page 500'd on the owner's database:
+the retired builds left an `excel` artifact row the list endpoint could not
+validate, and schema_migrations still records 006/007.
+
+**Decision.** The backend is the add-in host (`src/backend/office_addin/`).
+Connect = issue a `localhost` cert from a throwaway CA whose key is
+discarded; `certutil -user -addstore Root` (one Windows dialog); render the
+manifest for the port and app version; register it under
+`HKCU\Software\Microsoft\Office\16.0\WEF\Developer` (the per-user developer
+add-in key Office's own tooling uses; works for Word, Excel and PowerPoint);
+serve pane + bridge same-origin over HTTPS from a thread in the backend on a
+fixed port (47831, `APP_OFFICE_PORT`). Same origin removes CORS
+(`APP_OFFICE_ORIGINS` is gone) and port discovery. Startup re-serves a
+connected add-in but never prompts; expiry or lost trust shows as "Needs
+attention" with a Repair button. The Rust shell is back to its committed
+state (no Office commands); `scripts/office_addin/` and `docs/office-addin/`
+are deleted (the usage story is in plan-notebook.md "Using Stacks in
+Office"). Rejected: hosting the pane on a public site calling loopback
+(Chrome's local-network-access prompts in Office's webview, and a
+dependency on a website for a local-first app); a Node server (a second
+runtime to ship and launch).
+
+**Pane.** One adapter per host: Word (`getSelection`, cursor → its
+paragraph; insert paragraphs after, replace), Excel (selected range →
+address + values + formulas, capped at 100×20 cells; insert as a comment on
+the active cell, else a "Stacks notes" sheet; replace the active cell),
+PowerPoint (selected text, else every text shape on the selected slide;
+insert a text box; replace the selected text), each with the Common API
+(`get/setSelectedDataAsync`) as the fallback. The pane follows selection
+changes, remembers the course per document, and prefers the course Stacks
+opened Office from (`/office/courses` `suggested`). Inserted text is plain
+text plus a "Sources:" list of the citations it uses, so grounding travels
+into the document. The echo "Connection test" is gone from the UI (the
+endpoint stays).
+
+**App.** Settings → Microsoft Office (status, Connect/Repair/Disconnect,
+Open Word/Excel/PowerPoint) and a course's **Open in Office** menu (new
+document or a picked file; connects first if needed; tells the user where
+the button is and that an already-open app needs one restart the first
+time). API: `/api/office/status|connect|disconnect|open`.
+
+**Data.** The artifact list skips kinds outside `KINDS` instead of 500ing;
+`migrate.RETIRED_VERSIONS = {006, 007}` with a test that no migration file
+reuses them.
+
+**Evidence.** A real `AddinHost` serving over TLS verified against the
+issued CA (`localhost`, `127.0.0.1`, `::1`), port-in-use reported, restart
+on the same port. Tests: `tests/test_office_addin_setup.py` (certificate,
+connect/declined trust/repair/disconnect/startup with a fake Windows layer,
+opening documents, the API, the real TLS host); manifest tests now cover all
+three hosts and the rendered copy; `node --test
+src/office-addin/bridge.test.js` 12.
+
+**Still open.** Nothing here has run inside real Office: the WEF\Developer
+registration, the certificate prompt, and the Office.js adapters are built
+to the documented behaviour but only a run on the owner's machine proves
+them. Keep Stacks open while using the pane (it is served by the app).
+
+## Office add-in verification and repo cleanup (2026-09-27)
+
+**Verification added.** The pane's JavaScript is now type-checked against
+Microsoft's `@types/office-js` (`src/office-addin`: `npm run check`, in CI).
+It caught a real bug: Word's Insert set `Word.Style.normal`, which does not
+exist (the enum is `Word.BuiltInStyleName`), so Insert in Word would have
+thrown. Every other call (PowerPoint `getSelectedTextRangeOrNullObject`,
+`getSelectedSlides`, `shapes.addTextBox`; Excel `comments.add`,
+`getActiveCell`, `getResizedRange`; Word `insertParagraph`) type-checks.
+Microsoft's `office-addin-manifest validate` rejected the manifest version
+(`0.x` is below the required 1.0); the registered version is now
+`1.<major>.<minor>.<patch>` (monotonic, tested), and the rendered manifest
+validates. An end-to-end run of the real `serve.main` (only trust store,
+registry and app launch faked): the app API needs the launch token; Open in
+Office connects, registers and launches; the pane is served over TLS and
+sees the course as suggested; tooling files are not served; `/office/assist`
+refuses honestly with no sources (404, ~27 s on a fresh data folder: the
+encoders' first load); closing stdin stops the backend and frees the port.
+The add-in icons were placeholder squares; they are now the app icon.
+
+**Layout.** Shipped pane files moved to `src/office-addin/public/` (the only
+directory served and bundled); `src/office-addin/` holds `package.json`,
+`tsconfig.json` and `bridge.test.js`. The Office types live there, not in the
+SPA, so `Word`/`Excel` globals never leak into the app's own type-check.
+
+**Cleanup.** `.gitignore` ignores all of `data/` except `data/eval/` (a
+dev-checkout Connect writes the add-in's private key to `data/office-addin/`,
+which the old per-folder rules would have exposed), plus `images/` and
+`node_modules/`; the old `src-tauri/*.docx` rules and the stray empty
+"Untitled document.docx" the retired Word editor left there are gone.
+`runs/attic/` was deleted after checking all 50 files are byte-identical to
+the `old-office` branch. `artifacts_repo.rename` moved its inline SQL to
+`queries/artifacts.sql` and gained a test; the OCR splitter alias in the
+orchestrator is gone. `plan-notebook.md` was rewritten as the current plan
+(start here, how it works, code map, the owner's first-run checklist, next
+steps, open questions).
+
+**Old editors removed for good** (owner, same day). The `old-office` branch
+(`3a806c6`, local only, never pushed) is deleted; `git branch old-office
+3a806c6` recovers it until git prunes unreachable commits. From the dev
+database, the 8 artifacts the retired editors had created (their test files:
+`hostile.docx/.xlsx/.pptx`, "Untitled document/workbook/presentation", the
+"UI paper" sample, all re-kinded to doc/sheet/slides but still holding the
+old block format) were deleted with their versions; the 3 real artifacts are
+untouched. Also deleted: the old file store `data/artifacts/` and the stale
+`build/` and `dist/` installer output. The nullable `file_*`/`ops` columns
+those builds added stay in old databases, unused and harmless; migrations
+006/007 stay reserved.

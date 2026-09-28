@@ -1,5 +1,5 @@
-"""Adding a model (docs/plan-notebook.md §4.8): a Hugging Face GGUF link
-or a .gguf file on this computer becomes one more catalog entry."""
+"""Adding a model: a Hugging Face GGUF link or a .gguf file on this
+computer becomes one more catalog entry."""
 
 from __future__ import annotations
 

@@ -15,9 +15,12 @@
     biggerModel: string | null;
     hasSources: boolean;
     onopenworkspace: (turnIndex: number) => void;
+    /** Whether the right panel is currently shown (label only). */
+    panelVisible: boolean;
   }
 
-  let { chats, canvas, biggerModel, hasSources, onopenworkspace }: Props = $props();
+  let { chats, canvas, biggerModel, hasSources, onopenworkspace, panelVisible }: Props =
+    $props();
 
   const QUESTION_MAX_LENGTH = 2000;
   let question = $state('');
@@ -200,7 +203,7 @@
                 </div>
 
                 {#if turn.workspace.length > 0}
-                  {@const showing = canvas.active?.turnIndex === index && canvas.open}
+                  {@const showing = canvas.active?.turnIndex === index && panelVisible}
                   <button
                     type="button"
                     onclick={() => onopenworkspace(index)}

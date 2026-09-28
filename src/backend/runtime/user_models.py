@@ -1,5 +1,5 @@
-"""Models the user adds themselves (docs/plan-notebook.md §4.8): a GGUF
-from a Hugging Face link, or a `.gguf` file already on this computer.
+"""Models the user adds themselves: a GGUF from a Hugging Face link, or a
+`.gguf` file already on this computer.
 
 An added model becomes one more catalog entry (stored in app_settings), so
 download, checksum, reuse, start and delete work exactly as for the

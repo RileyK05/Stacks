@@ -1,5 +1,5 @@
-"""Saved chats (docs/plan-notebook.md §4.2): unlimited conversations per
-course, each with its own model pick and source selection.
+"""Saved chats: unlimited conversations per course, each with its own
+model pick and source selection.
 
 Sending a message answers it exactly like the one-off ask endpoint —
 grounded, cited, gated — with the chat's context (tutor/chat.py) and

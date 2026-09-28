@@ -1,0 +1,14 @@
+{
+  "name": "stacks-office-addin",
+  "private": true,
+  "type": "module",
+  "description": "The Stacks task pane for Word, Excel and PowerPoint. Plain files served by the backend (src/backend/office_addin); no build step.",
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "test": "node --test bridge.test.js"
+  },
+  "devDependencies": {
+    "@types/office-js": "^1.0.610",
+    "typescript": "^5.8.0"
+  }
+}

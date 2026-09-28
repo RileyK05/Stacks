@@ -63,6 +63,13 @@ def test_migrations_apply_to_a_fresh_file_and_are_idempotent(tmp_path: Path) -> 
         assert gone not in tables
 
 
+def test_no_migration_reuses_a_retired_number() -> None:
+    numbers = {
+        path.name[:3] for path in migrate_module.MIGRATIONS_DIR.glob("*.sql")
+    }
+    assert not numbers & migrate_module.RETIRED_VERSIONS
+
+
 def test_failed_migration_leaves_database_at_previous_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

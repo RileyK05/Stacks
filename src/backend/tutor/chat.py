@@ -1,4 +1,4 @@
-"""What a saved chat hands the model (docs/plan-notebook.md §4.2).
+"""What a saved chat hands the model.
 
 A small model has little context to spare, so a chat is not replayed in
 full: the model reads a rolling summary of the earlier turns plus the most

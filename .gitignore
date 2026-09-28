@@ -9,18 +9,21 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
-# Local course data and generated artifacts (never committed)
-data/raw/
-# Local model runtime + model files (dev checkout)
-data/runtime/
-data/models/
-data/processed/
-# The local SQLite database (dev checkout; the desktop app uses the OS
-# per-user data directory instead)
+# The dev checkout's data folder (the desktop app uses the OS per-user data
+# directory instead): database, uploads, models, runtime, logs, and the Office
+# add-in's certificate and private key. Only the eval sets are committed.
+data/*
+!data/eval/
 *.db
 *.db-wal
 *.db-shm
 runs/
+# Local course materials and screenshots (never committed: public repo)
+example_test_mat/
+images/
+
+# Node
+node_modules/
 
 # OS
 .DS_Store
@@ -30,5 +33,3 @@ Thumbs.db
 # Desktop build output
 /dist/
 /build/
-# The dev backend's log (src/backend/serve.py)
-data/*.log

@@ -1,4 +1,4 @@
-"""Artifacts API (docs/plan-notebook.md §4.3, decision 013).
+"""Artifacts API (decision 013).
 
 Typed, editable study material in a course: create, save from a chat,
 edit (every save a version; a save based on an outdated copy is refused
@@ -23,7 +23,7 @@ from src.backend.api.tutor import CitationView
 from src.backend.artifacts import content as artifact_content
 from src.backend.artifacts import edit as artifact_edit
 from src.backend.artifacts import export as artifact_export
-from src.backend.artifacts.content import ArtifactKind, UnknownCitationError
+from src.backend.artifacts.content import KINDS, ArtifactKind, UnknownCitationError
 from src.backend.common import (
     artifacts_repo,
     conversations_repo,
@@ -109,6 +109,13 @@ class RestoreRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_version: int = Field(ge=1)
+
+
+class RenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_version: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=artifacts_repo.TITLE_MAX_LENGTH)
 
 
 class ArtifactCitationView(BaseModel):
@@ -225,7 +232,13 @@ def _checked(
 @router.get("", response_model=list[ArtifactSummaryView])
 def list_artifacts(course_id: UUID) -> list[ArtifactSummaryView]:
     _require_course(course_id)
-    return [_summary_view(a) for a in artifacts_repo.list_artifacts(course_id)]
+    # A database from the retired Office-editor builds can still hold
+    # `word`/`excel`/`powerpoint` rows; they are skipped, not a 500.
+    return [
+        _summary_view(a)
+        for a in artifacts_repo.list_artifacts(course_id)
+        if a.kind in KINDS
+    ]
 
 
 @router.post("", response_model=ArtifactView, status_code=status.HTTP_201_CREATED)
@@ -318,6 +331,24 @@ def delete_artifact(course_id: UUID, artifact_id: UUID) -> None:
     _require_course(course_id)
     if not artifacts_repo.delete(course_id, artifact_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "artifact not found")
+
+
+@router.post("/{artifact_id}/rename", response_model=ArtifactView)
+def rename_artifact(
+    course_id: UUID, artifact_id: UUID, payload: RenameRequest
+) -> ArtifactView:
+    """Rename without touching content or sources."""
+    _require_artifact(course_id, artifact_id)
+    try:
+        renamed = artifacts_repo.rename(
+            course_id,
+            artifact_id,
+            expected_version=payload.base_version,
+            title=payload.title,
+        )
+    except StaleVersionError as err:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(err)) from err
+    return _view(renamed)
 
 
 @router.get("/{artifact_id}/versions", response_model=list[VersionView])

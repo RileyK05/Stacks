@@ -217,12 +217,6 @@ export interface CanvasTab {
 export class WorkspaceCanvas {
   tabs = $state<CanvasTab[]>([]);
   activeId = $state<string | null>(null);
-  /** Panel dismissed (tabs kept); the next artifact or "Open in workspace" revives it. */
-  hidden = $state(false);
-
-  get open(): boolean {
-    return !this.hidden && this.tabs.length > 0;
-  }
 
   get active(): CanvasTab | null {
     return this.tabs.find((tab) => tab.id === this.activeId) ?? null;
@@ -243,7 +237,6 @@ export class WorkspaceCanvas {
       firstNew ??= id;
     });
     this.activeId = firstNew ?? this.tabs.find((tab) => tab.turnIndex === turnIndex)?.id ?? this.activeId;
-    this.hidden = false;
   }
 
   activate(id: string): void {
@@ -259,13 +252,8 @@ export class WorkspaceCanvas {
     }
   }
 
-  hide(): void {
-    this.hidden = true;
-  }
-
   clear(): void {
     this.tabs = [];
     this.activeId = null;
-    this.hidden = false;
   }
 }

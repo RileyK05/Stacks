@@ -23,6 +23,11 @@ source at a cited passage.
   let you review and restore earlier work; citations open the source file
   at the passage used. Requests to do graded work get steered toward help
   with learning it.
+- **Inside Word, Excel and PowerPoint.** On Windows, one click adds a
+  Stacks button to Office's Home tab. Select something in your paper,
+  workbook or slides and ask: the answer comes from your course, with
+  sources, and can be inserted into the document. Office opens, edits and
+  saves the file; Stacks never rewrites it.
 - **Portable courses.** Export a course as one `.course` file with its
   sources, chats, artifacts, versions, and cited passages. Older source-only
   `.course` files still import.
@@ -103,7 +108,7 @@ catalog, optionally against your own course files:
 ## Docs
 
 - [docs/project.md](docs/project.md): what the product is and where it's going
-- [docs/plan-notebook.md](docs/plan-notebook.md): the course notebook plan and its progress
+- [docs/plan-notebook.md](docs/plan-notebook.md): the current plan — Stacks inside Word, Excel and PowerPoint
 - [docs/system.md](docs/system.md): architecture
 - [docs/AGENTS.md](docs/AGENTS.md): conventions for contributors and coding agents
 - [src/frontend/README.md](src/frontend/README.md): the desktop app's frontend and Tauri shell

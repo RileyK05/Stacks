@@ -35,6 +35,7 @@ from src.backend.common.queries import get
 from src.backend.common.schemas.base import IngestionStage, IngestionStatus
 from src.backend.ingest import chunking, extract, runs, toc
 from src.backend.ingest.config import load_ingestion_config
+from src.backend.ingest.ocr_pages import split_ocr_pages
 from src.backend.ingest.pipeline import (
     IngestionPipelineError,
     StageHandler,
@@ -49,27 +50,6 @@ MODEL_TASKS: dict[IngestionStage, str] = {
     IngestionStage.EXTRACT_KNOWLEDGE: "course_knowledge_extraction",
     IngestionStage.OCR: "ocr",
 }
-
-_OCR_PAGE_BOUNDARY = "\n\n---\n\n"
-
-
-def _split_ocr_pages(text: str, page_count: int) -> list[str]:
-    """Split the OCR model's output back into per-page texts so page
-    locators align the way text-layer PDFs do (citations must land on the
-    page they came from, golden rule 1). The prompt asks for the sentinel
-    separator between pages; when the model does not comply we cannot
-    invent page alignment, so the whole text becomes page 1's span and the
-    remaining pages are empty — honest degradation, never a miscitation.
-    """
-    parts = text.split(_OCR_PAGE_BOUNDARY)
-    if len(parts) == page_count:
-        return parts
-    if len(parts) == 1:
-        return [text] + [""] * (page_count - 1)
-    # Model emitted some but not all separators: keep what it gave, pad the
-    # rest, so the count always matches the rendered pages.
-    parts = parts[:page_count]
-    return parts + [""] * (page_count - len(parts))
 
 
 class UnknownSourceError(RuntimeError):
@@ -178,7 +158,7 @@ class IngestionHandlers:
             course_id=self.source.course_id,
             images=images,
         )
-        page_texts = _split_ocr_pages(result.text, len(images))
+        page_texts = split_ocr_pages(result.text, len(images))
         if not any(page_text.strip() for page_text in page_texts):
             raise provider.EmptyModelError("ocr: model returned no text")
         self.extracted = extract.ocr_extracted_source(page_texts)

@@ -1,4 +1,4 @@
-"""Saved chats (migration 003; docs/plan-notebook.md §4.2).
+"""Saved chats (migration 003).
 
 A conversation belongs to one course and holds its messages in order.
 `model_choice` pins the chat to an endpoint + model (None follows

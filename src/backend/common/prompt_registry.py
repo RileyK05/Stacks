@@ -14,7 +14,12 @@ from src.backend.common.schemas.base import KNOWN_GENERATION_TASKS
 WORKSPACE_PROMPTS = frozenset(
     f"workspace_{kind}" for kind in ("quiz", "document", "sheet", "slides", "code")
 )
-KNOWN_PROMPTS = KNOWN_GENERATION_TASKS | WORKSPACE_PROMPTS | {
+# The Office add-in actions share the `tutor_answer` task for routing and
+# usage; each has its own text (src/backend/tutor/office.py).
+OFFICE_PROMPTS = frozenset(
+    f"office_{action}" for action in ("explain", "find", "quiz", "summarize")
+)
+KNOWN_PROMPTS = KNOWN_GENERATION_TASKS | WORKSPACE_PROMPTS | OFFICE_PROMPTS | {
     "tutor_steer",
     "tutor_answer_quotes",
     "artifact_edit",

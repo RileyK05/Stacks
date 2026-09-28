@@ -83,7 +83,7 @@ function turnsFrom(messages: MessageView[]): Turn[] {
 }
 
 /**
- * The saved chats of one course (docs/plan-notebook.md §4.2). A new chat
+ * The saved chats of one course. A new chat
  * is a draft until its first message (or its first model / source pick)
  * creates it, so opening "New chat" never leaves empty chats behind.
  */

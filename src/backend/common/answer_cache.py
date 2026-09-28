@@ -1,4 +1,4 @@
-"""Answer cache (migration 002; docs/plan-local-first.md §6 item 11).
+"""Answer cache (migration 002).
 
 Only plain answers are cached — never workspace items (a second "quiz me"
 should bring new questions) and never an answer a rate-limited cloud

@@ -26,7 +26,15 @@ from src.backend.tutor.workspace import (
     WorkspaceSlides,
 )
 
-ArtifactKind = Literal["doc", "sheet", "slides", "quiz", "flashcards", "code", "chart"]
+ArtifactKind = Literal[
+    "doc",
+    "sheet",
+    "slides",
+    "quiz",
+    "flashcards",
+    "code",
+    "chart",
+]
 KINDS: tuple[ArtifactKind, ...] = (
     "doc",
     "sheet",
@@ -134,9 +142,9 @@ CONTENT_MODELS: dict[str, type[BaseModel]] = {
 }
 
 DEFAULT_TITLES: dict[str, str] = {
-    "doc": "Untitled doc",
-    "sheet": "Untitled sheet",
-    "slides": "Untitled deck",
+    "doc": "Untitled notes",
+    "sheet": "Untitled schedule",
+    "slides": "Untitled study deck",
     "quiz": "Untitled quiz",
     "flashcards": "Untitled flashcards",
     "code": "Untitled code",

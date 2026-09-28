@@ -85,13 +85,16 @@ src/
     ingest/        # parse, locators, token-bounded chunks, embeddings, OCR
     retrieval/     # four-seam funnel + traces
     memory/        # concept/dependency store + table of contents
-    artifacts/     # typed content, cited model edits, Office exports
+    artifacts/     # typed content (notes/decks/schedules/quizzes), cited model edits, exports
+    office_reader/ # redundant, read-only Office readers (package/OCR/scrape) + merge
     student_model/ # attempts, mastery, error model (schema live; subsystem M3-4)
     tutor/         # task framing, saved-chat context, grounded answers
     evals/         # answer eval harness (retrieval evals live in retrieval/)
     runtime/       # bundled llama.cpp server, model catalog, user GGUF models
+    office_addin/  # connect Office: certificate, registration, HTTPS pane host
+    office_reader/ # read-only Office text readers (package / OCR / scrape)
     api/           # FastAPI routers including conversations and artifacts
-    main.py        # ASGI app: the API mounted at /api (CORS for the Tauri webview)
+    main.py        # ASGI app: the API at /api, the Office bridge at /office
     serve.py       # the backend process the desktop shell runs
     version.py     # app name + version (scripts/set_version.py)
     common/
@@ -110,6 +113,8 @@ src/
       repos          # per-aggregate SQL callers (courses_repo, sources_repo, ...)
   frontend/        # SvelteKit + TS SPA; talks to backend only via its API
     src-tauri/     # Tauri v2 desktop shell (Rust): window, backend process
+  office-addin/    # Office.js task pane for Word, Excel, PowerPoint (public/ is served);
+                   # npm run check (Office.js types) + npm test; Office owns the file
 tests/           # pytest; mirrors src/backend/ layout
 runs/            # experiment + eval logs — GITIGNORED
 docs/
@@ -117,7 +122,7 @@ docs/
   project.md     # product plan
   system.md      # architecture
   notes.md       # append-only decision log (never delete entries)
-  plan-notebook.md # current plan + handoff (start here)
+  plan-notebook.md # current plan (Office editing; start here)
 ```
 
 The six subsystems map 1:1 to `src/backend/<package>`. Cross-cutting code

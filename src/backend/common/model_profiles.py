@@ -1,5 +1,4 @@
-"""Per-model generation profiles (docs/plan-local-first.md §6.10,
-plan-notebook §4.8).
+"""Per-model generation profiles.
 
 One TOML file per model in `configs/models/`: whether the model reasons
 before answering, how long it may write, and its sampling temperature.

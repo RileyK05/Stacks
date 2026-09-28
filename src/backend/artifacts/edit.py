@@ -1,4 +1,4 @@
-"""Model edits to an artifact (docs/plan-notebook.md §4.3, decision 013).
+"""Model edits to an artifact (decision 013).
 
 The student asks for a change ("make slide 3 shorter", "add a due-date
 column"); the model returns the changed content as a *proposal* the

@@ -53,9 +53,9 @@ export interface ChartContent {
 }
 
 export const KIND_LABELS: Record<ArtifactKind, string> = {
-  doc: 'Doc',
-  sheet: 'Sheet',
-  slides: 'Slides',
+  doc: 'Notes',
+  sheet: 'Schedule',
+  slides: 'Study deck',
   quiz: 'Quiz',
   flashcards: 'Flashcards',
   code: 'Code',
@@ -314,6 +314,7 @@ export class OpenArtifact {
     });
     if (error) throw error;
   }
+
 }
 
 export async function listArtifacts(courseId: string): Promise<ArtifactSummary[]> {
@@ -345,6 +346,21 @@ export async function saveFromMessage(
   const { data, error } = await api.POST('/courses/{course_id}/artifacts/from-message', {
     params: { path: { course_id: courseId } },
     body: { message_id: messageId, item_index: itemIndex }
+  });
+  if (error || !data) throw error ?? new Error('unexpected empty response');
+  return data;
+}
+
+/** Rename without touching content or sources (a new version, like a save). */
+export async function renameArtifact(
+  courseId: string,
+  artifactId: string,
+  title: string,
+  baseVersion: number
+): Promise<ArtifactView> {
+  const { data, error } = await api.POST('/courses/{course_id}/artifacts/{artifact_id}/rename', {
+    params: { path: { course_id: courseId, artifact_id: artifactId } },
+    body: { base_version: baseVersion, title }
   });
   if (error || !data) throw error ?? new Error('unexpected empty response');
   return data;

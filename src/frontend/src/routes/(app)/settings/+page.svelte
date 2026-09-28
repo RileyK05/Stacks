@@ -12,6 +12,7 @@
   import TextInput from '$lib/components/TextInput.svelte';
   import ConnectionsCard from '$lib/components/settings/ConnectionsCard.svelte';
   import DefaultModelsCard from '$lib/components/settings/DefaultModelsCard.svelte';
+  import OfficeCard from '$lib/components/settings/OfficeCard.svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import { formatBytes } from '$lib/utils/format';
 
@@ -196,6 +197,8 @@
         </div>
       </Card>
     {/if}
+
+    <OfficeCard />
 
     {#if appVersion}
       <p class="text-center text-xs text-subtle">

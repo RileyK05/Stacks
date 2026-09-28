@@ -10,16 +10,19 @@
   import ModelPicker from '$lib/components/ModelPicker.svelte';
   import Monogram from '$lib/components/Monogram.svelte';
   import Popover from '$lib/components/Popover.svelte';
+  import ResizableSplit from '$lib/components/ResizableSplit.svelte';
   import Skeleton from '$lib/components/Skeleton.svelte';
-  import WorkspacePanel from '$lib/components/WorkspacePanel.svelte';
+  import Panel from '$lib/components/course/Panel.svelte';
   import ArtifactsPanel from '$lib/components/course/ArtifactsPanel.svelte';
   import ChatList from '$lib/components/course/ChatList.svelte';
   import ChatThread from '$lib/components/course/ChatThread.svelte';
+  import OfficeMenu from '$lib/components/course/OfficeMenu.svelte';
   import SourcePicker from '$lib/components/course/SourcePicker.svelte';
   import SourcesPanel from '$lib/components/course/SourcesPanel.svelte';
   import { listArtifacts, saveFromMessage, type ArtifactSummary } from '$lib/stores/artifact.svelte';
   import { CourseChats, type ModelChoice } from '$lib/stores/chat.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
+  import { PanelState } from '$lib/stores/panel.svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import { WorkspaceCanvas } from '$lib/stores/workspace.svelte';
   import { formatBytes } from '$lib/utils/format';
@@ -52,7 +55,10 @@
 
   const chats = new CourseChats(courseId);
   const canvas = new WorkspaceCanvas();
-  let workspaceOpen = $derived(canvas.open);
+  const panel = new PanelState(courseId, `stacks-panel:${courseId}`);
+  // One flag controls the whole right pane: the toggle must be able to open
+  // it even when there is nothing in it yet.
+  let rightOpen = $derived(panel.visible);
   let thread = $state<ReturnType<typeof ChatThread> | null>(null);
   let workspaceRef = $state<HTMLElement | null>(null);
   let chatsOpen = $state(false);
@@ -194,6 +200,7 @@
 
   async function openWorkspace(turnIndex: number) {
     canvas.openFromTurn(turnIndex, chats.turns[turnIndex].workspace);
+    panel.show();
     await tick();
     // Side by side on wide screens; stacked below on narrow ones.
     workspaceRef?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -336,6 +343,7 @@
         </div>
       </div>
       <div class="flex shrink-0 flex-wrap items-center gap-1">
+        <OfficeMenu {courseId} />
         <Button variant="ghost" size="sm" onclick={startRename}>
           <Icon name="pencil" class="h-4 w-4" /> Rename
         </Button>
@@ -385,90 +393,107 @@
     </div>
 
     {#if activeTab === 'chat'}
-      <div
-        class={`grid items-start gap-6 ${
-          workspaceOpen
-            ? 'lg:grid-cols-2 2xl:grid-cols-[232px_minmax(0,1fr)_minmax(0,1fr)]'
-            : 'lg:grid-cols-[232px_minmax(0,1fr)]'
-        }`}
-      >
-        <aside
-          class={`sticky top-5 max-h-[calc(100dvh-2.5rem)] min-h-0 flex-col ${
-            workspaceOpen ? 'hidden 2xl:flex' : 'hidden lg:flex'
-          }`}
-        >
-          <ChatList {chats} onselect={selectChat} />
-        </aside>
+      <ResizableSplit bind:width={panel.width} collapsed={!rightOpen} stackBelow={1100}>
+        {#snippet left()}
+          <div class="grid items-start gap-6 lg:grid-cols-[232px_minmax(0,1fr)]">
+            <aside class="sticky top-5 hidden max-h-[calc(100dvh-2.5rem)] min-h-0 flex-col lg:flex">
+              <ChatList {chats} onselect={selectChat} />
+            </aside>
 
-        <section class={`flex min-w-0 flex-col gap-4 ${workspaceOpen ? '' : 'mx-auto w-full max-w-3xl'}`}>
-          <div class="flex flex-wrap items-center gap-2">
-            <div class={workspaceOpen ? '2xl:hidden' : 'lg:hidden'}>
-              <Popover bind:open={chatsOpen} label="Chats" width="w-72">
-                {#snippet trigger(props)}
-                  <button
-                    type="button"
-                    {...props}
-                    class="inline-flex items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[13px] font-medium text-fg shadow-card hover:border-line-strong"
-                  >
-                    <Icon name="message-square" class="h-3.5 w-3.5 text-subtle" /> Chats
-                    <Icon name="chevron-down" class="h-3.5 w-3.5 text-subtle" />
-                  </button>
-                {/snippet}
-                {#snippet children()}
-                  <div class="max-h-[60vh] p-3">
-                    <ChatList {chats} onselect={selectChat} />
-                  </div>
-                {/snippet}
-              </Popover>
-            </div>
-            <h2 class="min-w-0 flex-1 truncate font-display text-lg font-medium tracking-tight text-fg">
-              {chats.active?.title || 'New chat'}
-            </h2>
-            <SourcePicker
-              {sources}
-              selected={chats.active?.source_ids ?? null}
-              disabled={chats.sending}
-              onchange={setSources}
-            />
-            <ModelPicker
-              options={modelOptions}
-              {connections}
-              choice={chats.active?.model_choice ?? null}
-              nullOption={{
-                label: 'Settings default',
-                description: defaultLabel ?? 'Choose one in Settings',
-                current: defaultLabel ?? 'No model set',
-                hint: 'Default'
-              }}
-              disabled={chats.sending}
-              onchange={setModel}
-            />
+            <section class="flex min-w-0 flex-col gap-4">
+              <div class="flex flex-wrap items-center gap-2">
+                <div class="lg:hidden">
+                  <Popover bind:open={chatsOpen} label="Chats" width="w-72">
+                    {#snippet trigger(props)}
+                      <button
+                        type="button"
+                        {...props}
+                        class="inline-flex items-center gap-2 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[13px] font-medium text-fg shadow-card hover:border-line-strong"
+                      >
+                        <Icon name="message-square" class="h-3.5 w-3.5 text-subtle" /> Chats
+                        <Icon name="chevron-down" class="h-3.5 w-3.5 text-subtle" />
+                      </button>
+                    {/snippet}
+                    {#snippet children()}
+                      <div class="max-h-[60vh] p-3">
+                        <ChatList {chats} onselect={selectChat} />
+                      </div>
+                    {/snippet}
+                  </Popover>
+                </div>
+                <h2 class="min-w-0 flex-1 truncate font-display text-lg font-medium tracking-tight text-fg">
+                  {chats.active?.title || 'New chat'}
+                </h2>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onclick={() => (rightOpen ? panel.hide() : panel.show())}
+                  title="Show or hide the side panel"
+                >
+                  <Icon name="panel-right" class="h-4 w-4" />
+                  <span class="hidden sm:inline">Panel</span>
+                </Button>
+                <SourcePicker
+                  {sources}
+                  selected={chats.active?.source_ids ?? null}
+                  disabled={chats.sending}
+                  onchange={setSources}
+                />
+                <ModelPicker
+                  options={modelOptions}
+                  {connections}
+                  choice={chats.active?.model_choice ?? null}
+                  nullOption={{
+                    label: 'Settings default',
+                    description: defaultLabel ?? 'Choose one in Settings',
+                    current: defaultLabel ?? 'No model set',
+                    hint: 'Default'
+                  }}
+                  disabled={chats.sending}
+                  onchange={setModel}
+                />
+              </div>
+
+              <ChatThread
+                bind:this={thread}
+                {chats}
+                {canvas}
+                {biggerModel}
+                hasSources={hasIndexed}
+                onopenworkspace={openWorkspace}
+                panelVisible={rightOpen}
+              />
+            </section>
           </div>
+        {/snippet}
 
-          <ChatThread
-            bind:this={thread}
-            {chats}
-            {canvas}
-            {biggerModel}
-            hasSources={hasIndexed}
-            onopenworkspace={openWorkspace}
-          />
-        </section>
-
-        {#if workspaceOpen}
-          <div bind:this={workspaceRef} class="min-w-0 scroll-mt-20 lg:sticky lg:top-5 lg:h-[calc(100dvh-2.5rem)]">
-            <WorkspacePanel
+        {#snippet right()}
+          <div
+            bind:this={workspaceRef}
+            class="scroll-mt-20 lg:sticky lg:top-5 lg:h-[calc(100dvh-2.5rem)]"
+          >
+            <Panel
+              {panel}
               {canvas}
               sourcesFor={(turnIndex) => chats.turns[turnIndex]?.citations ?? []}
-              onclose={() => canvas.hide()}
+              onclose={() => panel.hide()}
               onfollowup={(text) => thread?.prefill(text)}
               onsave={saveToArtifacts}
             />
           </div>
-        {/if}
-      </div>
+        {/snippet}
+      </ResizableSplit>
     {:else if activeTab === 'artifacts'}
-      <ArtifactsPanel {courseId} {artifacts} loading={artifactsLoading} onchanged={loadArtifacts} />
+      <ArtifactsPanel
+        {courseId}
+        {artifacts}
+        loading={artifactsLoading}
+        onchanged={loadArtifacts}
+        onopen={(summary) => {
+          activeTab = 'chat';
+          void panel.openArtifact(summary);
+        }}
+      />
     {:else}
       <SourcesPanel {courseId} {sources} onchanged={loadSources} />
     {/if}

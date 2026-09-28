@@ -5,6 +5,9 @@ to this app over 127.0.0.1 from its own webview origin, so CORS admits
 exactly the Tauri origins (plus APP_CORS_ORIGINS in development, e.g. the
 Vite dev server). CORS only decides which pages may read responses; the
 per-launch app token (`api/deps.py`) is what actually guards the API.
+
+Once the user connects Office, the lifespan also serves the Office add-in
+(pane + `/office` bridge) over HTTPS on a fixed port (`office_addin/`).
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ from src.backend.api import (
     conversations,
     courses,
     data,
+    office_setup,
     runtime,
     settings,
     sources,
@@ -31,6 +35,8 @@ from src.backend.api.deps import require_app_token
 from src.backend.common import maintenance
 from src.backend.common.migrate import migrate
 from src.backend.ingest import worker as ingestion_worker
+from src.backend.office_addin import service as office_addin
+from src.backend.office_addin.app import create_office, create_office_host
 from src.backend.runtime import supervisor
 from src.backend.version import APP_NAME, __version__
 
@@ -60,6 +66,7 @@ def create_api() -> FastAPI:
     api.include_router(settings.router)
     api.include_router(runtime.router)
     api.include_router(data.router)
+    api.include_router(office_setup.router)
 
     @api.get("/health")
     def health() -> dict[str, str]:
@@ -74,6 +81,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     applied = migrate()
     if applied:
         logger.info("applied migrations: %s", ", ".join(applied))
+    try:
+        office_addin.start_if_connected()
+    except Exception:
+        logger.exception("could not start the Office add-in host")
     stop = asyncio.Event()
     tasks = [
         asyncio.create_task(maintenance.run_forever(stop)),
@@ -83,6 +94,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        office_addin.stop()
         stop.set()
         for task in tasks:
             task.cancel()
@@ -93,6 +105,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 def cors_origins() -> list[str]:
     extra = os.getenv("APP_CORS_ORIGINS", "")
     return [*TAURI_ORIGINS, *(o.strip() for o in extra.split(",") if o.strip())]
+
+
+__all__ = ["create_api", "create_app", "create_office", "create_office_host"]
 
 
 def create_app() -> FastAPI:

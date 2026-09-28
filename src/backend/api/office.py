@@ -1,0 +1,369 @@
+"""The Office add-in bridge (plan-notebook.md, "Bring Stacks to Office").
+
+This is the local seam between a Microsoft Office task pane and the Stacks
+backend. It is deliberately separate from the desktop API:
+
+- It is served at ``/office`` on the add-in's own HTTPS origin
+  (``office_addin/``), same-origin with the pane, because the task pane is a
+  web page loaded by Microsoft Office and cannot hold the desktop shell's
+  per-launch app token.
+- Its own token (``APP_OFFICE_TOKEN``) guards it when configured; empty by
+  default.
+- It never serializes an Office file. Office owns the document and performs
+  every mutation through its own API; this bridge carries text and actions
+  in, and prose + citations back.
+
+It exposes three things:
+
+- ``GET /health`` — liveness + whether a token is required.
+- ``GET /courses`` — the courses Stacks knows about, so the pane can pick
+  the one the student is working in (``suggested``: the course Office was
+  last opened from in Stacks).
+- ``POST /process-selection`` — the first-spike echo (kept for
+  compatibility; the round-trip contract the add-in was built around).
+- ``POST /assist`` — real, course-grounded reasoning behind a pane action
+  (explain / find / quiz / summarize): it retrieves from the course,
+  answers through the provider seam, and returns citations the pane shows.
+- ``POST /read`` — the redundant reader: merge the host's own scrape with
+  an uploaded package breakdown and/or screenshot OCR, and report how much
+  the methods agreed.
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import hmac
+from typing import Annotated, Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import BaseModel, ConfigDict, Field
+from src.backend.common import courses_repo, provider, sources_repo, usage_repo
+from src.backend.common.config import get_settings
+from src.backend.common.db import connection
+from src.backend.common.embeddings_config import load_embedding_policy
+from src.backend.office_addin import service as office_service
+from src.backend.retrieval.config import load_retrieval_policy
+from src.backend.tutor import office as office_tutor
+
+router = APIRouter(tags=["office"])
+
+OFFICE_TOKEN_HEADER = "X-Office-Token"
+
+
+def require_office_token(
+    x_office_token: Annotated[str | None, Header(alias=OFFICE_TOKEN_HEADER)] = None,
+) -> None:
+    """The Office bridge's own auth (mirrors ``api/deps.require_app_token``).
+
+    Disabled when no token is configured (development, tests). When set, the
+    add-in must echo it; this keeps another local program or web page from
+    driving the bridge once tokens are in play."""
+    expected = get_settings().office_bridge_token
+    if not expected:
+        return
+    if x_office_token is None or not hmac.compare_digest(x_office_token, expected):
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "missing or invalid office token"
+        )
+
+
+class OfficeHealth(BaseModel):
+    app: str
+    version: str
+    token_required: bool
+
+
+class CourseSummary(BaseModel):
+    course_id: str
+    name: str
+    source_count: int
+    suggested: bool = False
+
+
+class SelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # The kind of document the selection came from. The first spike is
+    # PowerPoint; the field keeps the contract open for Word/Excel.
+    host: str = Field(min_length=1, max_length=40)
+    # The selected text (may be empty). Bounded so a runaway selection cannot
+    # be used to exhaust memory.
+    text: str = Field(default="", max_length=100_000)
+    # Optional course context the student is working in.
+    course_id: str | None = Field(default=None, max_length=80)
+
+
+class SelectionResult(BaseModel):
+    # The text the host should put back, if any. None means "no change".
+    text: str | None = None
+    # A short human explanation shown in the pane.
+    message: str = ""
+    # Which backend produced this (echo now; the model later).
+    engine: str = "echo"
+
+
+class AssistRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    action: Literal["explain", "find", "quiz", "summarize"]
+    host: str = Field(min_length=1, max_length=40)
+    # The text the student is looking at (a selection, a slide, a sheet
+    # summary). Bounded for the same reason as the selection.
+    context: str = Field(default="", max_length=100_000)
+    # An optional free-text question that overrides or refines the action.
+    instruction: str = Field(default="", max_length=2000)
+
+
+class CitationBody(BaseModel):
+    number: int
+    chunk_id: str
+    source_id: str
+    filename: str
+    label: str
+    text: str
+
+
+class AssistResult(BaseModel):
+    action: str
+    text: str
+    # What the pane may put back into the document when the student asks.
+    insert_text: str
+    citations: list[CitationBody]
+    model: str
+    trace_id: str
+    message: str = ""
+
+
+class ReadRequest(BaseModel):
+    """The redundant reader: any subset of methods the host can supply.
+
+    ``scrape`` is the host's own read of the live object; ``package_b64``
+    is the real file's bytes; ``images_b64`` are PNG renders. Supplying
+    more than one lets the bridge cross-check them and report agreement."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    host: str = Field(min_length=1, max_length=40)
+    kind: Literal["word", "excel", "powerpoint"] | None = None
+    course_id: UUID | None = None
+    # Scrape: JSON-ish list of {label, text} the host read directly.
+    scrape: list[dict[str, str]] = Field(default_factory=list, max_length=5000)
+    # The downloaded package, base64-encoded (no data: prefix).
+    package_b64: str | None = Field(default=None, max_length=200_000_000)
+    # PNG page/slide renders, base64-encoded.
+    images_b64: list[str] = Field(default_factory=list, max_length=40)
+
+
+class ReadAgreement(BaseModel):
+    method: str
+    matched: int
+    unique: int
+    total: int
+
+
+class ReadResult(BaseModel):
+    host: str
+    text: str
+    methods: list[str]
+    agreement: list[ReadAgreement]
+    warnings: list[str]
+    units: list[dict[str, str]]
+
+
+@router.get("/health", response_model=OfficeHealth)
+def office_health() -> OfficeHealth:
+    from src.backend.version import APP_NAME, __version__
+
+    return OfficeHealth(
+        app=APP_NAME,
+        version=__version__,
+        token_required=bool(get_settings().office_bridge_token),
+    )
+
+
+@router.get(
+    "/courses",
+    response_model=list[CourseSummary],
+    dependencies=[Depends(require_office_token)],
+)
+def list_courses() -> list[CourseSummary]:
+    """The courses Stacks knows about, so the pane can let the student pick
+    the one the document belongs to."""
+    suggested = office_service.last_course()
+    return [
+        CourseSummary(
+            course_id=str(course.course_id),
+            name=course.name,
+            source_count=len(sources_repo.list_sources(course.course_id)),
+            suggested=str(course.course_id) == suggested,
+        )
+        for course in courses_repo.list_courses()
+    ]
+
+
+@router.post(
+    "/process-selection",
+    response_model=SelectionResult,
+    dependencies=[Depends(require_office_token)],
+)
+def process_selection(request: SelectionRequest) -> SelectionResult:
+    """The first-spike round trip: transform the host's selection.
+
+    Kept as the ``STACKS TEST: <text>`` echo so the original round-trip
+    contract still holds; real reasoning lives at ``/assist``.
+    """
+    if not request.text:
+        return SelectionResult(
+            text=None,
+            message="Nothing selected. Select a text box, then try again.",
+            engine="echo",
+        )
+    return SelectionResult(
+        text=f"STACKS TEST: {request.text}",
+        message=f"Echoed {len(request.text)} characters ({request.host}).",
+        engine="echo",
+    )
+
+
+@router.post(
+    "/assist",
+    response_model=AssistResult,
+    dependencies=[Depends(require_office_token)],
+)
+def assist(request: AssistRequest) -> AssistResult:
+    """Course-grounded reasoning behind a pane action (second/third spike).
+
+    Retrieves from the chosen course, answers with the model through the
+    provider seam, and returns citations the pane renders. Refuses graded
+    work and empty retrieval honestly (422/404), and surfaces an unavailable
+    provider as 503."""
+    if courses_repo.get_course(request.course_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
+    action = office_tutor.OfficeAction(request.action)
+    try:
+        query_embedding = provider.embed_query(
+            f"{request.instruction}\n{request.context[:600]}".strip()
+        )
+        with connection() as conn:
+            result = office_tutor.answer(
+                conn,
+                request.course_id,
+                action,
+                host=request.host,
+                context=request.context,
+                instruction=request.instruction,
+                policy=load_retrieval_policy(),
+                query_embedding=query_embedding,
+                embedding_model=load_embedding_policy().model,
+            )
+            conn.commit()
+    except office_tutor.NotAllowedError as err:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(err)) from err
+    except office_tutor.NothingRelevantFoundError as err:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(err)) from err
+    except provider.ProviderUnavailableError as err:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(err)) from err
+    except usage_repo.BudgetExceededError as err:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(err)) from err
+    return AssistResult(
+        action=result.action.value,
+        text=result.text,
+        insert_text=result.insert_text,
+        citations=[
+            CitationBody(**office_tutor.citation_payload(citation))
+            for citation in result.citations
+        ],
+        model=result.model,
+        trace_id=result.trace_id,
+        message=result.message,
+    )
+
+
+def _decode(value: str, *, what: str) -> bytes:
+    try:
+        return base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as err:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"{what} is not valid base64"
+        ) from err
+
+
+@router.post(
+    "/read",
+    response_model=ReadResult,
+    dependencies=[Depends(require_office_token)],
+)
+def read_document(request: ReadRequest) -> ReadResult:
+    """Merge the reading methods the host supplied.
+
+    At least one method is required. The OOXML breakdown and screenshot OCR
+    are optional and their failures are reported as warnings (so one bad
+    method never sinks the others); a scrape alone is always enough to
+    return text."""
+    from src.backend.office_reader import (
+        OcrUnavailableError,
+        UnreadablePackageError,
+        merge_reads,
+        read_package,
+        read_screens,
+    )
+    from src.backend.office_reader.models import SCRAPE, DocumentRead, TextUnit
+
+    reads: list[DocumentRead] = []
+    if request.scrape:
+        units = tuple(
+            TextUnit(label=item.get("label", "selection"), text=item.get("text", ""))
+            for item in request.scrape
+        )
+        reads.append(DocumentRead(method=SCRAPE, host=request.host, units=units))
+    if request.package_b64:
+        if request.kind is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "kind is required to read a package",
+            )
+        data = _decode(request.package_b64, what="package_b64")
+        try:
+            reads.append(read_package(data, kind=request.kind, host=request.host))
+        except UnreadablePackageError as err:
+            reads.append(
+                DocumentRead(
+                    method="package",
+                    host=request.host,
+                    warnings=(str(err),),
+                )
+            )
+    if request.images_b64:
+        images = [_decode(image, what="images_b64") for image in request.images_b64]
+        try:
+            with connection() as conn:
+                reads.append(read_screens(conn, images, host=request.host))
+        except OcrUnavailableError as err:
+            reads.append(
+                DocumentRead(method="ocr", host=request.host, warnings=(str(err),))
+            )
+    if not reads:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "nothing to read: supply a scrape, a package, or images",
+        )
+    merged = merge_reads(reads)
+    return ReadResult(
+        host=merged.host,
+        text=merged.text,
+        methods=[read.method for read in merged.reads],
+        agreement=[
+            ReadAgreement(
+                method=item.method,
+                matched=item.matched,
+                unique=item.unique,
+                total=item.total,
+            )
+            for item in merged.agreement
+        ],
+        warnings=list(merged.warnings),
+        units=[{"label": unit.label, "text": unit.text} for unit in merged.units],
+    )

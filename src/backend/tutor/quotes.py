@@ -1,4 +1,4 @@
-"""Quote-anchored answers (docs/plan-local-first.md §6.2).
+"""Quote-anchored answers.
 
 The model is asked for evidence before it answers: a few short passages
 copied word-for-word from the numbered material, each with its number,

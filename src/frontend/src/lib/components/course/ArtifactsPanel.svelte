@@ -9,6 +9,7 @@
     KIND_ICONS,
     KIND_LABELS,
     createArtifact,
+    renameArtifact,
     type ArtifactKind,
     type ArtifactSummary
   } from '$lib/stores/artifact.svelte';
@@ -21,9 +22,11 @@
     artifacts: ArtifactSummary[];
     loading: boolean;
     onchanged: () => Promise<void>;
+    /** Open an artifact in the side panel instead of navigating. */
+    onopen?: (summary: ArtifactSummary) => void;
   }
 
-  let { courseId, artifacts, loading, onchanged }: Props = $props();
+  let { courseId, artifacts, loading, onchanged, onopen }: Props = $props();
 
   let creating = $state<ArtifactKind | null>(null);
   let error = $state<unknown>(null);
@@ -31,9 +34,9 @@
   let newTitle = $state('');
 
   const newKinds: { kind: ArtifactKind; hint: string }[] = [
-    { kind: 'doc', hint: 'Notes, study guides, summaries' },
-    { kind: 'sheet', hint: 'Tables, glossaries, timelines' },
-    { kind: 'slides', hint: 'A deck you can present' },
+    { kind: 'doc', hint: 'Course notes, study guides, summaries' },
+    { kind: 'sheet', hint: 'Schedules and trackers for your work' },
+    { kind: 'slides', hint: 'A study deck to review and present' },
     { kind: 'quiz', hint: 'Practice questions' },
     { kind: 'flashcards', hint: 'Terms to memorise' }
   ];
@@ -61,11 +64,7 @@
       });
       if (loadError || !current) throw loadError ?? new Error('Artifact unavailable');
       if (title !== current.title) {
-        const { error: saveError } = await api.PUT('/courses/{course_id}/artifacts/{artifact_id}', {
-          params: { path: { course_id: courseId, artifact_id: artifactId } },
-          body: { base_version: current.version, title, content: current.content, sources: current.sources, author: 'you', note: 'Renamed' }
-        });
-        if (saveError) throw saveError;
+        await renameArtifact(courseId, artifactId, title, current.version);
         await onchanged();
       }
       renaming = null;
@@ -139,7 +138,13 @@
                 <button type="submit" class="text-xs font-medium text-accent-text">Save</button>
               </form>
             {:else}
-              <a href={`/courses/${courseId}/artifacts/${artifact.artifact_id}`} class="line-clamp-2 font-display text-lg font-medium leading-snug tracking-tight text-fg hover:text-accent-text">{artifact.title}</a>
+              <button
+                type="button"
+                onclick={() => (onopen ? onopen(artifact) : goto(`/courses/${courseId}/artifacts/${artifact.artifact_id}`))}
+                class="line-clamp-2 text-left font-display text-lg font-medium leading-snug tracking-tight text-fg hover:text-accent-text"
+              >
+                {artifact.title}
+              </button>
             {/if}
             <p class="mt-auto text-xs text-subtle">Edited {timeAgo(artifact.updated_at)} · v{artifact.version}</p>
             <div class="flex gap-3 border-t border-line pt-2 text-xs">

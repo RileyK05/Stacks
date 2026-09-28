@@ -1,5 +1,5 @@
-"""Artifacts (docs/plan-notebook.md §4.3): typed content, versions, saving
-from a chat, citations, model edits as proposals, exports."""
+"""Artifacts: typed content, versions, saving from a chat, citations,
+model edits as proposals, exports."""
 
 from __future__ import annotations
 
@@ -136,6 +136,24 @@ def test_saves_make_versions_and_stale_saves_are_refused(client: TestClient) -> 
         f"/courses/{course_id}/artifacts/{doc['artifact_id']}/versions"
     ).json()[0]
     assert latest["note"] == "Restored version 2"
+
+
+def test_rename_keeps_content_and_is_a_version(client: TestClient) -> None:
+    course_id, _ = _course(client)
+    doc = _create(client, course_id, "doc", title="Notes")
+    saved = _save(client, course_id, doc, content={"markdown": "# Notes\nOne"}).json()
+    url = f"/courses/{course_id}/artifacts/{doc['artifact_id']}"
+    renamed = client.post(
+        f"{url}/rename", json={"base_version": saved["version"], "title": " Week 3 "}
+    )
+    assert renamed.status_code == 200, renamed.text
+    body = renamed.json()
+    assert body["title"] == "Week 3" and body["version"] == 3
+    assert body["content"]["markdown"] == "# Notes\nOne"
+    latest = client.get(f"{url}/versions").json()[0]
+    assert latest["version"] == 3 and latest["note"] == "Renamed"
+    stale = client.post(f"{url}/rename", json={"base_version": 2, "title": "Other"})
+    assert stale.status_code == 409
 
 
 def test_invalid_content_and_stray_citations_are_refused(client: TestClient) -> None:
@@ -621,3 +639,27 @@ def test_empty_docs_and_decks_are_always_drafted_as_additions() -> None:
     assert not artifact_edit.is_addition(
         "sheet", "Add a row", {"columns": [], "rows": []}
     )
+
+
+def test_listing_skips_kinds_from_the_retired_office_editors(
+    client: TestClient,
+) -> None:
+    from src.backend.common.db import connection
+
+    course = client.post("/courses", json={"name": "C"}).json()
+    kept = client.post(
+        f"/courses/{course['course_id']}/artifacts",
+        json={"kind": "doc", "title": "Notes"},
+    )
+    assert kept.status_code == 201, kept.text
+    with connection() as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            "INSERT INTO artifacts (artifact_id, course_id, kind, title, content)"
+            " VALUES (?, ?, 'excel', 'Old workbook', '{}')",
+            (uuid4(), UUID(course["course_id"])),
+        )
+        conn.commit()
+    listed = client.get(f"/courses/{course['course_id']}/artifacts")
+    assert listed.status_code == 200
+    assert [a["title"] for a in listed.json()] == ["Notes"]

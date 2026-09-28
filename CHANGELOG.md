@@ -22,6 +22,11 @@ All notable changes to Stacks. Versions follow [semantic versioning](https://sem
   fails to start.
 - Only one copy of the app runs at a time; opening it again brings the
   existing window forward.
+- Stacks inside Word, Excel and PowerPoint (Windows): connect Office once in
+  Settings, or press Open in Office on a course, and a Stacks button appears
+  on the Home tab. Its pane explains, finds, quizzes and summarizes what you
+  select from your course, with sources, and can insert the answer. Office
+  keeps full control of your files.
 
 ### Removed
 - The pywebview window, and the Postgres importer used during the move to

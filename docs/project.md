@@ -147,8 +147,8 @@ A single-course MVP for one student on their own laptop.
 1. I can install the app, create a course, and upload PDFs, Markdown notes, and text.
 2. I can keep separate saved conversations in a course, choose their
    sources and model, and open an answer's cited passage in the source.
-3. I can create and edit cited docs, sheets, slides, quizzes, and flashcards,
-   review model edits, and restore an earlier version.
+3. I can create and edit cited course notes, schedules, study decks, quizzes,
+   and flashcards, review model edits, and restore an earlier version.
 4. I can view a concept page containing a course-specific definition, prerequisite links, examples, and source evidence.
 5. I can request a short closed-notes diagnostic constrained to selected topics.
 6. I can answer the diagnostic, state my confidence beforehand, and receive feedback.

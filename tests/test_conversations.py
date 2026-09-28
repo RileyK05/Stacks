@@ -1,5 +1,5 @@
-"""Saved chats (docs/plan-notebook.md §4.2): conversations API, chat
-context for the model, source selection, per-chat model, rolling summary."""
+"""Saved chats: conversations API, chat context for the model, source
+selection, per-chat model, rolling summary."""
 
 from __future__ import annotations
 

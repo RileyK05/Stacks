@@ -2,8 +2,9 @@
 
     .venv/Scripts/python -m scripts.build_desktop [--skip-backend]
 
-1. bundles the Python backend (src/backend/serve.py), its configs and SQL
-   into one folder with PyInstaller, placed at src/frontend/src-tauri/backend/;
+1. bundles the Python backend (src/backend/serve.py), its configs, SQL and
+   the Office add-in's pane files into one folder with PyInstaller, placed
+   at src/frontend/src-tauri/backend/;
 2. runs `tauri build`, which builds the SPA, compiles the shell, and packs
    both plus the backend folder into an installer (NSIS on Windows) under
    src/frontend/src-tauri/target/release/bundle/.
@@ -35,6 +36,8 @@ def build_backend() -> Path:
         (ROOT / "configs", "configs"),
         (common / "migrations", "src/backend/common/migrations"),
         (common / "queries", "src/backend/common/queries"),
+        # The Office task pane the backend serves (src/backend/office_addin).
+        (ROOT / "src" / "office-addin" / "public", "src/office-addin/public"),
     ]
     work = ROOT / "build" / "pyinstaller"
     command = [

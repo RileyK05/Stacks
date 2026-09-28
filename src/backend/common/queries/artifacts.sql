@@ -29,6 +29,16 @@ WHERE artifact_id = :artifact_id
   AND course_id = :course_id
   AND version = :expected_version;
 
+-- name: rename
+-- Title only, on top of `expected_version`, like `save`.
+UPDATE artifacts
+SET title = :title,
+    version = version + 1,
+    updated_at = now_utc()
+WHERE artifact_id = :artifact_id
+  AND course_id = :course_id
+  AND version = :expected_version;
+
 -- name: add_version
 INSERT INTO artifact_versions (artifact_id, version, title, content, sources, author, note)
 VALUES (:artifact_id, :version, :title, :content, :sources, :author, :note);

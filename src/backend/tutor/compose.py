@@ -1,4 +1,4 @@
-"""Task framing before generation (docs/plan-local-first.md §6.1, §6.3).
+"""Task framing before generation.
 
 A small model given the whole task — "answer, and maybe emit one of six
 JSON block types if the student seems to want one" — talks ABOUT the
