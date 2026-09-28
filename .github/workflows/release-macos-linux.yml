@@ -1,0 +1,115 @@
+# Builds the macOS and Linux installers after the CI gate passes. Kept
+# apart from the Windows release so neither holds up the other. Both are
+# experimental: CI builds them, but nobody has tested them by hand yet.
+#
+# - Push a tag `vX.Y.Z`: the installers are attached to that tag's GitHub
+#   release (a draft is created if the Windows workflow hasn't made it yet).
+# - Run it by hand (Actions → Release (macOS, Linux) → Run workflow): the
+#   installers are kept as workflow artifacts. Tick "attach" to also add
+#   them to the release for the branch's version, e.g. a release that is
+#   already out.
+#
+# The macOS app is ad-hoc signed only (no Apple Developer ID, no
+# notarization), so Gatekeeper asks users to allow it once; see README.
+name: Release (macOS, Linux)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      attach:
+        description: Attach the installers to the release for this version
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    uses: ./.github/workflows/ci.yml
+
+  installer:
+    name: ${{ matrix.name }} installer
+    needs: gate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon: the only Mac the llama.cpp runtime ships for.
+          - name: macOS
+            os: macos-latest
+            artifact: macos-arm64
+          # The oldest supported Ubuntu, so the AppImage runs on older glibc.
+          - name: Linux
+            os: ubuntu-22.04
+            artifact: linux-x64
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/frontend/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/frontend/src-tauri
+
+      # Tauri's webview and bundler dependencies on Linux.
+      - name: System libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf file
+
+      - name: Version
+        id: version
+        run: |
+          version=$(python -c "from src.backend.version import __version__; print(__version__)")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the app version $version (run scripts/set_version.py first)"
+            exit 1
+          fi
+
+      - name: Install
+        run: |
+          python -m pip install -e ".[desktop]"
+          npm ci --prefix src/frontend
+      - name: Build installer
+        run: python -m scripts.build_desktop
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stacks-${{ steps.version.outputs.version }}-${{ matrix.artifact }}
+          path: |
+            src/frontend/src-tauri/target/release/bundle/dmg/*.dmg
+            src/frontend/src-tauri/target/release/bundle/appimage/*.AppImage
+            src/frontend/src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      # Creating the draft may lose a race with the Windows workflow; either
+      # way the release exists afterwards, and the upload is what counts.
+      - name: Attach to release
+        if: github.ref_type == 'tag' || inputs.attach
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python -m scripts.release_notes "$VERSION" > release-notes.md
+          gh release create "v$VERSION" --draft --target "$GITHUB_SHA" \
+            --title "Stacks $VERSION" --notes-file release-notes.md || true
+          shopt -s nullglob
+          gh release upload "v$VERSION" --clobber \
+            src/frontend/src-tauri/target/release/bundle/{dmg/*.dmg,appimage/*.AppImage,deb/*.deb}

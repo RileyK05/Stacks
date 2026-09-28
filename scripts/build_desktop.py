@@ -6,8 +6,10 @@
    the Office add-in's pane files into one folder with PyInstaller, placed
    at src/frontend/src-tauri/backend/;
 2. runs `tauri build`, which builds the SPA, compiles the shell, and packs
-   both plus the backend folder into an installer (NSIS on Windows) under
+   both plus the backend folder into this OS's installers (BUNDLES) under
    src/frontend/src-tauri/target/release/bundle/.
+
+PyInstaller cannot cross-compile, so each OS builds its own installers.
 
 Needs the `desktop` extra (PyInstaller), Node.js, and a Rust toolchain.
 Model files and the llama.cpp runtime are NOT bundled: the user downloads
@@ -28,6 +30,21 @@ FRONTEND = ROOT / "src" / "frontend"
 SHELL = FRONTEND / "src-tauri"
 BACKEND_NAME = "stacks-backend"
 BUNDLE_CONFIG = SHELL / "tauri.bundle.conf.json"
+
+# Tauri bundle targets per OS, and the installer file each one produces.
+# macOS and Linux are experimental: built by CI, not yet tested by hand.
+BUNDLES: dict[str, dict[str, str]] = {
+    "win32": {"nsis": ".exe"},
+    "darwin": {"dmg": ".dmg"},
+    "linux": {"appimage": ".AppImage", "deb": ".deb"},
+}
+
+
+def _bundles() -> dict[str, str]:
+    try:
+        return BUNDLES[sys.platform]
+    except KeyError:
+        raise SystemExit(f"no installer defined for {sys.platform}") from None
 
 
 def build_backend() -> Path:
@@ -94,6 +111,8 @@ def build_backend() -> Path:
 
 
 def build_installer() -> list[Path]:
+    """Run `tauri build` for this OS; returns one installer per bundle."""
+    bundles = _bundles()
     npm = "npm.cmd" if sys.platform == "win32" else "npm"
     bundle = SHELL / "target" / "release" / "bundle"
     if bundle.exists():
@@ -107,17 +126,23 @@ def build_installer() -> list[Path]:
             "build",
             "--config",
             str(BUNDLE_CONFIG),
+            "--bundles",
+            ",".join(bundles),
             "--",
             "--locked",
         ],
         cwd=FRONTEND,
         check=True,
     )
-    return sorted(
-        p
-        for p in bundle.rglob("*")
-        if p.suffix in {".exe", ".msi", ".dmg", ".deb", ".AppImage"}
-    )
+    installers = []
+    for suffix in bundles.values():
+        found = sorted(bundle.rglob(f"*{suffix}"))
+        if len(found) != 1:
+            raise SystemExit(
+                f"Tauri must produce exactly one {suffix} installer; found {len(found)}"
+            )
+        installers += found
+    return installers
 
 
 def _size(path: Path) -> str:
@@ -149,12 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         backend = build_backend()
     print(f"backend: {backend} ({_size(backend)})")
-    installers = build_installer()
-    if len(installers) != 1:
-        raise SystemExit(
-            f"Tauri must produce exactly one installer; found {len(installers)}"
-        )
-    for installer in installers:
+    for installer in build_installer():
         print(f"installer: {installer} ({_size(installer)})")
     return 0
 

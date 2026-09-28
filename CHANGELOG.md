@@ -3,6 +3,18 @@
 All notable changes to Stacks. Versions follow [semantic versioning](https://semver.org);
 `scripts/set_version.py` sets a new one everywhere it is written down.
 
+## [Unreleased]
+
+### Added
+- Experimental macOS (Apple Silicon, `.dmg`) and Linux (x64, `.AppImage` and
+  `.deb`) builds, made by their own release workflow and attached to the same
+  GitHub release as the Windows installer. The macOS app is ad-hoc signed, not
+  notarized.
+
+### Fixed
+- On macOS, cleaning up a model server left behind by a crash no longer
+  signals whatever process now has its old process id.
+
 ## [0.3.0] - 2026-09-28
 
 ### Changed

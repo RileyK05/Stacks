@@ -12,8 +12,10 @@ on:
 permissions:
   contents: read
 
+# github.workflow is the caller's name when a release workflow runs this as
+# its gate, so two releases on one tag don't cancel each other's gate.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

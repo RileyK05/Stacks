@@ -1,4 +1,5 @@
-# Builds the Windows installer after the CI gate passes.
+# Builds the Windows installer after the CI gate passes (macOS and Linux:
+# release-macos-linux.yml).
 #
 # - Push a tag `vX.Y.Z` (matching src/backend/version.py): the installer is
 #   attached to a draft GitHub release, with that version's CHANGELOG
@@ -68,19 +69,16 @@ jobs:
           path: src/frontend/src-tauri/target/release/bundle/nsis/*.exe
           if-no-files-found: error
 
+      # The macOS/Linux workflow attaches to the same release and may have
+      # created the draft first; either way it exists before the upload.
       - name: Draft release
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          python - <<'EOF' > release-notes.md
-          import os, re, pathlib
-          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
-          version = re.escape(os.environ["VERSION"])
-          match = re.search(rf"^## \[{version}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
-          print(match.group(1).strip() if match else "See CHANGELOG.md.")
-          EOF
-          gh release create "$GITHUB_REF_NAME" \
-            src/frontend/src-tauri/target/release/bundle/nsis/*.exe \
-            --draft --title "Stacks $VERSION" --notes-file release-notes.md
+          python -m scripts.release_notes "$VERSION" > release-notes.md
+          gh release create "$GITHUB_REF_NAME" --draft \
+            --title "Stacks $VERSION" --notes-file release-notes.md || true
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            src/frontend/src-tauri/target/release/bundle/nsis/*.exe

@@ -322,3 +322,33 @@ def test_runtime_start_reports_why_it_cannot(client: TestClient) -> None:
     response = client.post("/runtime/start", json={"model_id": "minicpm5-2b"})
     assert response.status_code == 409
     assert "not downloaded" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("ps_output", "killed"),
+    [
+        ("{runtime}/macos-arm64/llama-server\n", True),
+        ("/Applications/Safari.app/Contents/MacOS/Safari\n", False),
+        ("", False),  # the process is gone
+    ],
+)
+def test_stale_server_cleanup_on_macos_only_kills_our_llama_server(
+    monkeypatch: pytest.MonkeyPatch, ps_output: str, killed: bool
+) -> None:
+    # macOS has no /proc: a reused pid must not be killed on the pidfile's word.
+    server._pidfile().write_text("4242", encoding="utf-8")
+    kills: list[int] = []
+
+    def fake_run(command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        assert command[:3] == ["ps", "-p", "4242"]
+        stdout = ps_output.format(runtime=server.runtime_dir())
+        return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+    monkeypatch.setattr(server.sys, "platform", "darwin")
+    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    monkeypatch.setattr(server.os, "kill", lambda pid, _sig: kills.append(pid))
+
+    server.cleanup_stale_server()
+
+    assert kills == ([4242] if killed else [])
+    assert not server._pidfile().exists()

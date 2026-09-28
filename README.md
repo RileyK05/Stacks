@@ -32,17 +32,31 @@ next" remains planned; see [docs/project.md](docs/project.md).
 
 ## Install
 
-**[Download the latest Windows installer](https://github.com/RileyK05/Stacks/releases/latest)**:
-grab the `Stacks_x.y.z_x64-setup.exe` file under *Assets* and run it. It
-installs for the current Windows user without administrator rights. It is not
-code-signed yet, so Windows SmartScreen may warn first: choose *More info*,
-then *Run anyway*.
+**[Download the latest release](https://github.com/RileyK05/Stacks/releases/latest)**
+and pick the file for your computer under *Assets*. None of the installers is
+code-signed yet, so your OS warns before the first launch.
+
+- **Windows:** `Stacks_x.y.z_x64-setup.exe`. It installs for the current user
+  without administrator rights. If SmartScreen warns, choose *More info*, then
+  *Run anyway*.
+- **macOS (Apple Silicon, experimental):** `Stacks_x.y.z_aarch64.dmg`. Drag
+  Stacks into Applications and open it. When macOS says it can't verify the
+  app, open *System Settings → Privacy & Security*, scroll down, and click
+  *Open Anyway*. You only do this once.
+- **Linux (x64, experimental):** `Stacks_x.y.z_amd64.AppImage` runs anywhere
+  (`chmod +x` it, then run it); `Stacks_x.y.z_amd64.deb` installs on Debian and
+  Ubuntu.
+
+The macOS and Linux builds are new and less tested than Windows. The docked
+companion and the Office add-in are designed for Windows first. On Linux under
+Wayland the companion can't snap itself to the screen edge.
 
 Before the first question, download a local model in Settings or choose a cloud
 provider. The default local model is about 1.6 GB; downloads and the llama.cpp
 runtime are checksummed.
 
-**Requirements:** Windows 10 or 11, 8 GB RAM minimum, 16 GB recommended.
+**Requirements:** Windows 10 or 11, macOS 11+ on Apple Silicon, or 64-bit
+Linux (Ubuntu 22.04 or newer). 8 GB RAM minimum, 16 GB recommended.
 
 ## Build from source
 
@@ -94,8 +108,9 @@ npm test
 ```
 
 GitHub Actions runs these gates on every push and pull request. A release uses
-`scripts.set_version`, a matching `vX.Y.Z` tag, and the Release workflow, which
-builds an installer and creates a draft release for review.
+`scripts.set_version`, a matching `vX.Y.Z` tag, and two workflows: Release
+(Windows) and Release (macOS, Linux). Each builds its installers on its own OS
+and attaches them to one draft release for review.
 
 ## Documentation
 

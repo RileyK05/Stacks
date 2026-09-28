@@ -344,6 +344,23 @@ def _pidfile() -> Path:
     return path
 
 
+def _process_executable(pid: int) -> str | None:
+    """The executable path of a running process, or None if it is gone or
+    cannot be read. Linux has /proc; macOS has no /proc, so ask ps."""
+    if sys.platform == "linux":
+        try:
+            return str(Path(f"/proc/{pid}/exe").resolve(strict=True))
+        except OSError:
+            return None
+    output = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "comm="],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return output or None
+
+
 def cleanup_stale_server() -> None:
     """Kill a llama-server left behind by a crashed previous launch (the
     pidfile names it; only a process whose executable lives under our
@@ -371,8 +388,8 @@ def cleanup_stale_server() -> None:
                     capture_output=True,
                 )
         else:
-            exe = Path(f"/proc/{pid}/exe")
-            if not exe.exists() or str(runtime_dir()) in str(exe.resolve()):
+            exe = _process_executable(pid)
+            if exe is not None and str(runtime_dir()) in exe:
                 os.kill(pid, 15)
     except OSError:
         pass
