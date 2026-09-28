@@ -44,7 +44,10 @@ GitHub Actions run:
 
 That proves native packaging for the prior code. The current window lifecycle
 passed all six backend and Tauri/frontend jobs on Windows x64, macOS arm64, and
-Linux x64 in CI run `36490786861`. Installed UI checks remain below.
+Linux x64 in CI run `36490786861`. Release workflow run `36492354123` then
+built and uploaded fresh `stacks-0.3.1-macos-arm64` and
+`stacks-0.3.1-linux-x64` artifacts from the current implementation. Installed
+UI checks remain below.
 
 ## Release gate
 
@@ -78,6 +81,8 @@ Linux x64 in CI run `36490786861`. Installed UI checks remain below.
 - [x] `npm run check` and `npm test` in `src/office-addin` (12 passed)
 - [x] `cargo clippy --all-targets --locked -- -D warnings`
 - [x] Build the Windows installer from this tree (83 MB NSIS bundle).
+- [x] Build Apple Silicon macOS and Linux x64 installers from this
+      implementation (release workflow run `36492354123`).
 - [x] Three-platform CI matrix passed for the current lifecycle implementation
       (run `36490786861`, commit `8c1bf97`).
 

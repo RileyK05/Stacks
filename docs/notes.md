@@ -3448,3 +3448,9 @@ uses a guarded lookup, and mypy passes locally for `win32`, `darwin`, and
 jobs on Windows x64, Apple Silicon macOS, and Linux x64. The packaged Windows
 shell also started its authenticated backend and shut that backend down when
 the shell process closed.
+
+Release workflow run `36492354123` subsequently built the current tree on its
+native runners and uploaded `stacks-0.3.1-macos-arm64` (82,351,725 bytes) and
+`stacks-0.3.1-linux-x64` (309,789,035 bytes) workflow artifacts. Attachment to
+the existing GitHub release was disabled; installed UI smoke testing remains a
+separate gate.
