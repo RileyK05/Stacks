@@ -1,6 +1,6 @@
 [package]
 name = "stacks"
-version = "0.3.0"
+version = "0.3.1"
 description = "Stacks: a study tool that runs on your own laptop"
 authors = ["Riley Kehoe"]
 license = "MIT"

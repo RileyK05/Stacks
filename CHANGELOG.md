@@ -3,7 +3,7 @@
 All notable changes to Stacks. Versions follow [semantic versioning](https://semver.org);
 `scripts/set_version.py` sets a new one everywhere it is written down.
 
-## [Unreleased]
+## [0.3.1] - 2026-09-28
 
 ### Added
 - Experimental macOS (Apple Silicon, `.dmg`) and Linux (x64, `.AppImage` and
