@@ -32,10 +32,11 @@ next" remains planned; see [docs/project.md](docs/project.md).
 
 ## Install
 
-Installers will be published on this repository's Releases page. Until the
-first release, build from source. The NSIS installer installs for the current
-Windows user without administrator rights. It is not code-signed yet, so
-Windows SmartScreen may warn before it runs.
+**[Download the latest Windows installer](https://github.com/RileyK05/Stacks/releases/latest)**:
+grab the `Stacks_x.y.z_x64-setup.exe` file under *Assets* and run it. It
+installs for the current Windows user without administrator rights. It is not
+code-signed yet, so Windows SmartScreen may warn first: choose *More info*,
+then *Run anyway*.
 
 Before the first question, download a local model in Settings or choose a cloud
 provider. The default local model is about 1.6 GB; downloads and the llama.cpp

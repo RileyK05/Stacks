@@ -3,7 +3,7 @@
 All notable changes to Stacks. Versions follow [semantic versioning](https://semver.org);
 `scripts/set_version.py` sets a new one everywhere it is written down.
 
-## [0.2.0] - Unreleased
+## [0.3.0] - 2026-09-28
 
 ### Changed
 - The desktop app is now a Tauri app named Stacks. The window, the
