@@ -62,6 +62,7 @@
         (m) => m.download?.status === 'downloading' || m.download?.status === 'verifying'
       );
       view = data;
+      error = null;
       for (const before of finished ?? []) {
         const after = data.models.find((m) => m.id === before.id);
         if (after?.download?.status === 'done') toast(`${after.label} downloaded.`);
@@ -100,10 +101,14 @@
   }
 
   async function cancel(model: ModelView) {
-    const { data } = await api.DELETE('/runtime/models/{model_id}/download', {
-      params: { path: { model_id: model.id } }
-    });
-    if (data) view = data;
+    try {
+      const { data } = await api.DELETE('/runtime/models/{model_id}/download', {
+        params: { path: { model_id: model.id } }
+      });
+      if (data) view = data;
+    } catch (caught) {
+      error = caught;
+    }
   }
 
   async function start(model: ModelView) {
@@ -134,6 +139,8 @@
       await api.POST('/runtime/stop');
       await refresh();
       onchange?.();
+    } catch (caught) {
+      error = caught;
     } finally {
       busy = null;
     }
@@ -151,11 +158,15 @@
       confirmLabel: inPlace ? 'Remove' : 'Delete',
       danger: true
     }))) return;
-    const { data } = await api.DELETE('/runtime/models/{model_id}', {
-      params: { path: { model_id: model.id } }
-    });
-    if (data) view = data;
-    onchange?.();
+    try {
+      const { data } = await api.DELETE('/runtime/models/{model_id}', {
+        params: { path: { model_id: model.id } }
+      });
+      if (data) view = data;
+      onchange?.();
+    } catch (caught) {
+      error = caught;
+    }
   }
 
   function percent(model: ModelView): number {

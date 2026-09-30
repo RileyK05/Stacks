@@ -13,5 +13,5 @@
     "types": ["office-js"],
     "skipLibCheck": true
   },
-  "files": ["public/taskpane.js", "public/bridge.js"]
+  "include": ["public/**/*.js"]
 }

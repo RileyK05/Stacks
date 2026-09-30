@@ -75,3 +75,16 @@ def test_provider_seam_accepts_text_tasks_and_records_usage(monkeypatch) -> None
         10,
         5,
     )
+
+
+def test_every_configured_prompt_is_loadable() -> None:
+    """A prompt added to prompts.toml but missing from KNOWN_PROMPTS is
+    refused by load_prompt at the moment of use (tutor_chat was)."""
+    from src.backend.common.prompt_registry import (
+        KNOWN_PROMPTS,
+        load_prompt,
+        load_prompt_policy,
+    )
+
+    assert load_prompt_policy().prompts.keys() <= KNOWN_PROMPTS
+    assert load_prompt("tutor_chat")

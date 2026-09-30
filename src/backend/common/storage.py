@@ -153,19 +153,6 @@ def is_compressible(mime_type: str) -> bool:
     )
 
 
-def compress_for_storage(data: bytes, mime_type: str) -> tuple[bytes, str]:
-    """gzip only when both the mimetype allows it and it saves >=10%.
-    Returns (stored_bytes, encoding) with encoding in {'identity', 'gzip'}.
-    PDFs/images/video are skipped: gzip gains near zero on them."""
-    if not data or not is_compressible(mime_type):
-        return data, "identity"
-    compressed = gzip.compress(data, compresslevel=COMPRESSION_LEVEL)
-    savings = 100 - (len(compressed) * 100) // len(data)
-    if savings >= COMPRESSION_MIN_SAVINGS_PERCENT:
-        return compressed, "gzip"
-    return data, "identity"
-
-
 def compress_temp_for_storage(temp_path: Path, mime_type: str) -> tuple[Path, str, int]:
     original_size = temp_path.stat().st_size
     if original_size == 0 or not is_compressible(mime_type):
@@ -228,19 +215,6 @@ def write_stored_from_temp(
         _atomic_write(path, source)
     discard_temp(temp_path)
     return path
-
-
-def copy_stored(
-    source_course_id: UUID,
-    source_id: UUID,
-    target_course_id: UUID,
-    target_source_id: UUID,
-) -> Path:
-    source_path = source_disk_path(source_course_id, source_id)
-    target_path = source_disk_path(target_course_id, target_source_id)
-    with source_path.open("rb") as source:
-        _atomic_write(target_path, source)
-    return target_path
 
 
 def remove_course_directory(course_id: UUID) -> None:

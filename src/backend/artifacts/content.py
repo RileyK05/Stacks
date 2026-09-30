@@ -16,11 +16,14 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+from src.backend.common.schemas.learning import Capability
+from src.backend.common.schemas.mind_map import MindMapContent
 from src.backend.tutor.workspace import (
     WorkspaceCode,
     WorkspaceDocument,
     WorkspaceHtml,
     WorkspaceItem,
+    WorkspaceMindMap,
     WorkspaceQuiz,
     WorkspaceSheet,
     WorkspaceSlides,
@@ -34,6 +37,7 @@ ArtifactKind = Literal[
     "flashcards",
     "code",
     "chart",
+    "mind_map",
 ]
 KINDS: tuple[ArtifactKind, ...] = (
     "doc",
@@ -43,6 +47,7 @@ KINDS: tuple[ArtifactKind, ...] = (
     "flashcards",
     "code",
     "chart",
+    "mind_map",
 )
 MAX_TEXT = 200_000
 MAX_CELL = 5_000
@@ -96,6 +101,8 @@ class QuizQuestion(BaseModel):
     answer: int
     explanation: str = Field(default="", max_length=5_000)
     sources: list[int] = Field(default_factory=list)
+    topic: str = Field(default="", max_length=160)
+    capability: Capability = "recognition"
 
     @model_validator(mode="after")
     def _answer_is_an_option(self) -> QuizQuestion:
@@ -139,6 +146,7 @@ CONTENT_MODELS: dict[str, type[BaseModel]] = {
     "flashcards": FlashcardsContent,
     "code": CodeContent,
     "chart": ChartContent,
+    "mind_map": MindMapContent,
 }
 
 DEFAULT_TITLES: dict[str, str] = {
@@ -149,6 +157,7 @@ DEFAULT_TITLES: dict[str, str] = {
     "flashcards": "Untitled flashcards",
     "code": "Untitled code",
     "chart": "Untitled chart",
+    "mind_map": "Untitled mind map",
 }
 
 
@@ -158,10 +167,6 @@ def validate_content(kind: str, raw: Any) -> dict[str, Any]:
     if model is None:
         raise ValueError(f"unknown artifact kind: {kind}")
     return model.model_validate(raw).model_dump()
-
-
-def blank(kind: str) -> dict[str, Any]:
-    return validate_content(kind, {})
 
 
 # --- citations ---------------------------------------------------------
@@ -293,26 +298,42 @@ def _deck_slides(deck: str) -> list[dict[str, str]]:
 
 def from_workspace_item(
     item: WorkspaceItem,
+    *,
+    draft: str | list[list[str]] | None = None,
 ) -> tuple[str, str, dict[str, Any], list[int]]:
     """(kind, title, content, item-level citations) for a chat workspace
     item. Citations keep the item's numbering; the caller compacts them
     onto chunk ids, so what the item as a whole cited stays in the
     artifact's sources even where no line cites it inline."""
     title = item.title or ""
+    if draft is not None:
+        if isinstance(item, WorkspaceSheet):
+            if not isinstance(draft, list):
+                raise ValueError("a sheet draft must contain rows")
+        elif isinstance(item, (WorkspaceDocument, WorkspaceSlides)):
+            if not isinstance(draft, str):
+                raise ValueError("a document or slides draft must contain text")
+        else:
+            raise ValueError("this workspace item is not editable")
     if isinstance(item, WorkspaceDocument):
-        return "doc", title or "Study notes", {"markdown": item.content}, item.sources
+        return (
+            "doc",
+            title or "Study notes",
+            {"markdown": item.content if draft is None else draft},
+            item.sources,
+        )
     if isinstance(item, WorkspaceSheet):
         return (
             "sheet",
             title or "Table",
-            {"columns": item.columns, "rows": item.rows},
+            {"columns": item.columns, "rows": item.rows if draft is None else draft},
             item.sources,
         )
     if isinstance(item, WorkspaceSlides):
         return (
             "slides",
             title or "Slides",
-            {"slides": _deck_slides(item.deck)},
+            {"slides": _deck_slides(draft if isinstance(draft, str) else item.deck)},
             item.sources,
         )
     if isinstance(item, WorkspaceQuiz):
@@ -327,11 +348,18 @@ def from_workspace_item(
                         "answer": q.answer,
                         "explanation": q.explanation or "",
                         "sources": q.sources,
+                        "topic": q.topic,
+                        "capability": q.capability,
                     }
                     for q in item.questions
                 ]
             },
             [],
+        )
+    if isinstance(item, WorkspaceMindMap):
+        return (
+            "mind_map", title or "Mind map",
+            item.model_dump(include={"nodes", "edges"}), [],
         )
     if isinstance(item, WorkspaceCode):
         return (

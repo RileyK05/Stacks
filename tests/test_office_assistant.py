@@ -14,7 +14,7 @@ from uuid import UUID
 
 import pytest
 from src.backend.common.db import connection
-from src.backend.retrieval.config import load_retrieval_policy
+from src.backend.retrieval.config import RerankPolicy, load_retrieval_policy
 from src.backend.tutor import office
 from tests.conftest import configure_test_provider
 from tests.factories import add_chunk
@@ -162,3 +162,62 @@ def test_graded_request_detector() -> None:
     assert office.is_graded_request("", "write my essay so I can submit it")
     assert office.is_graded_request("fill in all the answers", "")
     assert not office.is_graded_request("explain this slide", "the chapter on limits")
+
+
+def test_explicit_explanation_overrides_graded_context_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    course_id = _course()
+    add_chunk(course_id, "Linearity means preserving addition and scaling.")
+    calls = configure_test_provider(monkeypatch, ANSWER)
+    with connection() as conn:
+        result = office.answer(
+            conn,
+            course_id,
+            office.OfficeAction.EXPLAIN,
+            host="word",
+            context="Solve this homework problem about linear maps.",
+            instruction="Explain the relevant concept without doing the problem.",
+            policy=load_retrieval_policy(),
+        )
+    assert result.text == ANSWER
+    assert calls
+
+
+def test_office_reranks_and_limits_cited_material(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    course_id = _course()
+    add_chunk(course_id, "Linearity strong course-specific explanation.")
+    add_chunk(course_id, "Linearity weak generic mention.")
+    configure_test_provider(monkeypatch, ANSWER)
+    monkeypatch.setattr(
+        office.rerank,
+        "load_rerank_policy",
+        lambda: RerankPolicy(enabled=True, model="test", generation_k=1),
+    )
+    monkeypatch.setattr(
+        office.rerank.provider,
+        "rerank_scores",
+        lambda _model, _question, texts: [
+            1.0 if "strong" in text else 0.0 for text in texts
+        ],
+    )
+    with connection() as conn:
+        result = office.answer(
+            conn,
+            course_id,
+            office.OfficeAction.EXPLAIN,
+            host="word",
+            context="Linearity",
+            policy=load_retrieval_policy(),
+        )
+        conn.commit()
+    assert len(result.citations) == 1
+    assert "strong" in result.citations[0].text
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT retrieved_chunk_ids FROM retrieval_traces WHERE trace_id = ?",
+            (result.trace_id,),
+        ).fetchone()
+    assert row["retrieved_chunk_ids"]["chunk_ids"] == [result.citations[0].chunk_id]

@@ -117,11 +117,11 @@ def _resolve_course(conn: Connection, course_tag: str) -> UUID | None:
 def _labels_for_candidates(
     conn: Connection, candidates: tuple[Candidate, ...]
 ) -> frozenset[str]:
-    locator_ids = [candidate.locator_id for candidate in candidates]
-    if not locator_ids:
+    chunk_ids = [candidate.chunk_id for candidate in candidates]
+    if not chunk_ids:
         return frozenset()
     rows = conn.execute(
-        get("retrieval", "locator_labels"), {"locator_ids": json_ids(locator_ids)}
+        get("retrieval", "chunk_locator_labels"), {"chunk_ids": json_ids(chunk_ids)}
     ).fetchall()
     return frozenset(row["label"] for row in rows)
 

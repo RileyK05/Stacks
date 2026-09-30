@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import hmac
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Header, HTTPException, status
+from src.backend.common import courses_repo
 from src.backend.common.config import get_settings
+from src.backend.common.schemas.identity import Course
 
 APP_TOKEN_HEADER = "X-App-Token"
+
+
+def require_course(course_id: UUID) -> Course:
+    course = courses_repo.get_course(course_id)
+    if course is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
+    return course
 
 
 def require_app_token(

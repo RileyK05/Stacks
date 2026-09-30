@@ -7,13 +7,14 @@ keyring and are never returned — the UI only learns whether one is set.
 
 from __future__ import annotations
 
+import difflib
 from datetime import datetime
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
-from src.backend.common import providers, secrets, usage_repo
+from src.backend.common import provider, providers, secrets, usage_repo
 from src.backend.common.providers import (
     Connection,
     ProviderChoice,
@@ -101,6 +102,13 @@ class ConnectionTest(BaseModel):
     ok: bool
     models: list[str] = Field(default_factory=list)
     error: str | None = None
+    # The connection's default model, tried with one real request: `ok` only
+    # says the URL and key work. None when there was nothing to try.
+    model: str | None = None
+    model_ok: bool | None = None
+    model_error: str | None = None
+    # Offered names close to a default model the server does not offer.
+    suggested_models: list[str] = Field(default_factory=list)
 
 
 class ModelOption(BaseModel):
@@ -354,7 +362,53 @@ def test_connection(connection_id: str) -> ConnectionTest:
         return ConnectionTest(ok=False, error="this connection has no URL yet")
     if view.requires_key and not view.has_key:
         return ConnectionTest(ok=False, error="add an API key first")
+    result = _list_models(view.effective_base_url, secrets.get_api_key(connection.id))
+    model = view.effective_default_model
+    if not result.ok or not model:
+        return result
+    return result.model_copy(update=_try_model(connection.id, model, result.models))
+
+
+@router.get("/connections/{connection_id}/models", response_model=ConnectionTest)
+def connection_models(connection_id: str) -> ConnectionTest:
+    """Just the model names a connection offers, for autocompletion: no
+    completion request, so it spends nothing."""
+    connection = _require_connection(connection_id)
+    view = _connection_view(connection)
+    if connection.id == providers.LOCAL or not view.effective_base_url:
+        return ConnectionTest(ok=False, error="no model list for this connection")
+    if view.requires_key and not view.has_key:
+        return ConnectionTest(ok=False, error="add an API key first")
     return _list_models(view.effective_base_url, secrets.get_api_key(connection.id))
+
+
+def _try_model(connection_id: str, model: str, offered: list[str]) -> dict[str, Any]:
+    """Whether the default model really answers. A name the endpoint does
+    not list fails fast with the closest names it does; otherwise one tiny
+    real request (see provider.probe)."""
+    if offered and model not in offered:
+        close = difflib.get_close_matches(model, offered, n=3, cutoff=0.5)
+        suggestion = f" Did you mean {', '.join(close)}?" if close else ""
+        return {
+            "model": model,
+            "model_ok": False,
+            "model_error": f"this server does not offer {model}.{suggestion}",
+            "suggested_models": close,
+        }
+    endpoint = providers.resolve_choice(
+        ProviderChoice(connection=connection_id, model=model)
+    )
+    if endpoint is None:
+        return {
+            "model": model,
+            "model_ok": False,
+            "model_error": "incomplete connection",
+        }
+    try:
+        provider.probe(endpoint)
+    except provider.ProviderUnavailableError as err:
+        return {"model": model, "model_ok": False, "model_error": str(err)}
+    return {"model": model, "model_ok": True}
 
 
 @router.get("/model-options", response_model=list[ModelOption])

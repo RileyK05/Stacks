@@ -15,14 +15,11 @@ from __future__ import annotations
 import io
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from pathlib import PurePath
 from uuid import UUID, uuid4
 
 from src.backend.common import storage
 from src.backend.common.lifecycle_config import load_lifecycle_policy
-
-if TYPE_CHECKING:
-    pass
 
 PAGE_SEPARATOR = "\n"
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
@@ -38,6 +35,10 @@ _TEXT_MIME_EXACT = {
     "application/yaml",
 }
 _PDF_MIME = "application/pdf"
+_OFFICE = "application/vnd.openxmlformats-officedocument"
+_DOCX_MIME = f"{_OFFICE}.wordprocessingml.document"
+_PPTX_MIME = f"{_OFFICE}.presentationml.presentation"
+_XLSX_MIME = f"{_OFFICE}.spreadsheetml.sheet"
 # Layout-mode table detection: how far (in characters) a cell may drift
 # between rows and still count as the same column, and the most cells a
 # row may have before it looks like spaced-out prose rather than a table.
@@ -49,7 +50,57 @@ _TABLE_MAX_COLUMNS = 6
 # failed at extraction was the review's "quota is a one-way ratchet"
 # half. Keep in sync with extract()'s dispatch (they share the module so
 # drift fails loudly at the dispatch's UnsupportedSourceTypeError).
-INGESTABLE_MIME_TYPES = frozenset(_TEXT_MIME_EXACT | {_PDF_MIME})
+INGESTABLE_MIME_TYPES = frozenset(
+    _TEXT_MIME_EXACT | {_PDF_MIME, _DOCX_MIME, _PPTX_MIME, _XLSX_MIME}
+)
+
+# What a browser or webview reports for a picked file is a guess from the
+# OS's extension registry: `.md` is usually "" (→ application/octet-stream)
+# on Windows, `.csv` is "application/vnd.ms-excel" wherever Excel is
+# installed, and some servers add parameters ("text/plain; charset=utf-8").
+# Trusting it verbatim rejected ordinary notes files as "unsupported".
+SUPPORTED_FILES_HINT = (
+    "Supported: PDF, Word (.docx), PowerPoint (.pptx), Excel (.xlsx), "
+    "Markdown, plain text, CSV, JSON, XML and YAML files."
+)
+_MIME_ALIASES = {
+    "application/x-pdf": _PDF_MIME,
+    "text/x-csv": "text/csv",
+    "application/csv": "text/csv",
+    "text/json": "application/json",
+    "text/xml": "application/xml",
+    "text/yaml": "application/yaml",
+    "text/x-yaml": "application/yaml",
+    "application/x-yaml": "application/yaml",
+}
+_EXTENSION_MIME = {
+    ".pdf": _PDF_MIME,
+    ".docx": _DOCX_MIME,
+    ".pptx": _PPTX_MIME,
+    ".xlsx": _XLSX_MIME,
+    ".txt": "text/plain",
+    ".text": "text/plain",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+}
+
+
+def resolve_mime_type(filename: str, declared: str | None) -> str:
+    """The MIME type to store and ingest under: the declared one
+    (normalized), or — when that is not one we can ingest — the type the
+    file's extension names. Returns the normalized declared type when
+    neither works, so the caller's rejection names what the client sent."""
+    normalized = (declared or "").split(";", 1)[0].strip().lower()
+    normalized = _MIME_ALIASES.get(normalized, normalized)
+    if normalized in INGESTABLE_MIME_TYPES:
+        return normalized
+    extension = PurePath(filename.replace("\\", "/")).suffix.lower()
+    return _EXTENSION_MIME.get(extension, normalized or "application/octet-stream")
 
 
 @dataclass(frozen=True)
@@ -244,6 +295,14 @@ def _markdown_locators(text: str) -> tuple[LocatorSpan, ...]:
     return tuple(spans)
 
 
+def clean_text(text: str) -> str:
+    """Text the database can store. A PDF with a broken font map (or a model
+    that answered with half an emoji) yields lone UTF-16 surrogates, which
+    cannot be encoded as UTF-8: the insert then failed the whole file at the
+    build stage. NUL is dropped for the same reason `read_decoded` drops it."""
+    return text.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
+
+
 def _join_pages(page_texts: list[str]) -> str:
     """The one join the locators and the text share. Any change here must
     keep `_pdf_locators` in lockstep — the separator is what keeps page
@@ -251,7 +310,12 @@ def _join_pages(page_texts: list[str]) -> str:
     return PAGE_SEPARATOR.join(page_texts)
 
 
-def _pdf_locators(page_texts: list[str]) -> tuple[LocatorSpan, ...]:
+def _pdf_locators(
+    page_texts: list[str],
+    *,
+    locator_type: str = "page",
+    labels: list[str] | None = None,
+) -> tuple[LocatorSpan, ...]:
     spans: list[LocatorSpan] = []
     offset = 0
     for index, page_text in enumerate(page_texts):
@@ -259,10 +323,10 @@ def _pdf_locators(page_texts: list[str]) -> tuple[LocatorSpan, ...]:
         spans.append(
             LocatorSpan(
                 locator_id=uuid4(),
-                locator_type="page",
+                locator_type=locator_type,
                 start=offset,
                 end=end,
-                label=f"page {index + 1}",
+                label=labels[index] if labels else f"page {index + 1}",
             )
         )
         offset = end + len(PAGE_SEPARATOR)
@@ -304,7 +368,49 @@ def extract(
         else:
             locators = _line_locators(text)
         return ExtractedSource(text=text, locators=locators)
+    if mime_type in (_DOCX_MIME, _PPTX_MIME, _XLSX_MIME):
+        return _extract_office(course_id, source_id, mime_type, stored_encoding)
     raise UnsupportedSourceTypeError(mime_type)
+
+
+def _extract_office(
+    course_id: UUID,
+    source_id: UUID,
+    mime_type: str,
+    stored_encoding: str | None,
+) -> ExtractedSource:
+    from src.backend.ingest import office
+
+    raw = read_pdf_bytes(course_id, source_id, stored_encoding)
+    if mime_type == _DOCX_MIME:
+        text = office.docx_text(raw)
+        if not text.strip():
+            raise EmptyExtractionError(source_id)
+        return ExtractedSource(text=text, locators=_markdown_locators(text))
+    read_pages = office.pptx_pages if mime_type == _PPTX_MIME else office.xlsx_pages
+    pages = read_pages(raw)
+    if not any(text.strip() for _label, text in pages):
+        raise EmptyExtractionError(source_id)
+    page_texts = [text for _label, text in pages]
+    return ExtractedSource(
+        text=_join_pages(page_texts),
+        locators=_pdf_locators(
+            page_texts,
+            locator_type="slide" if mime_type == _PPTX_MIME else "sheet",
+            labels=[label for label, _text in pages],
+        ),
+    )
+
+
+def viewer_text(
+    course_id: UUID, source_id: UUID, mime_type: str, stored_encoding: str | None
+) -> str | None:
+    """The readable text of a source whose original bytes are not text (an
+    Office file), exactly as ingestion saw it, so a cited passage can be
+    found in it. None for formats the viewer shows as they are."""
+    if mime_type not in (_DOCX_MIME, _PPTX_MIME, _XLSX_MIME):
+        return None
+    return _extract_office(course_id, source_id, mime_type, stored_encoding).text
 
 
 def read_pdf_bytes(
@@ -343,11 +449,11 @@ def _pdf_page_texts(
         reader = pypdf.PdfReader(io.BytesIO(raw))
     page_texts: list[str] = []
     for page in reader.pages:
-        plain = page.extract_text() or ""
+        plain = clean_text(page.extract_text() or "")
         if not plain.strip():
             page_texts.append(plain)
             continue
-        layout = page.extract_text(extraction_mode="layout") or ""
+        layout = clean_text(page.extract_text(extraction_mode="layout") or "")
         normalized, has_table = _normalize_layout_tables(layout)
         page_texts.append(normalized if has_table else plain)
     return page_texts
@@ -450,6 +556,7 @@ def ocr_extracted_source(page_texts: list[str]) -> ExtractedSource:
     """Build an ExtractedSource from per-page OCR output, using the exact
     same page join and locator builder as a text-layer PDF so OCR
     citations align identically."""
+    page_texts = [clean_text(page_text) for page_text in page_texts]
     return ExtractedSource(
         text=_join_pages(page_texts),
         locators=_pdf_locators(page_texts),

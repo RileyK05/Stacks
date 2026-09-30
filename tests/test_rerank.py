@@ -58,6 +58,16 @@ def test_reranker_failure_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
     assert chosen == candidates
 
 
+@pytest.mark.parametrize("scores", ([1.0], [1.0, float("nan"), 0.0]))
+def test_invalid_reranker_scores_fail_open(
+    monkeypatch: pytest.MonkeyPatch, scores: list[float]
+) -> None:
+    monkeypatch.setattr(provider, "rerank_scores", lambda *_args: scores)
+    candidates = tuple(_candidate(text, i) for i, text in enumerate(TEXTS))
+    chosen = select_for_generation("final exam", candidates, _policy(generation_k=2))
+    assert chosen == candidates[:2]
+
+
 def test_ties_keep_fused_order() -> None:
     candidates = tuple(_candidate("same words", i) for i in range(4))
     chosen = select_for_generation("unrelated", candidates, _policy(generation_k=4))

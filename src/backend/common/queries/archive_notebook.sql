@@ -4,7 +4,7 @@
 SELECT * FROM conversations WHERE course_id = :course_id ORDER BY created_at;
 
 -- name: messages
-SELECT seq, role, text, trace_id, payload, created_at
+SELECT message_id, seq, role, text, trace_id, payload, created_at
 FROM messages WHERE conversation_id = :conversation_id ORDER BY seq;
 
 -- name: artifacts

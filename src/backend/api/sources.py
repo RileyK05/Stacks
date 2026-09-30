@@ -7,13 +7,21 @@ from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel
-from src.backend.common import courses_repo, sources_repo, storage
+from src.backend.api.deps import require_course
+from src.backend.common import sources_repo, storage
 from src.backend.common.db import connection
 from src.backend.common.lifecycle_config import load_lifecycle_policy
 from src.backend.common.queries import get
 from src.backend.common.schemas.base import SourceStatus, SourceType
 from src.backend.ingest import worker as worker_module
-from src.backend.ingest.extract import INGESTABLE_MIME_TYPES
+from src.backend.ingest.extract import (
+    INGESTABLE_MIME_TYPES,
+    SUPPORTED_FILES_HINT,
+    EmptyExtractionError,
+    resolve_mime_type,
+    viewer_text,
+)
+from src.backend.ingest.office import OfficeFileError
 
 router = APIRouter(prefix="/courses", tags=["sources"])
 
@@ -51,11 +59,6 @@ class PassageView(BaseModel):
     description: str | None
 
 
-def _require_course(course_id: UUID) -> None:
-    if courses_repo.get_course(course_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
-
-
 @router.post(
     "/{course_id}/sources",
     response_model=SourceUploadView,
@@ -66,13 +69,14 @@ def upload_source(
     file: Annotated[UploadFile, File()],
     source_type: Annotated[SourceType, Form()],
 ) -> SourceUploadView:
-    declared = file.content_type or "application/octet-stream"
+    declared = resolve_mime_type(file.filename or "", file.content_type)
     if declared not in INGESTABLE_MIME_TYPES:
         # Reject BEFORE storage: an un-ingestable upload would otherwise
         # take disk space the user can only reclaim by deleting it.
         raise HTTPException(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            f"unsupported file type: {declared}",
+            f"unsupported file type: {file.filename or declared} ({declared}). "
+            f"{SUPPORTED_FILES_HINT}",
         )
     try:
         result = sources_repo.upload_source(
@@ -105,7 +109,7 @@ def upload_source(
 def list_sources(course_id: UUID) -> list[SourceView]:
     """The course's files with their live status, including why a failed
     one failed (review catch #6: a failed upload must never be silent)."""
-    _require_course(course_id)
+    require_course(course_id)
     return [
         SourceView.model_validate(source, from_attributes=True)
         for source in sources_repo.list_sources(course_id)
@@ -115,7 +119,7 @@ def list_sources(course_id: UUID) -> list[SourceView]:
 @router.get("/{course_id}/sources/{source_id}/content")
 def source_content(course_id: UUID, source_id: UUID) -> Response:
     """Original source bytes for the in-app viewer, scoped to this course."""
-    _require_course(course_id)
+    require_course(course_id)
     with connection() as conn:
         row = conn.execute(
             get("sources", "viewer_source"),
@@ -123,6 +127,24 @@ def source_content(course_id: UUID, source_id: UUID) -> Response:
         ).fetchone()
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    try:
+        readable = viewer_text(
+            course_id, source_id, row["mime_type"], row["stored_encoding"]
+        )
+    except (OfficeFileError, EmptyExtractionError) as err:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(err)) from err
+    if readable is not None:
+        # An Office file's bytes are a zip, not something the viewer can
+        # show; it gets the text ingestion read, which is what citations
+        # point into.
+        return Response(
+            content=readable.encode("utf-8"),
+            media_type="text/plain; charset=utf-8",
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, no-store",
+            },
+        )
     data = storage.read_stored(
         course_id,
         source_id,
@@ -144,7 +166,7 @@ def source_pdf_page(course_id: UUID, source_id: UUID, page_number: int) -> Respo
     """Render one original PDF page for the cited-passage viewer."""
     import pypdfium2 as pdfium
 
-    _require_course(course_id)
+    require_course(course_id)
     with connection() as conn:
         row = conn.execute(
             get("sources", "viewer_source"),
@@ -189,7 +211,7 @@ def source_pdf_page(course_id: UUID, source_id: UUID, page_number: int) -> Respo
     response_model=PassageView,
 )
 def source_passage(course_id: UUID, source_id: UUID, chunk_id: UUID) -> PassageView:
-    _require_course(course_id)
+    require_course(course_id)
     with connection() as conn:
         row = conn.execute(
             get("sources", "viewer_passage"),
@@ -204,7 +226,7 @@ def source_passage(course_id: UUID, source_id: UUID, chunk_id: UUID) -> PassageV
 def requeue_source(course_id: UUID, source_id: UUID) -> dict[str, str]:
     """Retry a failed source: failed → uploaded + re-enqueued. 409 when the
     source is not in a failed state."""
-    _require_course(course_id)
+    require_course(course_id)
     with connection() as conn:
         requeued = sources_repo.requeue_failed(conn, source_id, course_id)
         conn.commit()
@@ -216,7 +238,7 @@ def requeue_source(course_id: UUID, source_id: UUID) -> dict[str, str]:
 
 @router.post("/{course_id}/sources/{source_id}/reindex")
 def reindex_source(course_id: UUID, source_id: UUID) -> dict[str, str]:
-    _require_course(course_id)
+    require_course(course_id)
     if not sources_repo.reindex_source(course_id, source_id):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "source is not indexed or does not exist"
@@ -232,6 +254,6 @@ def delete_source(course_id: UUID, source_id: UUID) -> None:
     """Remove one file and everything derived from it (chunks,
     embeddings, run history). Immediate — sources have no trash; the
     course does."""
-    _require_course(course_id)
+    require_course(course_id)
     if not sources_repo.delete_source(course_id, source_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")

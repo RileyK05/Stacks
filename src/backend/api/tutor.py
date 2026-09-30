@@ -11,13 +11,16 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
-from src.backend.common import courses_repo, provider, usage_repo
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from src.backend.api.deps import require_course
+from src.backend.common import provider, usage_repo
 from src.backend.common.db import connection, json_ids
 from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.common.queries import get
 from src.backend.retrieval.config import load_retrieval_policy
 from src.backend.tutor import answer as tutor_answer
+from src.backend.tutor import chat
+from src.backend.tutor.compose import Intent, classify_intent
 from src.backend.tutor.workspace import WorkspaceItem
 
 router = APIRouter(prefix="/courses", tags=["tutor"])
@@ -30,6 +33,13 @@ class AskRequest(BaseModel):
     # "Ask a bigger model": answer with the user's Settings → bigger-model
     # choice instead of their everyday one. Only ever set by the user.
     bigger_model: bool = False
+
+    @field_validator("question")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("write a question first")
+        return value
 
 
 class AnswerView(BaseModel):
@@ -57,7 +67,7 @@ def answer_view(result: tutor_answer.Answer, *, bigger: bool = False) -> AnswerV
     return AnswerView(
         text=result.body,
         chunk_ids=[str(cid) for cid in result.chunk_ids],
-        trace_id=str(result.trace_id),
+        trace_id=str(result.trace_id) if result.trace_id else "",
         workspace=list(result.workspace_items),
         withheld=list(result.withheld),
         model=result.model,
@@ -82,18 +92,16 @@ class CitationView(BaseModel):
     filename: str
 
 
-def _require_course(course_id: UUID) -> None:
-    if courses_repo.get_course(course_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
-
-
 @router.post("/{course_id}/ask", response_model=AnswerView)
 def ask(course_id: UUID, payload: AskRequest) -> AnswerView:
-    _require_course(course_id)
+    require_course(course_id)
+    search = chat.retrieval_query(payload.question, None)
+    overview = chat.wants_overview(payload.question, None)
+    searches = not overview and classify_intent(payload.question) is not Intent.CHAT
     try:
         # Embed before opening the connection: the model call is the slow
         # part and needs no database.
-        query_embedding = provider.embed_query(payload.question)
+        query_embedding = tutor_answer.embed_search(search) if searches else None
         with connection() as conn:
             result = tutor_answer.answer_question(
                 conn,
@@ -103,6 +111,8 @@ def ask(course_id: UUID, payload: AskRequest) -> AnswerView:
                 query_embedding=query_embedding,
                 embedding_model=load_embedding_policy().model,
                 bigger=payload.bigger_model,
+                search_query=search,
+                overview=overview,
             )
             conn.commit()
     except tutor_answer.NothingRelevantFoundError as err:
@@ -122,7 +132,7 @@ def trace_citations(course_id: UUID, trace_id: UUID) -> list[CitationView]:
     """The evidence behind one answer: chunk text + locator label +
     filename. The trace must belong to this course (a trace id from
     another course 404s)."""
-    _require_course(course_id)
+    require_course(course_id)
     with connection() as conn:
         trace = conn.execute(
             get("retrieval_traces", "trace_for_course"),

@@ -45,7 +45,9 @@
   }
 
   function onKey(event: KeyboardEvent) {
-    if (mode !== 'study' || (event.target as HTMLElement).closest('input, textarea')) return;
+    if (mode !== 'study' || deck.cards.length === 0) return;
+    if ((event.target as HTMLElement | null)?.closest('input, textarea, select, button, a, [contenteditable="true"]')) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === ' ') {
       event.preventDefault();
       flipped = !flipped;

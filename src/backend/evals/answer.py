@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from src.backend.common.db import Connection
@@ -101,6 +102,8 @@ REFUSAL_MARKER_RE = re.compile(
             "cannot give you",
             "don't have access",
             "do not have access",
+            "don't have information",
+            "do not have information",
             "not provided",
             "on your behalf",
             "for you to submit",
@@ -154,7 +157,7 @@ class AnswerCase:
     course_tag: str
     question: str
     seed_chunk_labels: tuple[str, ...]
-    expectation: dict[str, bool]
+    expectation: dict[str, bool | list[str]]
 
 
 @dataclass(frozen=True)
@@ -176,7 +179,9 @@ class AnswerEvalSummary:
 
     def __str__(self) -> str:
         lines = [
-            f"answer eval — all passed: {self.all_passed}",
+            f"answer contract eval — all passed: {self.all_passed}",
+            "Mechanical checks only; inspect factual accuracy and "
+            "usefulness separately.",
             "per-kind pass rate: "
             + ", ".join(
                 f"{kind}={rate:.2f}"
@@ -313,6 +318,17 @@ def _score(
     citation requirement — a case whose correct answer is a short "the
     material says nothing" style reply is green-with-refusal, not a
     failure."""
+    for key, must_match in (("required_patterns", True), ("forbidden_patterns", False)):
+        patterns = case.expectation.get(key, [])
+        if not isinstance(patterns, list):
+            return False, f"{key} must be a list of regular expressions"
+        for pattern in patterns:
+            try:
+                matched = re.search(pattern, answer_text, re.IGNORECASE) is not None
+            except re.error:
+                return False, f"invalid evaluation pattern: {pattern!r}"
+            if matched != must_match:
+                return False, f"content check failed ({key}): {pattern!r}"
     kind = case.kind
     if kind == "green_grounded":
         if not case.expectation.get("citations_required", True):
@@ -415,8 +431,6 @@ def run_answer_eval(
     from src.backend.retrieval.rerank import select_for_generation
     from src.backend.tutor.compose import (
         AnswerMode,
-        build_prompt,
-        classify_intent,
         compose_answer,
     )
     prompt_policy = load_prompt_policy()
@@ -459,20 +473,30 @@ def run_answer_eval(
                 )
             )
             continue
+        attempts: list[str] = []
+
+        def inspected_generate(
+            task: str, prompt: str, *, response_schema: dict[str, Any] | None = None,
+            _attempts: list[str] = attempts,
+        ) -> str:
+            _attempts.append(
+                f"task: {task}\nprompt:\n{prompt}\nresponse_schema:\n"
+                + json.dumps(response_schema, ensure_ascii=False)
+            )
+            output = generate(task, prompt, response_schema=response_schema)
+            _attempts.append(f"raw output:\n{output}")
+            return output
+
         composed = compose_answer(
             case.question,
             candidates,
-            generate,
+            inspected_generate,
             select=select_for_generation,
             answer_mode=AnswerMode(answer_mode),
         )
         candidates = composed.candidates
         answer_text = composed.text
-        prompt = (
-            build_prompt(case.question, candidates)
-            if classify_intent(case.question).value == "answer"
-            else f"[{composed.intent.value} workspace prompt + schema]"
-        )
+        prompt = "\n\n".join(attempts)
         passed, detail = _score(
             case, answer_text, tuple(c.text for c in candidates)
         )

@@ -140,6 +140,7 @@ KNOWN_GENERATION_TASKS = frozenset(
         "artifact_generation",
         "ocr",
         "conversation_summary",
+        "learning_research",
     }
 )
 
@@ -153,5 +154,6 @@ INGESTION_TASKS = frozenset(
         "course_knowledge_extraction",
         "ocr",
         "conversation_summary",
+        "learning_research",
     }
 )

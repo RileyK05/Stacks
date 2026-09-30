@@ -25,8 +25,9 @@ the layer contribution is returned for the trace.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Collection
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from uuid import UUID
 
@@ -42,17 +43,14 @@ TOC = "toc"
 DEPENDENCY = "dependency"
 EMBEDDING = "embedding"
 
-# A search narrowed to some sources fetches this many times the usual
-# candidates per seam before filtering, so the chosen sources are not
-# crowded out by the ones left out.
-_NARROWED_FETCH_FACTOR = 4
-
-# Only these characters survive keyword tokenization. Everything else —
-# including every FTS5 operator ( ) " * ^ : + - and the NEAR/AND/OR/NOT
-# keywords' punctuation — is stripped BEFORE the string is split, so a
-# math query like "f(x) = x^2" can never smuggle query syntax into MATCH.
-# Tokens must contain at least one letter or digit.
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+# Only letters and digits (of any script) survive keyword tokenization.
+# Everything else — including every FTS5 operator ( ) " * ^ : + - and the
+# NEAR/AND/OR/NOT keywords' punctuation — is stripped BEFORE the string is
+# split, so a math query like "f(x) = x^2" can never smuggle query syntax
+# into MATCH. Not just [a-z0-9]: that cut "sociología" into "sociolog" and
+# "Émile" into "mile", which match nothing the index holds (its tokenizer
+# is unicode-aware and folds diacritics itself).
+_TOKEN_RE = re.compile(r"[^\W_]+")
 
 # FTS5 has no stopword filter (Postgres's 'english' config had one), and
 # with OR semantics a stopword would match nearly every chunk. This is the
@@ -78,11 +76,16 @@ STOPWORDS = frozenset(
 
 
 def _keyword_tokens(query: str) -> list[str]:
-    lowered = query.lower()
+    lowered = unicodedata.normalize("NFC", query).lower()
     tokens = _TOKEN_RE.findall(lowered)
     unique: list[str] = []
     for token in tokens:
-        if len(token) >= 2 and token not in STOPWORDS and token not in unique:
+        # A single letter matches everything; a single CJK character is a word.
+        if (
+            (len(token) >= 2 or not token.isascii())
+            and token not in STOPWORDS
+            and token not in unique
+        ):
             unique.append(token)
     return unique
 
@@ -90,7 +93,7 @@ def _keyword_tokens(query: str) -> list[str]:
 def _fts_match(tokens: list[str]) -> str:
     """OR-join sanitized tokens as quoted FTS5 strings. Quoting keeps a
     token that happens to be an FTS5 keyword (e.g. "near", "not") literal;
-    tokens are [a-z0-9]+ so they can never contain a quote."""
+    tokens are letters and digits so they can never contain a quote."""
     return " OR ".join(f'"{token}"' for token in tokens)
 
 
@@ -145,6 +148,7 @@ def keyword_seam(
     course_id: UUID,
     query: str,
     limit: int,
+    source_ids: Collection[UUID] | None = None,
 ) -> dict[UUID, Candidate]:
     """FTS5 match with OR semantics (any term overlap counts; AND
     semantics would miss chunks holding only part of the question).
@@ -158,7 +162,12 @@ def keyword_seam(
         return {}
     rows = conn.execute(
         get(_FILE, "keyword_candidates"),
-        {"course_id": course_id, "match": _fts_match(tokens), "limit": limit},
+        {
+            "course_id": course_id,
+            "match": _fts_match(tokens),
+            "limit": limit,
+            "source_ids": json_ids(source_ids) if source_ids is not None else None,
+        },
     ).fetchall()
     return _rows_to_candidates(rows, KEYWORD)
 
@@ -168,6 +177,7 @@ def toc_seam(
     course_id: UUID,
     query: str,
     limit: int,
+    source_ids: Collection[UUID] | None = None,
 ) -> tuple[dict[UUID, Candidate], tuple[UUID, ...]]:
     """Static TOC matching: entries whose title/description full-text match
     the query tokens, chunks under those entries' locators. Returns the
@@ -177,15 +187,18 @@ def toc_seam(
     tokens = _keyword_tokens(query)
     if not tokens:
         return {}, ()
-    entry_ids: list[UUID] = []
     rows = conn.execute(
         get(_FILE, "toc_candidates"),
-        {"course_id": course_id, "match": _fts_match(tokens), "limit": limit},
+        {
+            "course_id": course_id,
+            "match": _fts_match(tokens),
+            "limit": limit,
+            "source_ids": json_ids(source_ids) if source_ids is not None else None,
+        },
     ).fetchall()
-    for row in rows:
-        entry_id = row.get("entry_id")
-        if entry_id is not None and entry_id not in entry_ids:
-            entry_ids.append(entry_id)
+    entry_ids = dict.fromkeys(
+        row["entry_id"] for row in rows if row.get("entry_id") is not None
+    )
     candidates = {}
     for row in rows:
         candidate = Candidate(
@@ -245,6 +258,7 @@ def dependency_seam(
     course_id: UUID,
     matched_concept_ids: list[UUID],
     limit: int,
+    source_ids: Collection[UUID] | None = None,
 ) -> dict[UUID, Candidate]:
     """1-hop dependency walk. Dormant (empty) without matched concepts or
     edges — the caller passes only concept ids it matched; edge trust is
@@ -257,6 +271,7 @@ def dependency_seam(
             "course_id": course_id,
             "concept_ids": json_ids(matched_concept_ids),
             "limit": limit,
+            "source_ids": json_ids(source_ids) if source_ids is not None else None,
         },
     ).fetchall()
     return _rows_to_candidates(rows, DEPENDENCY)
@@ -268,6 +283,7 @@ def embedding_seam(
     query_embedding: list[float] | None,
     model: str,
     limit: int,
+    source_ids: Collection[UUID] | None = None,
 ) -> dict[UUID, Candidate]:
     """Vector ranking. Dormant (empty) until embeddings exist; the caller
     passes None when there is no query embedding. Rank is the dot product
@@ -279,16 +295,33 @@ def embedding_seam(
     if not query_embedding:
         return {}
     rows = conn.execute(
-        get(_FILE, "embedding_rows"), {"course_id": course_id, "model": model}
+        get(_FILE, "embedding_rows"),
+        {
+            "course_id": course_id,
+            "model": model,
+            "source_ids": json_ids(source_ids) if source_ids is not None else None,
+        },
     ).fetchall()
     dimension = len(query_embedding)
-    rows = [row for row in rows if row["dimension"] == dimension]
+    rows = [
+        row for row in rows
+        if row["dimension"] == dimension
+        and len(row["embedding"]) == dimension * np.dtype("<f4").itemsize
+    ]
     if not rows:
         return {}
     matrix = np.frombuffer(
         b"".join(row["embedding"] for row in rows), dtype="<f4"
     ).reshape(len(rows), dimension)
-    scores = matrix @ np.asarray(query_embedding, dtype=np.float32)
+    query_vector = np.asarray(query_embedding, dtype=np.float32)
+    if not np.isfinite(query_vector).all():
+        return {}
+    valid = np.isfinite(matrix).all(axis=1)
+    rows = [row for row, keep in zip(rows, valid, strict=True) if keep]
+    matrix = matrix[valid]
+    if not rows:
+        return {}
+    scores = matrix @ query_vector
     top = np.argsort(-scores, kind="stable")[:limit]
     out: dict[UUID, Candidate] = {}
     for index in top:
@@ -305,8 +338,8 @@ def embedding_seam(
     return out
 
 
-def _normalize(seam: dict[UUID, Candidate]) -> None:
-    """Min-max a seam's ranks into 0.0..1.0 IN PLACE, seam-locally. This
+def _normalize(seam: dict[UUID, Candidate]) -> dict[UUID, Candidate]:
+    """Min-max a seam's ranks into 0.0..1.0 without changing its candidates. This
     is what makes cross-seam comparison legal (the #4 lesson: ts_rank
     ~0.06 and dependency position 8 were incomparable units).
 
@@ -321,20 +354,19 @@ def _normalize(seam: dict[UUID, Candidate]) -> None:
     A seam of one candidate (or all-equal ranks) normalizes to a
     mid-strength 0.5 — it IS weak information, not zero."""
     if not seam:
-        return
+        return {}
     ranks = [candidate.rank for candidate in seam.values()]
     low, high = min(ranks), max(ranks)
     if high <= low:
-        for candidate in seam.values():
-            _mutate_rank(candidate, 0.5)
-        return
+        return {
+            chunk_id: replace(candidate, rank=0.5)
+            for chunk_id, candidate in seam.items()
+        }
     span = high - low
-    for candidate in seam.values():
-        _mutate_rank(candidate, (candidate.rank - low) / span)
-
-
-def _mutate_rank(candidate: Candidate, new_rank: float) -> None:
-    object.__setattr__(candidate, "rank", new_rank)
+    return {
+        chunk_id: replace(candidate, rank=(candidate.rank - low) / span)
+        for chunk_id, candidate in seam.items()
+    }
 
 
 def fuse(
@@ -365,10 +397,10 @@ def fuse(
     after allocated slots (semantic expansion must not displace
     grounded hits). A single-source course fills naturally — no source
     can starve another when there is no competition."""
-    _normalize(keyword)
-    _normalize(toc)
-    _normalize(dependency)
-    _normalize(embeddings)
+    keyword = _normalize(keyword)
+    toc = _normalize(toc)
+    dependency = _normalize(dependency)
+    embeddings = _normalize(embeddings)
 
     merged: dict[UUID, Candidate] = {}
     for seam in (keyword, toc, dependency, embeddings):
@@ -500,30 +532,28 @@ def retrieve(
     """Run every seam, fuse, attribute layers. Trace persistence is the
     caller's job (the tutor flow owns the transaction).
 
-    `source_ids` narrows the answer to chosen sources (a chat's source
-    selection); None searches the whole course. Each seam over-fetches
-    when narrowed, so the chosen sources still fill the candidate set."""
-    widen = 1 if source_ids is None else _NARROWED_FETCH_FACTOR
+    `source_ids` narrows each SQL seam before its candidate limit (a chat's
+    source selection); None searches the whole course. This ensures noisy,
+    unselected sources cannot consume the selected sources' candidate slots."""
     matched_concepts = concept_matches(conn, course_id, query, policy.dependency_limit)
     matched_ids = [row["concept_id"] for row in matched_concepts]
-    keyword = keyword_seam(conn, course_id, query, policy.keyword_limit * widen)
-    toc, toc_entry_ids = toc_seam(conn, course_id, query, policy.toc_limit * widen)
+    keyword = keyword_seam(
+        conn, course_id, query, policy.keyword_limit, source_ids
+    )
+    toc, toc_entry_ids = toc_seam(
+        conn, course_id, query, policy.toc_limit, source_ids
+    )
     dependency = dependency_seam(
-        conn, course_id, matched_ids, policy.dependency_limit * widen
+        conn, course_id, matched_ids, policy.dependency_limit, source_ids
     )
     embeddings = embedding_seam(
         conn,
         course_id,
         query_embedding,
         embedding_model or "",
-        policy.embedding_limit * widen,
+        policy.embedding_limit,
+        source_ids,
     )
-    if source_ids is not None:
-        allowed = set(source_ids)
-        keyword, toc, dependency, embeddings = (
-            {cid: c for cid, c in seam.items() if c.source_id in allowed}
-            for seam in (keyword, toc, dependency, embeddings)
-        )
     final = fuse(
         keyword, toc, dependency, embeddings, policy=policy
     )
@@ -536,4 +566,55 @@ def retrieve(
         layer_contribution=contribution,
         matched_concept_ids=tuple(matched_ids),
         matched_toc_entry_ids=tuple(toc_entry_ids),
+    )
+
+
+OVERVIEW = "overview"
+
+
+def overview(
+    conn: Connection,
+    course_id: UUID,
+    limit: int,
+    *,
+    embedding_model: str | None = None,
+    source_ids: Collection[UUID] | None = None,
+) -> RetrievalResult:
+    """A spread of the course: `limit` passages, shared evenly among its
+    sources and spaced out through each one. For a request about the course
+    as a whole ("make me a study guide", "what is this course about?"),
+    whose words match no particular passage — searching by them returns
+    whatever happens to sit nearest to the phrase "study guide"."""
+    rows = conn.execute(
+        get(_FILE, "embedding_rows"),
+        {
+            "course_id": course_id,
+            "model": embedding_model or "",
+            "source_ids": json_ids(source_ids) if source_ids is not None else None,
+        },
+    ).fetchall()
+    by_source: dict[UUID, list[dict[str, Any]]] = {}
+    for row in sorted(rows, key=lambda r: (str(r["source_id"]), r["chunk_index"])):
+        by_source.setdefault(row["source_id"], []).append(row)
+    if not by_source or limit < 1:
+        return RetrievalResult(candidates=())
+    per_source = max(1, limit // len(by_source))
+    picked: list[dict[str, Any]] = []
+    for chunks in list(by_source.values())[:limit]:
+        take = min(len(chunks), per_source)
+        picked.extend(chunks[index * len(chunks) // take] for index in range(take))
+    final = tuple(
+        Candidate(
+            chunk_id=row["chunk_id"],
+            source_id=row["source_id"],
+            locator_id=row["locator_id"],
+            chunk_index=row["chunk_index"],
+            text=row["text"],
+            layers=frozenset({OVERVIEW}),
+            rank=0.5,
+        )
+        for row in picked[:limit]
+    )
+    return RetrievalResult(
+        candidates=final, layer_contribution={OVERVIEW: len(final)}
     )

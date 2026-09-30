@@ -1,5 +1,5 @@
 import io
-import os
+import tempfile
 from uuid import uuid4
 
 import pytest
@@ -8,16 +8,17 @@ from src.backend.common.lifecycle_config import load_lifecycle_policy
 
 
 @pytest.fixture(autouse=True)
-def _temp_uploads(monkeypatch, tmp_path_factory):
-    import tempfile
+def _temp_uploads(monkeypatch, tmp_path):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
-    base = os.path.join(os.environ.get("TEMP", "/tmp"), "course-proj-uploads")
-    os.makedirs(base, exist_ok=True)
-    tempfile.tempdir = base
-    yield
-    for leftover in os.listdir(base):
-        if leftover.startswith("upload-"):
-            os.unlink(os.path.join(base, leftover))
+
+def _compressed_upload(data: bytes, mime_type: str) -> tuple[bytes, str]:
+    original, _, _ = storage.stream_to_temp(io.BytesIO(data), max_bytes=len(data))
+    stored, encoding, _ = storage.compress_temp_for_storage(original, mime_type)
+    try:
+        return stored.read_bytes(), encoding
+    finally:
+        storage.discard_temp(stored)
 
 
 def test_stream_hashes_and_counts() -> None:
@@ -48,7 +49,7 @@ def test_stream_rejects_empty() -> None:
 
 def test_compressible_text_gzips() -> None:
     data = b"the quick brown fox " * 500
-    stored, encoding = storage.compress_for_storage(data, "text/plain")
+    stored, encoding = _compressed_upload(data, "text/plain")
     assert encoding == "gzip"
     assert len(stored) < len(data) // 2
     import gzip
@@ -58,7 +59,7 @@ def test_compressible_text_gzips() -> None:
 
 def test_incompressible_mime_skips_gzip() -> None:
     data = b"%PDF-1.4 fake pdf bytes " * 100
-    stored, encoding = storage.compress_for_storage(data, "application/pdf")
+    stored, encoding = _compressed_upload(data, "application/pdf")
     assert encoding == "identity"
     assert stored == data
 
@@ -68,7 +69,7 @@ def test_compressible_but_inefficient_stays_identity() -> None:
 
     rng = random.Random(42)
     data = bytes(rng.getrandbits(8) for _ in range(16384))
-    stored, encoding = storage.compress_for_storage(data, "application/json")
+    stored, encoding = _compressed_upload(data, "application/json")
     assert encoding == "identity"
     assert stored == data
 
@@ -100,7 +101,7 @@ def test_write_and_read_roundtrip_with_gzip() -> None:
     course_id = uuid4()
     source_id = uuid4()
     data = b"stored content " * 100
-    stored, encoding = storage.compress_for_storage(data, "text/plain")
+    stored, encoding = _compressed_upload(data, "text/plain")
     path = storage.write_stored(course_id, source_id, stored)
     try:
         assert path.exists()
@@ -125,33 +126,19 @@ def test_sanitize_display_name_blocks_traversal() -> None:
     assert storage.sanitize_display_name("..") == "upload"
 
 
-def test_remove_course_directory(monkeypatch) -> None:
-    import shutil
-    import uuid as uuid_module
-
-    sandbox = os.path.join(
-        os.environ.get("TEMP", "/tmp"), f"course-proj-{uuid4().hex}"
-    )
-    os.makedirs(sandbox, exist_ok=True)
-    monkeypatch.setattr(
-        "src.backend.common.config.get_settings",
-        lambda: type("S", (), {"storage_root": sandbox})(),
-    )
-    course_id = uuid_module.uuid4()
-    target = storage.write_stored(course_id, uuid_module.uuid4(), b"x")
-    try:
-        assert target.exists()
-        storage.remove_course_directory(course_id)
-        assert not os.path.exists(os.path.join(sandbox, str(course_id)))
-    finally:
-        shutil.rmtree(sandbox, ignore_errors=True)
+def test_remove_course_directory() -> None:
+    course_id = uuid4()
+    target = storage.write_stored(course_id, uuid4(), b"x")
+    assert target.exists()
+    storage.remove_course_directory(course_id)
+    assert not target.parent.exists()
 
 
 def test_gzip_read_blocked_at_decompression_ceiling() -> None:
     course_id = uuid4()
     source_id = uuid4()
     data = b"x" * 10_000_000
-    stored, encoding = storage.compress_for_storage(data, "text/plain")
+    stored, encoding = _compressed_upload(data, "text/plain")
     assert encoding == "gzip"
     assert len(stored) < len(data) // 10
     path = storage.write_stored(course_id, source_id, stored)
@@ -184,7 +171,7 @@ def test_gzip_read_allows_exactly_at_ceiling() -> None:
     course_id = uuid4()
     source_id = uuid4()
     data = b"z" * 500_000
-    stored, encoding = storage.compress_for_storage(data, "text/plain")
+    stored, encoding = _compressed_upload(data, "text/plain")
     path = storage.write_stored(course_id, source_id, stored)
     try:
         assert (

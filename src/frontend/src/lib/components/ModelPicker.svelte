@@ -5,6 +5,7 @@
 </script>
 
 <script lang="ts">
+  import { api } from '$lib/api/client';
   import Icon from '$lib/components/Icon.svelte';
   import Popover from '$lib/components/Popover.svelte';
 
@@ -48,6 +49,14 @@
   let otherOpen = $state(false);
   let otherConnection = $state('');
   let otherModel = $state('');
+  /** Model names each connection offers, fetched when "another model" opens:
+      a typo here otherwise only shows up as a failed answer. */
+  let offered = $state<Record<string, string[] | null>>({});
+  const listId = `model-ids-${Math.random().toString(36).slice(2)}`;
+  const offeredHere = $derived(offered[otherConnection] ?? []);
+  const unknownModel = $derived(
+    otherModel.trim() !== '' && offeredHere.length > 0 && !offeredHere.includes(otherModel.trim())
+  );
 
   const cloudConnections = $derived(connections.filter((c) => !c.builtin));
   const local = $derived(options.filter((o) => o.is_local));
@@ -95,6 +104,20 @@
 
   $effect(() => {
     if (!otherConnection && cloudConnections.length > 0) otherConnection = cloudConnections[0].id;
+  });
+
+  $effect(() => {
+    const id = otherConnection;
+    if (!otherOpen || !id || id in offered) return;
+    offered[id] = null;
+    void api
+      .GET('/settings/connections/{connection_id}/models', { params: { path: { connection_id: id } } })
+      .then(({ data }) => {
+        offered[id] = data?.ok ? (data.models ?? []) : [];
+      })
+      .catch(() => {
+        offered[id] = [];
+      });
   });
 </script>
 
@@ -179,6 +202,7 @@
               <div class="flex gap-2">
                 <input
                   bind:value={otherModel}
+                  list={listId}
                   placeholder="Model id, e.g. gpt-5-mini"
                   aria-label="Model id"
                   class="h-8 min-w-0 flex-1 rounded-lg border border-line-strong bg-surface px-2 text-[13px] text-fg placeholder:text-subtle focus:border-accent focus:outline-none"
@@ -191,6 +215,14 @@
                   Use
                 </button>
               </div>
+              <datalist id={listId}>
+                {#each offeredHere as id (id)}<option value={id}></option>{/each}
+              </datalist>
+              {#if unknownModel}
+                <p class="text-[11px] leading-snug text-warning-text">
+                  {cloudConnections.find((c) => c.id === otherConnection)?.name} doesn't list this model; check the spelling.
+                </p>
+              {/if}
             </form>
           {:else}
             <button type="button" onclick={() => (otherOpen = true)} class="text-[13px] font-medium text-accent-text hover:underline">

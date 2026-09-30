@@ -369,3 +369,16 @@ def test_read_decoded_strips_nul_bytes() -> None:
     finally:
         path.unlink(missing_ok=True)
         path.parent.rmdir()
+
+
+def test_clean_text_makes_extracted_text_storable() -> None:
+    """A lone UTF-16 surrogate (broken PDF font map, half an emoji from an
+    OCR model) cannot be encoded as UTF-8, and a NUL ends a C string; either
+    one used to fail the whole file when its chunks were inserted."""
+    from src.backend.ingest.extract import clean_text
+
+    dirty = "a" + chr(0xD800) + "b" + chr(0) + "c ✓"
+    cleaned = clean_text(dirty)
+    assert cleaned == "a?bc ✓"
+    cleaned.encode("utf-8")
+    assert ocr_extracted_source([dirty]).text == cleaned

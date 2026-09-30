@@ -16,6 +16,13 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from src.backend.common.db import Connection, connection, json_ids
 from src.backend.common.queries import get
+from src.backend.common.schemas.work import ArchivedWork
+from src.backend.common.work_archive import export_work, import_work
+from src.backend.student_model.archive import (
+    LearningArchive,
+    export_learning,
+    import_learning,
+)
 
 
 class ArchiveModel(BaseModel):
@@ -40,6 +47,7 @@ class Trace(ArchiveModel):
 
 
 class Message(ArchiveModel):
+    message_id: UUID | None = None
     seq: int = Field(ge=1)
     role: Literal["user", "assistant"]
     text: str
@@ -72,7 +80,9 @@ class Version(ArchiveModel):
 
 class Artifact(ArchiveModel):
     artifact_id: UUID
-    kind: Literal["doc", "sheet", "slides", "quiz", "flashcards", "code", "chart"]
+    kind: Literal[
+        "doc", "sheet", "slides", "quiz", "flashcards", "code", "chart", "mind_map"
+    ]
     title: str
     content: dict[str, Any]
     sources: list[UUID]
@@ -88,10 +98,14 @@ class Notebook(ArchiveModel):
     traces: list[Trace]
     citations: list[Citation]
     artifacts: list[Artifact]
+    learning: LearningArchive | None = None
+    work_sessions: list[ArchivedWork] = Field(default_factory=list)
 
 
 def export_notebook(course_id: UUID) -> Notebook:
     with connection() as conn:
+        study = export_learning(conn, course_id)
+        work_sessions = export_work(conn, course_id)
         conversations: list[Conversation] = []
         trace_ids: set[UUID] = set()
         for row in conn.execute(
@@ -146,6 +160,11 @@ def export_notebook(course_id: UUID) -> Notebook:
             cited_ids.update(artifact.sources)
             for version in versions:
                 cited_ids.update(version.sources)
+        for work in work_sessions:
+            for turn in work.turns:
+                if turn.reply.trace_id:
+                    trace_ids.add(UUID(turn.reply.trace_id))
+                cited_ids.update(UUID(c.chunk_id) for c in turn.reply.citations)
         traces: list[Trace] = []
         for trace_id in trace_ids:
             row = conn.execute(
@@ -169,6 +188,12 @@ def export_notebook(course_id: UUID) -> Notebook:
                 )
             )
             cited_ids.update(chunk_ids)
+        for suite in study.suites:
+            cited_ids.update(
+                UUID(source["chunk_id"])
+                for source in suite.evidence
+                if "chunk_id" in source
+            )
         citations: list[Citation] = []
         if cited_ids:
             rows = conn.execute(
@@ -186,11 +211,16 @@ def export_notebook(course_id: UUID) -> Notebook:
         traces=traces,
         citations=citations,
         artifacts=artifacts,
+        learning=study,
+        work_sessions=work_sessions,
     )
 
 
 def _remap_payload(
-    payload: dict[str, Any], chunk_map: dict[UUID, UUID], trace_map: dict[UUID, UUID]
+    payload: dict[str, Any],
+    chunk_map: dict[UUID, UUID],
+    trace_map: dict[UUID, UUID],
+    suite_map: dict[UUID, UUID],
 ) -> dict[str, Any]:
     result = dict(payload)
     for key, mapping in (("trace_id", trace_map),):
@@ -207,6 +237,19 @@ def _remap_payload(
                     value = str(chunk_map.get(UUID(value), UUID(value)))
             mapped.append(value)
         result["chunk_ids"] = mapped
+    if isinstance(result.get("workspace"), list):
+        items = []
+        for item in result["workspace"]:
+            if isinstance(item, dict) and item.get("type") == "quiz":
+                item = dict(item)
+                raw = item.pop("practice_id", None)
+                if raw:
+                    with suppress(ValueError):
+                        mapped_suite = suite_map.get(UUID(raw))
+                        if mapped_suite:
+                            item["practice_id"] = str(mapped_suite)
+            items.append(item)
+        result["workspace"] = items
     return result
 
 
@@ -262,8 +305,16 @@ def import_notebook(
                 "model": trace.model,
             },
         )
+    suite_map = (
+        import_learning(conn, course_id, notebook.learning, source_map, chunk_map)
+        if notebook.learning
+        else {}
+    )
+    conversation_map: dict[str, str] = {}
+    message_map: dict[str, str] = {}
     for conversation in notebook.conversations:
         conversation_id = uuid4()
+        conversation_map[str(conversation.conversation_id)] = str(conversation_id)
         selected = (
             [str(source_map[s]) for s in conversation.source_ids if s in source_map]
             if conversation.source_ids is not None
@@ -288,10 +339,13 @@ def import_notebook(
             },
         )
         for message in conversation.messages:
+            message_id = uuid4()
+            if message.message_id is not None:
+                message_map[str(message.message_id)] = str(message_id)
             conn.execute(
                 get("archive_notebook", "insert_message"),
                 {
-                    "message_id": uuid4(),
+                    "message_id": message_id,
                     "conversation_id": conversation_id,
                     "seq": message.seq,
                     "role": message.role,
@@ -300,14 +354,43 @@ def import_notebook(
                         trace_map.get(message.trace_id) if message.trace_id else None
                     ),
                     "payload": json.dumps(
-                        _remap_payload(message.payload, chunk_map, trace_map)
+                        _remap_payload(message.payload, chunk_map, trace_map, suite_map)
                     ),
                     "created_at": message.created_at,
                 },
             )
+    artifact_map = {str(a.artifact_id): str(uuid4()) for a in notebook.artifacts}
     for artifact in notebook.artifacts:
-        artifact_id = uuid4()
+        artifact_id = UUID(artifact_map[str(artifact.artifact_id)])
         mapped = [str(chunk_map[chunk]) for chunk in artifact.sources]
+        origin = dict(artifact.origin)
+        if isinstance(origin.get("map_origin"), dict):
+            map_origin = dict(origin["map_origin"])
+            if map_origin.get("artifact_id"):
+                mapped_id = artifact_map.get(str(map_origin["artifact_id"]))
+                if mapped_id:
+                    map_origin["artifact_id"] = mapped_id
+                else:
+                    map_origin = {}
+            elif map_origin.get("message_id"):
+                mapped_id = message_map.get(str(map_origin["message_id"]))
+                if mapped_id:
+                    map_origin["message_id"] = mapped_id
+                else:
+                    map_origin = {}
+            origin["map_origin"] = map_origin
+            origin["map_request_id"] = str(uuid4())
+            if origin.get("message_id"):
+                origin["message_id"] = message_map.get(str(origin["message_id"]))
+        if origin.get("by") == "chat":
+            prior_message = str(origin.get("message_id", ""))
+            if prior_message in message_map:
+                origin["message_id"] = message_map[prior_message]
+                origin["conversation_id"] = conversation_map.get(
+                    str(origin.get("conversation_id", "")), ""
+                )
+            else:
+                origin["adopted"] = False
         conn.execute(
             get("archive_notebook", "insert_artifact"),
             {
@@ -317,7 +400,7 @@ def import_notebook(
                 "title": artifact.title,
                 "content": json.dumps(artifact.content),
                 "sources": json.dumps(mapped),
-                "origin": json.dumps(artifact.origin),
+                "origin": json.dumps(origin),
                 "version": artifact.version,
                 "created_at": artifact.created_at,
                 "updated_at": artifact.updated_at,
@@ -337,3 +420,11 @@ def import_notebook(
                     "created_at": version.created_at,
                 },
             )
+
+    import_work(
+        conn, course_id, notebook.work_sessions, chunk_map, source_map, trace_map
+    )
+
+    from src.backend.common import course_memory
+
+    course_memory.refresh(conn, course_id)

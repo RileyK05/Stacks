@@ -5,6 +5,7 @@
   import Popover from '$lib/components/Popover.svelte';
   import { OFFICE_APPS, OFFICE_EXTENSIONS, openInOffice, type OfficeApp } from '$lib/stores/office';
   import { toast } from '$lib/stores/toast.svelte';
+  import { showCompanion } from '$lib/utils/companion';
 
   interface Props {
     courseId: string;
@@ -15,9 +16,15 @@
   let working = $state(false);
 
   async function launch(request: { app?: OfficeApp; path?: string }) {
+    if (working) return;
     working = true;
     try {
-      toast(await openInOffice({ ...request, course_id: courseId }));
+      const message = await openInOffice({ ...request, course_id: courseId });
+      // Opening an Office document should bring the course companion along,
+      // with the same course selected. The Office pane remains available
+      // from Office's Home tab as before.
+      await showCompanion(courseId);
+      toast(`${message} Stacks companion opened on this course.`);
       menuOpen = false;
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not open Office.', 'error');
@@ -27,11 +34,15 @@
   }
 
   async function openFile() {
-    const path = await openDialog({
-      multiple: false,
-      filters: [{ name: 'Word, Excel or PowerPoint', extensions: OFFICE_EXTENSIONS }]
-    });
-    if (typeof path === 'string') await launch({ path });
+    try {
+      const path = await openDialog({
+        multiple: false,
+        filters: [{ name: 'Word, Excel or PowerPoint', extensions: OFFICE_EXTENSIONS }]
+      });
+      if (typeof path === 'string') await launch({ path });
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not open the file picker.', 'error');
+    }
   }
 </script>
 
@@ -59,8 +70,8 @@
         </button>
       {/each}
       <p class="border-t border-line px-3 pt-2 text-xs text-subtle">
-        The Stacks pane opens on this course: click <span class="font-medium text-muted">Stacks</span> on the Home tab.
-        The first time, Windows asks you to trust Stacks' local certificate — choose Yes.
+        The Stacks companion opens on this course. In Office, click <span class="font-medium text-muted">Stacks</span> on the Home tab to open its document pane.
+        Approve the local certificate trust request the first time. On Mac, select Stacks under Home → Add-ins.
       </p>
     </div>
   {/snippet}

@@ -77,6 +77,69 @@ export async function sendAssist(fetchImpl, base, request, token) {
   return postJson(fetchImpl, `${base}/office/assist`, request, token);
 }
 
+export async function publishDocument(fetchImpl, base, request, token) {
+  return postJson(fetchImpl, `${base}/office/work-document`, request, token);
+}
+
+export async function publishPackage(fetchImpl, base, request, token) {
+  return postJson(fetchImpl, `${base}/office/work-package`, request, token);
+}
+
+export async function livePolicy(fetchImpl, base, token) {
+  return getJson(fetchImpl, `${base}/office/live-policy`, token);
+}
+
+export async function getWork(fetchImpl, base, courseId, sessionId, token) {
+  return getJson(fetchImpl, `${base}/office/work/${sessionId}?course_id=${encodeURIComponent(courseId)}`, token);
+}
+
+export async function registerLive(fetchImpl, base, request, token) {
+  return postJson(fetchImpl, `${base}/office/live`, request, token);
+}
+
+export async function pollLive(fetchImpl, base, connectionId, externalId, token) {
+  return postJson(fetchImpl, `${base}/office/live/${connectionId}/poll`, { external_id: externalId }, token);
+}
+
+export async function completeLive(fetchImpl, base, connectionId, request, token) {
+  return postJson(fetchImpl, `${base}/office/live/${connectionId}/complete`, request, token);
+}
+
+export async function disconnectLive(fetchImpl, base, connectionId, token) {
+  const response = await fetchImpl(`${base}/office/live/${connectionId}`, { method: 'DELETE', headers: headers(token) });
+  if (!response.ok) throw await failure(response);
+}
+
+/** Read the current full Office package; release Office's temporary file on every path. */
+export async function wholePackage(document, maximumBytes = 20000000) {
+  const file = await new Promise((resolve, reject) => {
+    document.getFileAsync('compressed', { sliceSize: 65536 }, result => {
+      if (result.status === 'succeeded') resolve(result.value);
+      else reject(new Error(result.error?.message || 'Whole-document reading is unavailable in this host.'));
+    });
+  });
+  try {
+    if (file.size > maximumBytes) throw new Error('This document exceeds the 20 MB working-file limit.');
+    const slices = [];
+    let received = 0;
+    for (let index = 0; index < file.sliceCount; index++) {
+      const slice = await new Promise((resolve, reject) => file.getSliceAsync(index, result => {
+        if (result.status === 'succeeded') resolve(result.value.data);
+        else reject(new Error(result.error?.message || 'Could not read the whole document.'));
+      }));
+      received += slice.length;
+      if (received > maximumBytes) throw new Error('This document exceeds the 20 MB working-file limit.');
+      slices.push(Uint8Array.from(slice));
+    }
+    const bytes = new Uint8Array(received);
+    let offset = 0;
+    for (const slice of slices) { bytes.set(slice, offset); offset += slice.length; }
+    return bytes;
+  } finally {
+    await new Promise(resolve => file.closeAsync(() => resolve(undefined)));
+  }
+}
+
 /** A human status line for a failed request. */
 export function assistError(status, detail = '') {
   if (status === 422) return 'Stacks won’t do graded work you’ll submit. Ask it to explain instead.';

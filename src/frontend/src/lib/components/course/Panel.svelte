@@ -7,6 +7,7 @@
   import SlidesView from '$lib/components/SlidesView.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
   import WorkspaceHtmlView from '$lib/components/WorkspaceHtmlView.svelte';
+  import MindMapView from '$lib/components/MindMapView.svelte';
   import ArtifactContent from '$lib/components/artifacts/ArtifactContent.svelte';
   import { KIND_ICONS, type ArtifactKind } from '$lib/stores/artifact.svelte';
   import type { Citation } from '$lib/stores/chat.svelte';
@@ -18,12 +19,28 @@
     panel: PanelState;
     canvas: WorkspaceCanvas;
     sourcesFor: (turnIndex: number) => Citation[];
+    mapSourcesFor: (turnIndex: number) => (Citation | null)[];
+    messageFor: (turnIndex: number) => string | null;
+    courseId: string;
     onclose: () => void;
     onfollowup: (text: string) => void;
-    onsave?: (turnIndex: number, itemIndex: number) => void;
+    onsave?: (turnIndex: number, itemIndex: number, asCopy?: boolean) => void;
+    onartifactsaved?: () => void | Promise<void>;
   }
 
-  let { panel, canvas, sourcesFor, onclose, onfollowup, onsave }: Props = $props();
+  let { panel, canvas, sourcesFor, mapSourcesFor, messageFor, courseId, onclose, onfollowup, onsave, onartifactsaved }: Props = $props();
+
+  async function copyActiveArtifact() {
+    const current = panel.active;
+    if (!current) return;
+    try {
+      const copy = await current.open.copy();
+      await onartifactsaved?.();
+      await panel.openArtifact({ artifact_id: copy.artifact_id, title: copy.title, kind: copy.kind });
+    } catch (caught) {
+      current.open.saveError = caught;
+    }
+  }
 
   type UnifiedTab = {
     id: string;
@@ -143,7 +160,16 @@
         <Spinner class="h-5 w-5" />
       </div>
     {:else if activeArtifact.open.error}
-      <p class="p-5 text-sm text-danger-text">Could not open this artifact.</p>
+      <div class="flex flex-col items-start gap-2 p-5 text-sm text-danger-text">
+        <p>Could not open this artifact.</p>
+        <button
+          type="button"
+          onclick={() => activeArtifact.open.reload()}
+          class="rounded-lg px-2 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-fg"
+        >
+          Try again
+        </button>
+      </div>
     {:else if activeArtifact.open.artifact}
       <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
         <div class="flex items-center gap-2">
@@ -153,21 +179,71 @@
             aria-label="Title"
             class="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-1 py-0.5 font-display text-lg font-medium tracking-tight text-fg hover:border-line focus:border-accent focus:outline-none"
           />
-          {#if activeArtifact.open.saving || activeArtifact.open.dirty}
-            <span class="text-[11px] text-subtle">Saving…</span>
-          {:else if activeArtifact.open.conflict}
+          <button
+            type="button"
+            onclick={() => void copyActiveArtifact()}
+            disabled={activeArtifact.open.saving || activeArtifact.open.conflict}
+            class="shrink-0 rounded-md border border-line-strong px-2 py-1 text-[11px] font-medium text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+          >Save a copy</button>
+          {#if activeArtifact.open.conflict}
             <span class="text-[11px] text-warning-text">Changed elsewhere</span>
+          {:else if activeArtifact.open.saveError}
+            <span class="text-[11px] text-danger-text">Not saved</span>
+            <button
+              type="button"
+              onclick={() => activeArtifact.open.retrySave()}
+              class="text-[11px] font-medium text-accent-text hover:underline"
+            >
+              Retry
+            </button>
+          {:else if activeArtifact.open.saving || activeArtifact.open.dirty}
+            <span class="text-[11px] text-subtle">Saving…</span>
           {/if}
         </div>
         {#if activeArtifact.open.conflict}
-          <p class="rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-[12px] text-warning-text">
-            This was saved from somewhere else. Reload to see the latest.
+          <p class="flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-[12px] text-warning-text">
+            <span class="flex-1">This was saved from somewhere else, so your latest changes here are not saved.</span>
+            <button
+              type="button"
+              onclick={() => activeArtifact.open.loadLatestAndDiscardDraft()}
+              class="rounded-md bg-surface px-2 py-1 font-medium text-fg ring-1 ring-inset ring-line-strong hover:bg-surface-2"
+            >
+              Load latest and discard my draft
+            </button>
           </p>
+        {/if}
+        {#if activeArtifact.open.recovered}
+          <p class="rounded-lg border border-accent-line bg-accent-soft/40 px-3 py-2 text-[12px] text-muted">Recovered unsaved edits from this device. They remain here until the next save succeeds.</p>
+        {/if}
+        {#each activeArtifact.open.recoveryDrafts as draft (draft.key)}
+          <div class="rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-[12px] text-warning-text">
+            {#if draft.baseVersion === activeArtifact.open.artifact.version}
+              <p>A saved draft from another window is available for this artifact version.</p>
+            {:else}
+              <p>This saved draft is based on an older artifact version. Keep its contents available below before choosing how to continue.</p>
+            {/if}
+            <details class="mt-2">
+              <summary class="cursor-pointer font-medium">Copy the saved draft</summary>
+              <textarea readonly aria-label="Saved draft contents for copying" class="mt-2 h-28 w-full rounded border border-warning/40 bg-surface p-2 font-mono text-[11px] text-fg">{JSON.stringify(draft, null, 2)}</textarea>
+            </details>
+            <div class="mt-2 flex gap-2">
+              <button type="button" onclick={() => activeArtifact.open.recoverSavedDraft(draft)} class="rounded bg-surface px-2 py-1 font-medium text-fg">Try this draft</button>
+              <button type="button" onclick={() => activeArtifact.open.discardSavedDraft(draft)} class="rounded bg-surface px-2 py-1 font-medium text-fg">Discard this draft</button>
+              <button type="button" onclick={() => activeArtifact.open.loadLatestAndDiscardDraft()} class="rounded bg-surface px-2 py-1 font-medium text-fg">Load latest and discard draft</button>
+            </div>
+          </div>
+        {/each}
+        {#if activeArtifact.open.recoveryError}
+          <p role="status" class="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-[12px] text-danger-text">Local recovery status: {activeArtifact.open.recoveryError instanceof Error ? activeArtifact.open.recoveryError.message : 'Could not persist or read this draft.'}</p>
         {/if}
         <ArtifactContent
           kind={activeArtifact.kind}
           title={activeArtifact.open.title}
           content={activeArtifact.open.content}
+          mapContext={{ courseId, origin: { artifact_id: activeArtifact.artifactId, artifact_version: activeArtifact.open.artifact.version, item_index: 0 }, ready: !activeArtifact.open.dirty && !activeArtifact.open.saving && !activeArtifact.open.conflict }}
+          mapSources={activeArtifact.open.citations.map(c => c.citation)}
+          ongenerated={onartifactsaved}
+          practice={{ courseId: activeArtifact.open.courseId, artifactId: activeArtifact.artifactId, version: activeArtifact.open.artifact.version, ready: !activeArtifact.open.dirty && !activeArtifact.open.saving && !activeArtifact.open.conflict }}
           onchange={() => activeArtifact.open.touch()}
         />
       </div>
@@ -187,6 +263,13 @@
           >
             <Icon name="bookmark" class="h-3.5 w-3.5" /> Save to artifacts
           </button>
+          <button
+            type="button"
+            onclick={() => onsave(current.turnIndex, Number(current.id.split(':')[1] ?? 0), true)}
+            class="inline-flex items-center gap-1.5 rounded-lg border border-line-strong px-2.5 py-1 text-[12px] font-medium text-muted transition-colors hover:bg-surface-2 hover:text-fg"
+          >
+            Save a copy
+          </button>
         {/if}
       </div>
       <div class="min-h-0 flex-1 overflow-y-auto p-5">
@@ -200,6 +283,9 @@
           <CodeView item={activeCanvas.session.item} sources={sourcesFor(activeCanvas.turnIndex)} />
         {:else if activeCanvas.session.kind === 'sheet'}
           <SheetView session={activeCanvas.session} sources={sourcesFor(activeCanvas.turnIndex)} />
+        {:else if activeCanvas.session.kind === 'mind_map'}
+          {@const messageId = messageFor(activeCanvas.turnIndex)}
+          <MindMapView map={activeCanvas.session.item} sources={mapSourcesFor(activeCanvas.turnIndex)} context={messageId ? { courseId, origin: { message_id: messageId, item_index: Number(activeCanvas.id.split(':')[1] ?? 0) } } : undefined} ongenerated={onartifactsaved} />
         {:else}
           <SlidesView session={activeCanvas.session} sources={sourcesFor(activeCanvas.turnIndex)} />
         {/if}

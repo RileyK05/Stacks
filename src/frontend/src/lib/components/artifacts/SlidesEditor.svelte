@@ -66,6 +66,12 @@
 </script>
 
 <svelte:window onkeydown={onPresentKey} />
+<!-- Leaving fullscreen with Esc swallows the key: end the presentation too. -->
+<svelte:document
+  onfullscreenchange={() => {
+    if (presenting && !document.fullscreenElement) presenting = false;
+  }}
+/>
 
 <div class="grid gap-4 lg:grid-cols-[200px_minmax(0,1fr)]">
   <ol class="flex gap-2 overflow-x-auto pb-1 lg:max-h-[70vh] lg:flex-col lg:overflow-y-auto lg:pb-0">

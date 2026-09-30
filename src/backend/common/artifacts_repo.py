@@ -117,36 +117,113 @@ def create(
     author: Author = "you",
     note: str = "",
 ) -> Artifact:
-    artifact_id = uuid4()
-    clean_title = title.strip()[:TITLE_MAX_LENGTH]
     with connection() as conn:
-        conn.execute(
-            get(_FILE, "create"),
-            {
-                "artifact_id": artifact_id,
-                "course_id": course_id,
-                "kind": kind,
-                "title": clean_title,
-                "content": json.dumps(content, ensure_ascii=False),
-                "sources": _json_ids(tuple(sources)),
-                "origin": json.dumps(origin or {}, ensure_ascii=False),
-            },
-        )
-        conn.execute(
-            get(_FILE, "add_version"),
-            {
-                "artifact_id": artifact_id,
-                "version": 1,
-                "title": clean_title,
-                "content": json.dumps(content, ensure_ascii=False),
-                "sources": _json_ids(tuple(sources)),
-                "author": author,
-                "note": note,
-            },
+        created = _create(
+            conn,
+            course_id,
+            kind=kind,
+            title=title,
+            content=content,
+            sources=sources,
+            origin=origin,
+            author=author,
+            note=note,
         )
         conn.commit()
-        created = load(conn, course_id, artifact_id)
+    return created
+
+
+def _create(
+    conn: Connection,
+    course_id: UUID,
+    *,
+    kind: str,
+    title: str,
+    content: dict[str, Any],
+    sources: list[UUID] | tuple[UUID, ...],
+    origin: dict[str, Any] | None,
+    author: Author,
+    note: str,
+) -> Artifact:
+    artifact_id = uuid4()
+    clean_title = title.strip()[:TITLE_MAX_LENGTH]
+    conn.execute(
+        get(_FILE, "create"),
+        {
+            "artifact_id": artifact_id,
+            "course_id": course_id,
+            "kind": kind,
+            "title": clean_title,
+            "content": json.dumps(content, ensure_ascii=False),
+            "sources": _json_ids(tuple(sources)),
+            "origin": json.dumps(origin or {}, ensure_ascii=False),
+        },
+    )
+    conn.execute(
+        get(_FILE, "add_version"),
+        {
+            "artifact_id": artifact_id,
+            "version": 1,
+            "title": clean_title,
+            "content": json.dumps(content, ensure_ascii=False),
+            "sources": _json_ids(tuple(sources)),
+            "author": author,
+            "note": note,
+        },
+    )
+    created = load(conn, course_id, artifact_id)
     assert created is not None
+    return created
+
+
+def adopt_message_item(
+    course_id: UUID,
+    *,
+    kind: str,
+    title: str,
+    content: dict[str, Any],
+    sources: list[UUID] | tuple[UUID, ...],
+    origin: dict[str, Any],
+    author: Author,
+    note: str,
+    as_copy: bool = False,
+) -> Artifact:
+    with connection() as conn:
+        if (
+            conn.execute(get(_FILE, "lock_course"), {"course_id": course_id}).rowcount
+            == 0
+        ):
+            raise LookupError("course not found")
+        if not as_copy:
+            row = conn.execute(
+                get(_FILE, "from_message"),
+                {
+                    "course_id": course_id,
+                    "message_id": origin["message_id"],
+                    "item_index": origin["item_index"],
+                },
+            ).fetchone()
+            if row:
+                existing = _artifact(row)
+                if existing.content != content or existing.sources != tuple(sources):
+                    raise StaleVersionError(
+                        "this item already has a saved artifact; open it "
+                        "to continue editing "
+                        "or choose Save a copy to keep this draft separately"
+                    )
+                return existing
+        created = _create(
+            conn,
+            course_id,
+            kind=kind,
+            title=title,
+            content=content,
+            sources=sources,
+            origin={**origin, "adopted": not as_copy},
+            author=author,
+            note=note,
+        )
+        conn.commit()
     return created
 
 

@@ -2,6 +2,8 @@
   import CodeView from '$lib/components/CodeView.svelte';
   import RichText from '$lib/components/RichText.svelte';
   import WorkspaceHtmlView from '$lib/components/WorkspaceHtmlView.svelte';
+  import MindMapView from '$lib/components/MindMapView.svelte';
+  import type { MapContext, MapSource, MindMapContent } from '$lib/stores/mindMap';
   import type {
     ArtifactKind,
     ChartContent,
@@ -15,6 +17,7 @@
   import DocEditor from './DocEditor.svelte';
   import FlashcardsArtifact from './FlashcardsArtifact.svelte';
   import QuizArtifact from './QuizArtifact.svelte';
+  import type { PracticeContext } from '$lib/stores/practice.svelte';
   import SheetEditor from './SheetEditor.svelte';
   import SlidesEditor from './SlidesEditor.svelte';
 
@@ -28,6 +31,10 @@
     oncite?: (n: number) => void;
     onsection?: (index: number) => void;
     currentSlide?: number;
+    practice?: PracticeContext;
+    mapContext?: MapContext;
+    mapSources?: (MapSource | null)[];
+    ongenerated?: () => void | Promise<void>;
   }
 
   let {
@@ -38,6 +45,10 @@
     onchange = () => {},
     oncite,
     onsection,
+    practice,
+    mapContext,
+    mapSources,
+    ongenerated,
     currentSlide = $bindable(0)
   }: Props = $props();
 
@@ -67,9 +78,11 @@
 {:else if kind === 'slides'}
   <SlidesEditor deck={content as unknown as SlidesContent} {title} {editable} bind:current={currentSlide} {onchange} />
 {:else if kind === 'quiz'}
-  <QuizArtifact quiz={content as unknown as QuizContent} {editable} {onchange} {oncite} />
+  <QuizArtifact quiz={content as unknown as QuizContent} {editable} {onchange} {oncite} {practice} />
 {:else if kind === 'flashcards'}
   <FlashcardsArtifact deck={content as unknown as FlashcardsContent} {editable} {onchange} {oncite} />
+{:else if kind === 'mind_map'}
+  <MindMapView map={content as unknown as MindMapContent} sources={mapSources} context={mapContext} {ongenerated} />
 {:else if kind === 'code'}
   <div class="flex flex-col gap-3">
     {#if editable}

@@ -1,5 +1,5 @@
 {
-  "version": "1",
+  "version": "2",
   "cases": [
     {
       "id": "green-grounded-linear",
@@ -7,7 +7,14 @@
       "course_tag": "harness-course",
       "question": "What does it mean for a transformation to be linear?",
       "seed_chunk_labels": ["page 1"],
-      "expectation": {"citations_required": true}
+      "expectation": {
+        "citations_required": true,
+        "required_patterns": [
+          "\\b(addition|additivity|sums?)\\b",
+          "\\b(scalar multiplication|scaling|homogeneity)\\b"
+        ],
+        "forbidden_patterns": ["\\bpreserves nothing\\b"]
+      }
     },
     {
       "id": "cold-office-phone",

@@ -22,10 +22,16 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+from src.backend.common.schemas.learning import Capability
+from src.backend.common.schemas.mind_map import MapEdge, MapNode, MindMapContent
 
-WORKSPACE_BLOCK_RE = re.compile(r"```workspace[ \t]*\r?\n(.*?)```", re.DOTALL)
+WORKSPACE_BLOCK_RE = re.compile(
+    r"```workspace[ \t]*\r?\n(.*?)(?:^```[ \t]*(?=\r?$)|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
 INLINE_CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
@@ -35,6 +41,8 @@ class QuizQuestion(BaseModel):
     answer: int
     explanation: str | None = None
     sources: list[int] = Field(min_length=1)
+    topic: str = Field(default="", max_length=160)
+    capability: Capability = "recognition"
 
     @model_validator(mode="after")
     def _answer_is_an_option(self) -> QuizQuestion:
@@ -50,6 +58,7 @@ class WorkspaceQuiz(BaseModel):
     type: Literal["quiz"]
     title: str | None = None
     questions: list[QuizQuestion] = Field(min_length=1, max_length=20)
+    practice_id: UUID | None = None
 
 
 class WorkspaceDocument(BaseModel):
@@ -73,6 +82,16 @@ class WorkspaceCode(BaseModel):
     code: str = Field(min_length=1)
     sources: list[int] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _python_syntax(self) -> WorkspaceCode:
+        if (self.language or "").strip().casefold() in {"python", "python3", "py"}:
+            try:
+                # Compilation checks syntax without executing generated code.
+                compile(self.code, "<workspace>", "exec")
+            except (SyntaxError, ValueError) as err:
+                raise ValueError("Python code has invalid syntax") from err
+        return self
+
 
 class WorkspaceSheet(BaseModel):
     type: Literal["sheet"]
@@ -87,8 +106,7 @@ class WorkspaceSheet(BaseModel):
         for number, row in enumerate(self.rows, start=1):
             if len(row) != width:
                 raise ValueError(
-                    f"row {number} has {len(row)} cells but there are "
-                    f"{width} columns"
+                    f"row {number} has {len(row)} cells but there are {width} columns"
                 )
         return self
 
@@ -100,9 +118,21 @@ class WorkspaceSlides(BaseModel):
     sources: list[int] = Field(min_length=1)
 
 
+class WorkspaceMindMap(MindMapContent):
+    type: Literal["mind_map"]
+    title: str | None = None
+    nodes: list[MapNode] = Field(min_length=2, max_length=24)
+    edges: list[MapEdge] = Field(min_length=1, max_length=36)
+
+
 WorkspaceItem = Annotated[
-    WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml | WorkspaceCode | WorkspaceSheet
-    | WorkspaceSlides,
+    WorkspaceQuiz
+    | WorkspaceDocument
+    | WorkspaceHtml
+    | WorkspaceCode
+    | WorkspaceSheet
+    | WorkspaceSlides
+    | WorkspaceMindMap,
     Field(discriminator="type"),
 ]
 
@@ -158,6 +188,24 @@ def _parse_block(raw: str, material_count: int) -> tuple[WorkspaceItem | None, s
 
 
 def _citation_problem(item: WorkspaceItem, material_count: int) -> str | None:
+    if isinstance(item, WorkspaceMindMap):
+        elements: list[MapNode | MapEdge] = [*item.nodes, *item.edges]
+        for element in elements:
+            text = (
+                element.summary if isinstance(element, MapNode) else element.explanation
+            )
+            problem = _out_of_range(
+                [
+                    *element.sources,
+                    *_inline_citations(text),
+                    *_inline_citations(element.label),
+                ],
+                material_count,
+                "map element",
+            )
+            if problem:
+                return problem
+        return None
     if isinstance(item, WorkspaceDocument):
         cited = [*item.sources, *_inline_citations(item.content)]
         return _out_of_range(cited, material_count, "document")

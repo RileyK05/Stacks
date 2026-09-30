@@ -19,7 +19,9 @@ import {
   listCourses,
   plainText,
   resolveBridgeBase,
-  sendAssist
+  sendAssist,
+  wholePackage,
+  publishDocument
 } from './public/bridge.js';
 
 const ORIGIN = 'https://localhost:47831';
@@ -175,4 +177,41 @@ test('describeRange lists each non-empty cell with its formula', () => {
   );
   assert.equal(describeRange('Sheet1!A1', [['']], [['']]), 'Sheet Sheet1, cells A1\n(the selected cells are empty)');
   assert.match(describeRange('Sheet1!AA10:AB10', [[1, 2]], [[1, 2]], true), /AB10: 2\n\(selection truncated/);
+});
+
+
+test('whole Office package includes every slice and closes its temporary file', async () => {
+  let closed = 0;
+  const file = { size: 4, sliceCount: 2,
+    getSliceAsync: (i, callback) => callback({ status: 'succeeded', value: { data: i === 0 ? [1,2] : [3,4] } }),
+    closeAsync: callback => { closed++; callback(); }
+  };
+  const document = { getFileAsync: (kind, options, callback) => callback({ status: 'succeeded', value: file }) };
+  assert.deepEqual([...await wholePackage(document)], [1,2,3,4]);
+  assert.equal(closed, 1);
+  file.size = 30;
+  await assert.rejects(wholePackage(document, 10), /limit/);
+  assert.equal(closed, 2);
+  file.size = 4;
+  file.getSliceAsync = (i, callback) => callback({ status: 'failed', error: { message: 'Lost connection' } });
+  await assert.rejects(wholePackage(document), /Lost connection/);
+  assert.equal(closed, 3);
+});
+
+test('Office publishes working material through its authenticated bridge, not source ingestion', async () => {
+  const fake = fakeFetch(jsonResponse({ session_id: 'work-1', revision: 1 }));
+  const request = { course_id: 'course-1', purpose: 'paper', document: { title: 'Paper', text: 'My draft' } };
+  await publishDocument(fake.impl, ORIGIN, request, 'office-token');
+  assert.equal(fake.calls[0].url, `${ORIGIN}/office/work-document`);
+  assert.equal(fake.calls[0].init.headers['X-Office-Token'], 'office-token');
+  assert.deepEqual(JSON.parse(fake.calls[0].init.body), request);
+});
+
+test('Office can read the latest session revision through its own authenticated bridge', async () => {
+  const { getWork } = await import('./public/bridge.js');
+  const fake = fakeFetch(jsonResponse({ session_id: 'work-1', revision: 2 }));
+  const result = await getWork(fake.impl, ORIGIN, 'course-1', 'work-1', 'office-token');
+  assert.equal(result.revision, 2);
+  assert.equal(fake.calls[0].url, `${ORIGIN}/office/work/work-1?course_id=course-1`);
+  assert.equal(fake.calls[0].init.headers['X-Office-Token'], 'office-token');
 });

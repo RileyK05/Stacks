@@ -35,6 +35,7 @@ from src.backend.common.prompt_registry import (
 )
 from src.backend.common.providers import ProviderChoice
 from src.backend.common.queries import get
+from src.backend.common.schemas.mind_map import MindMapContent, check_map_evidence
 from src.backend.retrieval import funnel, rerank, trace
 from src.backend.retrieval.config import RetrievalPolicy
 from src.backend.tutor.compose import parse_json_object
@@ -192,6 +193,16 @@ _FORMAT_HINTS: dict[str, str] = {
     ),
     "code": 'Return JSON: {"language": "...", "code": "..."}.',
     "chart": 'Return JSON: {"html": "..."} (HTML/SVG only, no scripts).',
+    "mind_map": (
+        "Return JSON with nodes [{id,label,summary,sources}] and edges "
+        "[{source,target,kind,label,explanation,sources}]. "
+        "Each element needs evidence numbers. Branch edges form a forest with "
+        "one parent per child; similarity edges are comparisons, never membership. "
+        "Keep unique node IDs and existing relationships unless the request "
+        "changes them. Node summaries must be exact excerpts from cited passages "
+        "naming the node. Connection explanations must be exact excerpts naming "
+        "both endpoints. Never paraphrase the supporting excerpts."
+    ),
 }
 
 
@@ -255,6 +266,14 @@ def _schema(kind: str, material_count: int) -> dict[str, Any] | None:
         return obj({"language": string, "code": string})
     if kind == "chart":
         return obj({"html": string})
+    if kind == "mind_map":
+        from src.backend.tutor.compose import Intent, workspace_schema
+
+        schema = workspace_schema(Intent.MIND_MAP, material_count)["properties"]["item"]
+        properties = {
+            k: v for k, v in schema["properties"].items() if k not in {"type", "title"}
+        }
+        return obj(properties)
     return None
 
 
@@ -502,6 +521,8 @@ def propose_edit(
     edited, uncited = _attribute(artifact.kind, edited, shown, material.texts)
     try:
         edited = artifact_content.validate_content(artifact.kind, edited)
+        if artifact.kind == "mind_map":
+            check_map_evidence(MindMapContent.model_validate(edited), material.texts)
         merged, sources = artifact_content.merge(
             edited, material.chunk_ids, artifact.sources
         )

@@ -7,11 +7,9 @@ understanding only — never behavior instructions. One local user per
 database, so the node belongs to the course's only user. It survives the
 course's trash purge as the deletion keepsake (golden rule 6).
 
-`refresh` is the only write seam. Current node content is a grounded
-course-content summary (concepts, memory objects, sources, evidence
-snapshot) — the only thing distillable before attempts/mastery data
-exists. Target content is FOCUS memory distilled from the student's own
-data (Milestone 3 wiring); see decision 007 "Current state vs target".
+`refresh` is the only write seam. Practice observations and tentative chat
+experiments produce the student's focus record, retaining source snapshots.
+Courses without student observations retain the material-summary fallback.
 
 NOTE: this is NOT course knowledge. Concepts/dependencies/memory objects/
 TOC live in `schemas/memory.py`, `src/backend/memory/`, and their tables;
@@ -26,6 +24,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from src.backend.common.db import Connection
+from src.backend.common.learning_config import load_learning_policy
 from src.backend.common.lifecycle_config import load_lifecycle_policy
 from src.backend.common.queries import get
 
@@ -40,7 +39,6 @@ CHARS_PER_TOKEN = 4
 _EVIDENCE_HEADER = "Evidence snapshot:"
 _SEMANTIC_HEADER = "Concepts and course memory:"
 _SOURCES_HEADER = "Sources:"
-_TRUNCATED_MARKER = "[truncated at token budget]"
 
 
 def target_tokens(source_count: int) -> int:
@@ -53,18 +51,14 @@ def _character_budget(token_budget: int) -> int:
     return token_budget * CHARS_PER_TOKEN
 
 
-def _evidence_line(
-    row: dict[str, Any], *, with_excerpt: bool
-) -> str:
+def _evidence_line(row: dict[str, Any], *, with_excerpt: bool) -> str:
     locator = f"; {row['label']}" if row["label"] else ""
     fingerprint = f"; sha256={row['file_hash']}" if row["file_hash"] else ""
     excerpt = f"\n  {row['excerpt']}" if with_excerpt and row["excerpt"] else ""
     return f"- {row['filename']}{locator}{fingerprint}{excerpt}"
 
 
-def _fit_lines(
-    lines: list[str], header: str, character_budget: int
-) -> tuple[str, int]:
+def _fit_lines(lines: list[str], header: str, character_budget: int) -> tuple[str, int]:
     """Fit whole lines under `character_budget`. Lines are atomic so a hash
     or locator is never cut mid-way. Returns (section, characters used).
     At least the header is always emitted."""
@@ -132,13 +126,11 @@ def _assemble_summary(
         used += spent + 1
         remaining -= spent + 1
 
-    semantic_lines = [
-        f"- {row['name']}: {row['definition']}" for row in concepts
-    ] + [f"- [{row['kind']}] {row['content']}" for row in memory_objects]
+    semantic_lines = [f"- {row['name']}: {row['definition']}" for row in concepts] + [
+        f"- [{row['kind']}] {row['content']}" for row in memory_objects
+    ]
     if semantic_lines and remaining > 0:
-        section, spent = _fit_lines(
-            semantic_lines, _SEMANTIC_HEADER, remaining
-        )
+        section, spent = _fit_lines(semantic_lines, _SEMANTIC_HEADER, remaining)
         sections.append(section)
         used += spent + 1
         remaining -= spent + 1
@@ -165,9 +157,7 @@ def _fetch_material(conn: Connection, course_id: UUID) -> dict[str, list[DictRow
     return {
         "sources": conn.execute(get(_FILE, "memory_sources"), params).fetchall(),
         "concepts": conn.execute(get(_FILE, "memory_concepts"), params).fetchall(),
-        "memory_objects": conn.execute(
-            get(_FILE, "memory_objects"), params
-        ).fetchall(),
+        "memory_objects": conn.execute(get(_FILE, "memory_objects"), params).fetchall(),
         "evidence": conn.execute(get(_FILE, "memory_evidence"), params).fetchall(),
     }
 
@@ -184,6 +174,48 @@ def refresh(conn: Connection, course_id: UUID) -> None:
     material = _fetch_material(conn, course_id)
     token_budget = target_tokens(len(material["sources"]))
     summary, key_concepts = _assemble_summary(material, course["name"], token_budget)
+    from src.backend.student_model import learning
+
+    focus = learning.targets(conn, course_id)
+    docket = learning.experiments(conn, course_id)
+    if focus or docket:
+        lines = []
+        for target in focus:
+            if not target.observations:
+                continue
+            score = (
+                "unknown" if target.proficiency is None else f"{target.proficiency}/100"
+            )
+            observed = target.evidence[-1]
+            source: dict[str, Any] = next(iter(observed.get("sources", [])), {})
+            checked = (
+                target.last_checked.date() if target.last_checked else "unconfirmed"
+            )
+            lines.append(
+                f"- Evidence: {source.get('filename', '(none)')} "
+                f"{source.get('label', '')}; source={source.get('source_id')}; "
+                f"chunk={source.get('chunk_id')}; {source.get('text', '')[:120]}\n"
+                f"  {target.topic} / {target.capability}: {score}; "
+                f"{target.independent_items} independent items; "
+                f"last checked {checked}; "
+                f"selected {observed['selected']}; correct={observed['correct']}; "
+                f"fresh={observed['fresh']}; helped={observed['helped']}"
+            )
+        for experiment in docket:
+            if experiment.status in ("proposed", "cooldown"):
+                lines.append(
+                    f"- Evidence: student message {experiment.message_ref}: "
+                    f"{experiment.evidence['student_quote']}\n"
+                    f"  Unconfirmed: {experiment.topic} / {experiment.capability}: "
+                    f"{experiment.hypothesis}"
+                )
+        summary, _ = _fit_lines(
+            lines,
+            f"Course: {course['name']}\n"
+            f"Student focus (learning policy {load_learning_policy().version}):",
+            _character_budget(token_budget),
+        )
+        key_concepts = list(dict.fromkeys(t.topic for t in focus))
     conn.execute(
         get(_FILE, "upsert_memory"),
         {

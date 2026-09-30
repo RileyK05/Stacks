@@ -1,125 +1,188 @@
-# docket.md — Bugs, latent bugs, and optimizations
+# Engineering backlog
 
-> **Status: static-review ledger, triaged for the companion release on
-> 2026-09-28 and superseded by the central-library direction later that day.**
-> Findings remain candidates until reproduced or verified. The current product
-> direction in `plan-notebook.md` is authoritative when it conflicts with this
-> older snapshot or finding wording.
->
-> Generated from a full read of the tree at commit `7c61147` (working tree dirty:
-> `companion.py`, `companion.rs`, and `routes/companion/` are untracked; several
-> files modified). Every item is a *candidate* — verify before acting. Line
-> numbers can drift; re-grep before editing.
->
-> Severity scale:
-> - **CRITICAL** — data loss, security hole, or a feature that is silently wrong.
-> - **HIGH** — user-visible breakage, race, or resource leak on a normal path.
-> - **MEDIUM** — wrong behavior in an edge case, hardening gap, or real perf cost.
-> - **LOW** — correctness nit, inconsistent error handling, fragile assumption.
-> - **NIT** — style, dead code, duplication, naming.
->
-> Finding IDs are stable: `C` correctness/data, `S` security, `X` concurrency/races,
-> `P` performance, `F` frontend, `R` Tauri/Rust, `O` runtime/office, `T` tests/CI,
-> `D` docs/dead-code. Use them to track in review.
+Updated 2026-09-30. This is the only engineering issue queue. Release checks live
+in `plan-notebook.md`; current behavior lives in `system.md`. Finish a task by
+removing its active entry and temporary plan/review file after transferring any
+lasting contract or remaining work. Do not create a completed-work archive.
 
----
+## Start here
 
-## Product direction correction (2026-09-28)
+The entries below collect the consequential work from the retired reviews.
+**Decision** means a real product or resource tradeoff remains. **Quality gap**
+means observed behavior needs independent acceptance. **Verification** means an
+implementation exists but its intended environment has not been exercised.
+Candidate findings later in this file are hypotheses, not confirmed bugs.
 
-The library is again the launch and primary product surface. The companion is
-created only after the user presses **Open companion** and now behaves as a
-normal movable, resizable native window. The previous right-edge docking,
-collapse tab, hidden library, and companion-owned Quit behavior are retired.
-Windows x64, Apple Silicon macOS, and Linux x64 are core build targets; only the
-optional Microsoft Office bridge remains Windows-specific.
+### B-02 — Source changes within a conversation (decision)
 
----
+New retrieval respects selected sources, but summary/recent replies can still
+carry earlier facts. Keeping context preserves follow-up meaning; resetting it
+gives stronger isolation but loses referents. Proposed contract: retain the topic
+and student's question, mark a scope change, and re-establish factual claims
+against current material. Prior tutor text is not evidence. Acceptance: discuss
+A → select only B → ask a follow-up A supports but B does not; require an honest
+limitation rather than a convenient citation from B. COURSE focus can persist;
+it does not authorize facts from excluded sources.
 
-## Historical companion-release snapshot (2026-09-28)
+### B-04 — Local model scheduling (decision; interleaving needs reproduction)
 
-This snapshot predates the product-direction correction above. Its companion
-first assumptions and release decisions are retained only as audit history.
-Current release work is tracked in `plan-notebook.md`.
+One llama-server switches models under a lock, but generation HTTP runs outside
+it. A different-model request may stop the active server. A single scheduler
+holding a model lease through a request bounds RAM but adds queuing/reload delay;
+separate runners permit overlap but require capacity/eviction rules. Review
+recommendation: one scheduled runner for the 8 GB floor, concurrent runners as
+an explicit larger-machine option. Decide foreground priority/cancellation;
+reproduce concurrent foreground/background requests deterministically first.
 
-### Resolved or cleared in this pass
+### B-05 — Local integration authority (decision)
 
-| ID | Result |
-| --- | --- |
-| S-02 | Chart HTML export now runs inside a sandboxed iframe under a restrictive CSP; the existing filters remain defense in depth. |
-| S-03 | The desktop API now refuses production requests when no launch token is configured. Development and tests may still opt into the tokenless loopback API. |
-| S-05 | App-token comparison uses UTF-8 bytes, so non-ASCII input returns 401 instead of raising `TypeError`. |
-| S-06 | Production no longer publishes OpenAPI, Swagger, or ReDoc routes; development retains the generated schema workflow. |
-| R-01 | The library uses `opener:default`, which includes the required command and HTTP/HTTPS URL scope. |
-| R-03 | Packaged startup failures point to `backend-stderr.log` and runtime failures to `backend.log`. |
-| R-08 | Main and companion windows now use separate Tauri capabilities; the companion gets only core permissions. |
-| T-02 | `set_version.py` updates the Stacks entry in `Cargo.lock`, and the version test checks it. |
-| T-05 | `lxml` and its typing stubs are direct dependencies instead of transitive accidents. |
-| T-17 | A missing npm lockfile now fails the version bump loudly. |
-| T-18 | The installer script exits with an error when Tauri produces no installer. |
-| T-19 | Backend bundle cleanup no longer swallows removal failures. |
-| T-24 | Release version discovery imports the version module; installer builds pass `--locked`. |
-| D-01 | `system.md` was replaced with the current SQLite/Tauri/companion architecture. |
-| D-03/D-04 | Public and frontend READMEs now point to the live docs and enumerate the real release gates. |
-| D-05 | `.env.example` now lists the supported development overrides. |
-| D-24 | `.env` is ignored and is not tracked; no secret contents were inspected. |
+Authenticated exports accept user-selected arbitrary paths. Office's token is
+optional by default; serving the pane same-origin is not authentication. Define
+allowed clients and attacker capabilities before selecting bootstrap/rotation.
+Narrow native file operations tied to user selections plus an authenticated
+Office session reduce authority but add handoff/setup complexity. Broad local
+controller authority is simpler but grants token holders the same powers.
+Related candidates: S-01, S-04, S-07, S-08, S-18. Do not describe loopback or a
+launch token as isolation from all programs running as the same OS user.
 
-### Release blockers still open
+### B-06 — Actual generated-answer quality (observed quality gap)
 
-| ID | Release decision |
-| --- | --- |
-| T-01 / D-02 | At the time of this snapshot, companion files and their references had not landed together. |
-| Installer proof | The snapshot's PyInstaller + NSIS build still needed installed smoke testing without the checkout or Vite. |
-| Office proof | Complete selection/read/write/save/reopen tests in Word, Excel, and PowerPoint from the installed build before advertising all three as verified. |
-| S-01 | The native save dialog intentionally permits user-chosen export paths. Before wider distribution, move file writing behind a Tauri capability or formally document this desktop trust boundary. |
-| S-04 | The Office pane is same-origin with its fixed HTTPS bridge but does not yet use a per-install bridge token. Define and test that boundary before wider distribution. |
+Mechanical tests can accept wrong explanations, ambiguous quiz keys, unsupported
+slide/table details, and code using concatenation instead of vector arithmetic.
+Companion edits can anchor the right passage yet explain it incorrectly. The
+latest broader recorded evaluation passed 7/10 with artifact failures and one
+output-limit error; a later 2/2 grounding/refusal probe does not supersede it.
+Build representative, independently reviewed cases for entailment, examples,
+code results, quiz keys, research hypotheses, and edits. Separate direct source
+statements from generated reasoning; measure false acceptance and false refusal.
+Acceptance includes linearity without assumed length preservation, explanation
+versus artifact routing, and independent inspection of all quiz alternatives.
+Never execute generated code during ordinary artifact validation.
+Quiz Hint/Explain now have source-scoped prompts and delivery/assessment guards.
+Expand independent semantic checks for answer leakage, useful versus tautological
+hints, key/source conflicts, excluded questions, and feedback-policy echoes.
+The first narrow local run supports basic linearity hints/explanations; a flagged
+explanation still emitted an unnecessary internal-policy sentence. These outputs
+do not establish general pedagogical quality or resolve the broader 7/10 gap.
 
-### Deferred engineering work
+Mind-map probes (prompt 35) now attach literal source excerpts and neutral edge
+captions after earlier model output misclassified events as people. The latest
+MiniCPM5 2B map separated two movements using a comparison edge but omitted the
+named subordinate examples. Explain added an unsupported paraphrase, and a quiz
+alternative remained potentially ambiguous. Expand independently reviewed cases
+for coverage, branch direction/membership, comparisons, and all answer options;
+literal co-occurrence cannot validate an inferred relationship. Reordered list
+duplicates and literal tautological answers are now withheld, but these guards
+do not establish semantic uniqueness of alternatives.
 
-The correctness, concurrency, retrieval-eval, performance, and accessibility
-items below remain useful follow-up. Their original severity is a reviewer's
-assessment, not proof of reproduction. Promote an item into the release gate
-only with a failing test, a reproduced user path, or a clear security boundary.
+Local evidence (ignored `runs/`, not portable release proof):
+- `runs/bakeoff/20260929T040013Z/`, `20260929T040819Z/`, and `20260929T041143Z/`
+  record flawed artifacts despite favorable contract scores or valid syntax.
+- `runs/bakeoff/20260930T005526Z/` and `20260930T011252Z/` passed 9/10;
+  direct inspection still found ambiguous questions and unsupported proposals.
+- `runs/learning-review/live-research.json` records direct research/quiz probes.
+- `runs/companion-review/live-work.json` and `live-selected-edit.json` record
+  anchored reviews/edits with mixed semantic quality and no learning writes.
+- `runs/bakeoff/20260930T022049Z/report.json` is the broader 7/10 result;
+  `runs/bakeoff/20260930T031259Z/report.json` is the narrow 2/2 result.
+- `runs/mind-map/semantic/report.json` records the prompt-35 map/Explain/quiz
+  probe. `runs/bakeoff/20260930T174204Z/` scored 1/2 mechanically; inspection
+  shows an actual refusal, missed by the refusal-marker scorer. Fix that scorer
+  and retain independent inspection; this does not establish broad quality.
 
----
+### B-07 — Retrieval evidence and relevance (quality gap)
 
-## 0. The angry summary (read this first)
+Expand the one-case committed retrieval corpus before algorithm changes. Use
+held-out questions, multi-page supporting passages, restricted sources, and
+unrelated questions. Calibrate relevance/refusal together: an arbitrary cutoff
+can hide useful answers. Correct full-span scoring does not establish retrieval
+quality. Measure each seam and fusion against independent ground truth.
+Course-knowledge extraction currently records a skipped stage; decide and verify
+its evidence-bearing extraction contract before promising a complete concept model.
 
-This codebase has real craft in it — the citation gate, the fail-closed provider
-seam, the migration discipline — and then it trips over its own feet in the same
-breath. The pattern I keep hitting:
+### B-08 — Learning evidence beyond the baseline (quality gap / future work)
 
-1. **The transaction discipline the project brags about is violated in the one
-   place it hurts most** (`sources_repo.upload_source` copies up to a gigabyte
-   while holding SQLite's single writer lock).
-2. **The security model is "loopback is safe" but at least three paths let a
-   token-holder write/read arbitrary files and drive arbitrary HTTP.**
-3. **Fail-open defaults everywhere** — auth, Office bridge, reranker, embedding
-   seam — despite the entire architecture doc being about failing loudly.
-4. **The new untracked `companion` code is referenced from tracked, modified
-   files** (`main.py`, `lib.rs`, `tauri.conf.json`, `capabilities/default.json`).
-   Commit that as-is and a clean checkout does not import.
-5. **The eval harness — golden rule 3, the "center" — can't actually score the
-   cases it claims to, because it only ever looks at each chunk's primary
-   locator.** The kill switch it exists to drive is therefore measuring noise.
+Current policy is weighted multiple-choice evidence, not calibrated probabilities
+or proof of independent explanation/transfer. Evaluate longitudinal outcomes,
+free responses, semantic duplicate detection, canonical topic links, and broader
+teaching preferences. A method preceding success is not causal proof; control
+question difficulty and sparse samples. Review/exclude ambiguous questions
+before interpreting scores. Acceptance: miss → help → revealed repeat success
+→ return tomorrow → fresh independent check; retain both original difficulty
+and assisted success without declaring mastery or endlessly drilling one topic.
+Content ratings are currently bounded course opinions, with no mastery or CORE
+effect. Evaluate how repeated quality feedback should guide generation and when
+specific presentation feedback warrants a cautious cross-course preference;
+one thumbs-down cannot justify a general student trait or factual correction.
 
-Everything below is the long form.
+### B-09 — Companion analysis and recovery (future work)
 
----
+Long-document selection is bounded overlap matching, not multi-pass whole-document
+review or semantic section selection. Unsubmitted questions/paste forms are not
+durable. Companion suggestions are copied, not automatically applied to external
+files. Any future document-derived memory needs explicit assessment/feedback
+evidence; changing a work-session purpose must never promote draft claims into
+COURSE capability, course knowledge, or CORE preferences.
 
-## 1. Correctness and data loss — backend core
+### B-10 — Installed platform and Office journeys (verification)
 
-### C-01 — `sources_repo.upload_source` holds the write transaction across a file copy
-- **Where:** `src/backend/common/sources_repo.py:82-127`
-- **Severity:** HIGH (explicit project-rule violation)
-- **What:** `with connection()` opens an IMMEDIATE write transaction at line 82.
-  `storage.write_stored_from_temp` (line 93) then copies the staged file into
-  place while the writer lock is held. The docstring even claims "the file write
-  happens before the row commits" as if that were the intended design. Every
-  other writer (ingestion, all API mutations) blocks for the duration of a
-  possibly-gigabyte copy. The project contract forbids exactly this.
-- **Fix:** compute the final path, write the file *before* opening the
-  transaction, then open `connection()` and insert. Keep the orphan-cleanup
-  contract by tracking `final_written` outside the transaction.
+Execute `plan-notebook.md` gates on Windows, Apple Silicon Mac, and Linux.
+Native close/crash and WebView draft recovery, concurrent editors, local storage
+failure, and backup scheduling/rotation require installed checks as well.
+Real Office readers, Mac trust/sideload prompts, unsaved edits, repeated reconnect,
+host suspension, hidden sheets, unsupported objects, and real screenshot OCR
+need native checks. Browser fixtures and mocked host/command tests cannot certify
+these environments. Persisted UI checks used seeded quiz/model output:
+`runs/flow-review/reopened-notes.jpg`, `runs/learning-review/memory.jpg`, and
+`runs/office-live/companion-offline.png` retain local proof of those flows.
+
+### B-11 — Document changes during Office capture (verification / design)
+
+Excel/PowerPoint require multiple host reads; editing during capture may yield
+mixed-time content. Test this behavior on real hosts before choosing document
+events, version checks, retries, or stronger capture consistency. A saved snapshot
+revision protects Stacks updates, not the atomicity of an external Office read.
+
+### B-12 — Additional live hosts (deferred design)
+
+Google Docs/Sheets/Slides currently enter through exports. Live access needs an
+authenticated browser/API bridge, identity and freshness rules, and a scoped
+permission design. Automated Mac window capture is also unimplemented. Add one
+host at a time with explicit coverage and screenshots as partial fallback.
+
+### B-13 — Reproducible releases and evaluation tooling (engineering)
+
+Verify T-03 (Python locks), T-14 (Windows-safe model report paths), and T-15
+(move production evaluation seeding out of tests). Test model concurrency against
+the chosen B-04 contract. Use a unique pytest basetemp per process.
+
+### B-14 — Desktop backup activation and lossy retention (remaining work / decision)
+
+Backups and verified separate-folder recovery exist (system §3), but the desktop
+shell still selects its fixed app-data folder. Add an activation flow that stops
+all writers, validates compatibility, preserves the current library for rollback,
+and restarts against recovered data. Acceptance must include failure during the
+switch, every retention tier, source search rebuilding, and citation readability.
+Do not label folder extraction as one-click desktop restoration.
+
+Current compression is lossless. Smaller tiers omit categories. Whether partial
+or heavy may downsample PDFs/images/decks remains a product decision: visual
+fidelity and evidence/locator integrity must be weighed against disk savings.
+Already-compressed Office/PDF/media files may shrink little. IndexedDB drafts
+are outside backend backups; cross-device draft recovery would need an explicit
+storage/export contract.
+
+## Static candidates remaining from the original ledger
+
+Stable IDs retain their original namespace. Priorities below are the original
+reviewer's estimates, not reproduced severity. Locations refer to an older
+tree: locate the current implementation before acting. Confirm a candidate with
+a failing behavioral case, measured cost, or a clear security boundary; reject
+unsupported allegations instead of implementing their proposed fixes blindly.
+Partially fixed entries are narrowed. Cleared entries were removed on 2026-09-30;
+the dated note and Git history retain their disposition.
+
+## Correctness and data loss candidates
 
 ### C-02 — Dead-letter gap: poison sources strand forever with no failure record
 - **Where:** `src/backend/ingest/runs.py:227-234`, `src/backend/common/queries/ingestion.sql:65-82`, `:173-176`
@@ -335,19 +398,6 @@ Everything below is the long form.
   normalized, so trivially-equal questions miss the cache.
 - **Fix:** broaden the strip set symmetrically.
 
-### C-25 — Eval harness can only ever match a chunk's *primary* locator
-- **Where:** `src/backend/retrieval/evals.py:117-126`, `:234-237`; `queries/retrieval.sql:13,52,78`
-- **Severity:** CRITICAL (for the eval's stated purpose)
-- **What:** `_labels_for_candidates` resolves labels from `candidate.locator_id`,
-  which is `chunks.locator_id` — the primary locator only. A chunk whose full span
-  (`chunk_locators`) includes the expected page/section but whose primary locator
-  differs scores as a miss. Since `_hit` requires all expected labels, eval cases
-  targeting any non-primary locator are unfalsifiable misses. This corrupts
-  `fused_recall` vs `seam_recall` and therefore decision 008's kill switch
-  (`fusion_beats_best_single`).
-- **Fix:** resolve the full locator set per candidate via `chunk_locators`, or
-  require expected labels to be the primary locator and document it loudly.
-
 ### C-26 — Eval runs ~10 queries per case (N+1)
 - **Where:** `src/backend/retrieval/evals.py:227-237`
 - **Severity:** MEDIUM
@@ -361,20 +411,6 @@ Everything below is the long form.
 - **What:** a case with no expected labels is scored a failure rather than
   rejected/unresolved.
 - **Fix:** reject/flag such cases at load.
-
-### C-28 — `rerank.select_for_generation` length mismatch escapes the fails-open contract
-- **Where:** `src/backend/retrieval/rerank.py:33-39`
-- **Severity:** MEDIUM
-- **What:** `provider.rerank_scores` is inside the try/except, but the
-  `zip(..., strict=True)` and `sorted` are outside it. A reranker returning the
-  wrong count raises `ValueError` into the request instead of falling back.
-- **Fix:** validate `len(scores) == len(candidates)` inside the guarded block.
-
-### C-29 — NaN reranker scores produce undefined ordering
-- **Where:** `src/backend/retrieval/rerank.py:36-39`
-- **Severity:** LOW
-- **What:** `-item[0]` with NaN gives inconsistent sort keys.
-- **Fix:** replace non-finite scores with `-inf`.
 
 ### C-30 — Retrieval trace records the embedding model, not the generation model
 - **Where:** `src/backend/retrieval/trace.py:67`
@@ -672,14 +708,6 @@ Everything below is the long form.
   leaves the connection gone but a choice pointing at it.
 - **Fix:** make it one transaction.
 
-### C-68 — `providers.resolve` silently falls back to the environment endpoint
-- **Where:** `src/backend/common/providers.py:376-387`
-- **Severity:** MEDIUM
-- **What:** a saved interactive/background choice that resolves to `None`
-  (missing key / bad URL) quietly routes course text to `LLM_BASE_URL`, which may
-  be remote. The user picked an endpoint on purpose.
-- **Fix:** fail loudly when a saved choice cannot resolve.
-
 ### C-69 — Local-detection only recognizes `http://127.0.0.1` and `http://localhost`
 - **Where:** `src/backend/common/providers.py:359-373`
 - **Severity:** LOW
@@ -733,15 +761,12 @@ Everything below is the long form.
   presented as authoritative.
 - **Fix:** truncate at a word boundary.
 
-### C-76 — Office graded-work classifier false-positives on document text
-- **Where:** `src/backend/tutor/office.py:115-122`, `:141-145`
-- **Severity:** HIGH
-- **What:** `is_graded_request` concatenates `instruction\ncontext` and runs a
-  loose regex whose `[^.]{0,40}` windows cross newlines, matching ordinary prose
-  ("The answer to the exam is..."). The whole 8 KB selection is probed, so the
-  pane can refuse legitimate explain/summarize requests on innocent slide text.
-- **Fix:** scan only `instruction`, anchor to imperative/second-person forms, and
-  exclude already-refused intents.
+### C-76 — Graded-work classifier edge cases
+- **Where:** `src/backend/tutor/office.py`
+- **Priority:** MEDIUM (candidate)
+- **Check:** explicit explain/summarize instructions now take precedence over
+  copied assignment instructions. Test remaining innocent document-text matches
+  and genuine completion requests before changing the classifier.
 
 ### C-77 — Two divergent graded-work classifiers
 - **Where:** `src/backend/tutor/office.py:115-122` vs `src/backend/tutor/compose.py:54-62`
@@ -749,13 +774,6 @@ Everything below is the long form.
 - **What:** `_GRADED` and `_GRADED_WORK` encode the same policy differently; the
   tutor and Office pane will disagree about the same request.
 - **Fix:** consolidate into one classifier.
-
-### C-78 — Office answers skip reranking, diverging from the tutor
-- **Where:** `src/backend/tutor/office.py:203-215`
-- **Severity:** MEDIUM
-- **What:** the top `MATERIAL_LIMIT` fused candidates are used directly; the
-  built-in tutor calls `rerank.select_for_generation`.
-- **Fix:** pass through `rerank.select_for_generation`.
 
 ### C-79 — Office `_context` computed twice; retrieval/embedding strings differ
 - **Where:** `src/backend/tutor/office.py:132-138,202,221`; `api/office.py:247-249`
@@ -846,7 +864,8 @@ Everything below is the long form.
 - **Severity:** LOW
 - **What:** `_tree_bytes` recursively walks the storage/models/runtime roots on
   every call and swallows `OSError`, so totals can be silently wrong; `reveal`
-  checks `exists()` then opens.
+  checks `exists()` then opens. The separate database/WAL size race is fixed:
+  missing files during checkpointing return zero instead of failing Settings.
 - **Fix:** cache with a TTL; handle errors explicitly.
 
 ### C-92 — `data.py` `explorer /select,<path>` misparses comma-containing paths
@@ -895,22 +914,13 @@ Everything below is the long form.
 - **What:** any save can claim model authorship, weakening auditable provenance.
 - **Fix:** derive `author` server-side.
 
-### C-99 — `EmptyModelError` unhandled → 500 across tutor/conversations/office
-- **Where:** `src/backend/api/tutor.py:108-113`, `conversations.py:287-290`, `office.py:263-270`, `:344`
-- **Severity:** MEDIUM
-- **What:** `provider.EmptyModelError` is a sibling of `ProviderUnavailableError`,
-  not a subclass, and is not caught. `artifacts.py:483-488` *does* catch it, so
-  behavior is inconsistent.
-- **Fix:** catch it and return 502/503 consistently.
-
 ### C-100 — Malformed stored trace id → 500
 - **Where:** `src/backend/api/tutor.py:136`
 - **Severity:** LOW
 - **Fix:** validate/skip, return 404/422.
 
----
 
-## 2. Security
+## Security
 
 ### S-01 — **CRITICAL: arbitrary file write via artifact export path**
 - **Where:** `src/backend/api/artifacts.py:508-531`, `artifacts/export.py:73-79,404-426`
@@ -922,25 +932,6 @@ Everything below is the long form.
 - **Fix:** resolve `payload.path` and require it under the export dir (or treat it
   as a bare filename), and refuse to overwrite.
 
-### S-02 — Exported chart HTML sanitization is regex-based and bypassable (XSS)
-- **Where:** `src/backend/artifacts/export.py:54-59`, `:391-398`
-- **Severity:** HIGH
-- **What:** `_SCRIPT` misses `<script src>`, unclosed `<script>`, SVG `<script>`;
-  `_HANDLER` misses `<svg/onload=>` and entity-encoded handlers; `_JS_URL` misses
-  `data:text/html`, `vbscript:`, `java&#9;script:`. `<iframe srcdoc>`,
-  `<object>`, `<embed>`, `<meta http-equiv=refresh>` pass untouched. The `.html`
-  export opens in a browser where nothing else sanitizes it.
-- **Fix:** use a real HTML sanitizer or emit sanitized static SVG.
-
-### S-03 — API auth fails open when no token is configured
-- **Where:** `src/backend/api/deps.py:21-23`
-- **Severity:** HIGH
-- **What:** empty `api_token` returns success; the entire API is unauthenticated.
-  This is the only guard against DNS-rebinding/CSRF. If the shell ever fails to
-  set the token, the API silently opens with no warning.
-- **Fix:** in production refuse to serve without a token, or bind loopback-only
-  and log loudly.
-
 ### S-04 — Office bridge fails open by default
 - **Where:** `src/backend/api/office.py:63-65`, `common/config.py:54`
 - **Severity:** HIGH
@@ -948,23 +939,6 @@ Everything below is the long form.
   immediately. Combined with the fixed loopback HTTPS port, any local process can
   spend cloud tokens and read course-grounded answers via `/assist` and `/read`.
 - **Fix:** generate and require a per-install token by default.
-
-### S-05 — `compare_digest` on non-ASCII header raises `TypeError` → 500, not 401
-- **Where:** `src/backend/api/deps.py:24`, `api/office.py:66`
-- **Severity:** MEDIUM
-- **What:** header values are decoded latin-1; a byte >127 yields a non-ASCII
-  `str`, which `hmac.compare_digest` rejects.
-- **Fix:** compare bytes (`encode("utf-8","surrogateescape")`) or catch
-  `TypeError` → 401.
-
-### S-06 — Unauthenticated FastAPI docs/openapi on the mounted `/api` app
-- **Where:** `src/backend/main.py:57-61`, `:116`
-- **Severity:** HIGH
-- **What:** `create_app` disables docs on the parent, but `create_api()` leaves
-  defaults on, and app-level `dependencies=[...]` do not cover the auto-generated
-  `/docs`, `/redoc`, `/openapi.json` routes. `/api/openapi.json` discloses the
-  whole API surface without the token.
-- **Fix:** pass `docs_url=None, redoc_url=None, openapi_url=None` to `create_api`.
 
 ### S-07 — SSRF via connection test
 - **Where:** `src/backend/api/settings.py:295-325`, `:328-333`, `:340-357`
@@ -1138,9 +1112,8 @@ Everything below is the long form.
 - **Severity:** MEDIUM
 - **Fix:** enforce in the gate or remove the instruction.
 
----
 
-## 3. Concurrency, lifecycle, resources
+## Concurrency, lifecycle, resources
 
 ### X-01 — Tauri `watch_startup` can deadlock on a full stdout pipe
 - **Where:** `src/frontend/src-tauri/src/backend.rs:199-247`
@@ -1350,14 +1323,6 @@ Everything below is the long form.
   promise never settles.
 - **Fix:** queue requests or chain/reject.
 
-### X-31 — Frontend autosave timer can fire after unmount; no `dispose()`
-- **Where:** `src/frontend/src/lib/stores/artifact.svelte.ts:176,234,310-316`
-- **Severity:** MEDIUM
-- **What:** only `flush()`/`remove()` clear the timer; a torn-down page can fire a
-  save after unmount, and `remove()` leaves state populated so a late `touch()`
-  re-saves a deleted artifact.
-- **Fix:** `dispose()` from `PanelState`/`onDestroy`; clear state on remove.
-
 ### X-32 — Frontend chat send applies a reply to a switched-away conversation
 - **Where:** `src/frontend/src/lib/stores/chat.svelte.ts:171-195`, `components/course/ChatThread.svelte:45-47`
 - **Severity:** HIGH
@@ -1366,16 +1331,6 @@ Everything below is the long form.
   caller opens workspace for `turns.length - 1` (the wrong turn).
 - **Fix:** stable turn ids; guard updates with the originating conversation id;
   locate the returned turn by id.
-
-### X-33 — Frontend `open()` clears `threadLoading` for the wrong request
-- **Where:** `src/frontend/src/lib/stores/chat.svelte.ts:131-149`
-- **Severity:** MEDIUM
-- **Fix:** generation token.
-
-### X-34 — Frontend `loadCitations` is `void`ed with no catch → unhandled rejection
-- **Where:** `src/frontend/src/lib/stores/chat.svelte.ts:203-215`, `ChatThread.svelte:81`
-- **Severity:** MEDIUM
-- **Fix:** catch and set an error state; toggle retry without spinning.
 
 ### X-35 — Frontend systemic: API errors are thrown, so every `error` branch is dead and calls reject
 - **Where:** `src/frontend/src/lib/api/client.ts:21-46`
@@ -1386,9 +1341,8 @@ Everything below is the long form.
 - **Fix:** either return the response and let callers check `error`, or audit every
   caller to `try/catch`.
 
----
 
-## 4. Performance / optimization
+## Performance / optimization
 
 ### P-01 — `get_settings()` re-reads `.env` from disk on every call
 - **Where:** `src/backend/common/config.py:62-82`
@@ -1433,11 +1387,6 @@ Everything below is the long form.
 - **What:** no limit/dimension filter in SQL; Python filters after fetch.
 - **Fix:** filter `dimension` in SQL; preallocate a buffer.
 
-### P-08 — `_NARROWED_FETCH_FACTOR = 4` can crowd out selected sources
-- **Where:** `src/backend/retrieval/funnel.py:506-526`
-- **Severity:** MEDIUM
-- **Fix:** filter by `source_ids` in the seam SQL.
-
 ### P-09 — Missing index on `chunk_locators(locator_id)`
 - **Where:** `src/backend/retrieval/funnel.py:181-184`, `migrations/001_local_baseline.sql:99-103`
 - **Severity:** MEDIUM
@@ -1461,11 +1410,6 @@ Everything below is the long form.
 - **Where:** `migrations/001_local_baseline.sql:117-130`
 - **Severity:** LOW
 - **Fix:** add it.
-
-### P-13 — `funnel.entry_ids` dedup is O(n²)
-- **Where:** `src/backend/retrieval/funnel.py:185-188`
-- **Severity:** LOW
-- **Fix:** ordered dict/set.
 
 ### P-14 — TOC candidates carry a hardcoded `rank=0.0`
 - **Where:** `src/backend/retrieval/funnel.py:190-200`
@@ -1541,9 +1485,8 @@ Everything below is the long form.
 - **Severity:** LOW
 - **Fix:** derive on `text` only (it does) but memoize render output.
 
----
 
-## 5. Frontend correctness (beyond concurrency/perf above)
+## Frontend correctness (beyond concurrency/perf above)
 
 ### F-01 — `ChatList` rename Save button is broken
 - **Where:** `src/frontend/src/lib/components/course/ChatList.svelte:106`, `:26-36`
@@ -1599,11 +1542,6 @@ Everything below is the long form.
 - **What:** `ensureConversation()` persists a new empty chat before the patch;
   a failed patch leaves it behind, contradicting "a new chat is a draft".
 - **Fix:** patch first / roll back.
-
-### F-09 — `panel.close()` never closes the tab if `flush()` rejects
-- **Where:** `src/frontend/src/lib/stores/panel.svelte.ts:63-71`, `components/course/Panel.svelte:79-82`
-- **Severity:** MEDIUM
-- **Fix:** try/finally around flush, or close regardless.
 
 ### F-10 — `LocalModelCard` unhandled rejections and unsafe indexing
 - **Where:** `src/frontend/src/lib/components/LocalModelCard.svelte:103-107,142-159,197-198,57-73`
@@ -1702,17 +1640,8 @@ Everything below is the long form.
 - **Severity:** LOW
 - **Fix:** debounce.
 
----
 
-## 6. Tauri / Rust (misc)
-
-### R-01 — External link opening is broken by an unscoped permission
-- **Where:** `src/frontend/src-tauri/capabilities/default.json:8`
-- **Severity:** HIGH
-- **What:** `opener:allow-open-url` carries no scope; `open_url` requires at least
-  one matching allow entry, so every `openUrl` from `routes/+layout.svelte:32`
-  returns `ForbiddenUrl`.
-- **Fix:** use `opener:default`, or add an explicit `http://*`/`https://*` scope.
+## Tauri / Rust (misc)
 
 ### R-02 — Release backend path depends on an out-of-band config override
 - **Where:** `src/frontend/src-tauri/src/backend.rs:171-191`, `tauri.bundle.conf.json:4`
@@ -1721,13 +1650,6 @@ Everything below is the long form.
   applied only by `scripts/build_desktop.py`. A plain `tauri build` ships no
   backend and fails at runtime.
 - **Fix:** move resources into `tauri.conf.json` or guard the missing resource.
-
-### R-03 — Error message points at the wrong log
-- **Where:** `src/frontend/src-tauri/src/backend.rs:228-236,61-64`
-- **Severity:** MEDIUM
-- **What:** `failure()` names `<data>/backend.log`, but the shell captures stderr
-  to `<data>/backend-stderr.log`; an early crash lands only in the latter.
-- **Fix:** mention both, or name the stderr log on early exit.
 
 ### R-04 — Health parsing accepts only literal `HTTP/1.1 200`
 - **Where:** `src/frontend/src-tauri/src/backend.rs:238-264`
@@ -1746,68 +1668,18 @@ Everything below is the long form.
   only slow a desktop build.
 - **Fix:** default unwinding; `["rlib"]`.
 
-### R-07 — Main window hidden with no tray and no guaranteed quit path
-- **Where:** `src/frontend/src-tauri/src/lib.rs:34-41`, `tauri.conf.json:22,36`
-- **Severity:** MEDIUM
-- **What:** closing `main` hides it; with no tray, destroying the undecorated
-  companion can leave no visible UI.
-- **Fix:** tray icon, or handle companion close.
-
-### R-08 — Capabilities grant all permissions to both windows
-- **Where:** `src/frontend/src-tauri/capabilities/default.json:5-12`
-- **Severity:** MEDIUM
-- **What:** custom commands aren't capability-scoped; both windows get dialogs and
-  opener. Split main/companion capabilities and scope `backend_info`.
-- **Fix:** per-window capabilities; validate the invoking webview.
-
 ### R-09 — CSP may block the inline theme bootstrap; `devCsp: null`
 - **Where:** `src/frontend/src-tauri/tauri.conf.json:47,52`
 - **Severity:** LOW
 - **Fix:** module script/hash the bootstrap; enable a dev CSP.
-
-### R-10 — Version sources: `tauri.conf.json` → package.json vs. hardcoded Cargo version
-- **Where:** `src/frontend/src-tauri/tauri.conf.json:4`, `Cargo.toml:3`
-- **Severity:** LOW
-- **Fix:** single source or assert equality.
-
-### R-11 — `companion.rs` mixed physical/logical math, silent primary fallback, no DPI recompute
-- **Where:** `src/frontend/src-tauri/src/companion.rs:6-24`
-- **Severity:** LOW
-- **Fix:** handle `ScaleFactorChanged`; avoid silent primary fallback.
-
-### R-12 — Duplicated layout constants
-- **Where:** `src/frontend/src-tauri/src/companion.rs:3-4`, `tauri.conf.json:29`
-- **Severity:** NIT
-- **Fix:** derive from config.
 
 ### R-13 — `BackendInfo.log_dir` exposed but never read by the frontend
 - **Where:** `src/lib/api/backend.ts:19`
 - **Severity:** NIT
 - **Fix:** use it in errors or drop it.
 
----
 
-## 7. Tests, CI, packaging
-
-### T-01 — **CRITICAL (build): the new `companion` code is untracked while referenced by tracked files**
-- **Where:** `git status`; `src/backend/main.py:25`; `src/frontend/src-tauri/src/lib.rs`; `tauri.conf.json:25-42`; `capabilities/default.json`
-- **Severity:** CRITICAL
-- **What:** `src/backend/api/companion.py`, `src/frontend/src-tauri/src/companion.rs`,
-  and `src/frontend/src/routes/companion/` are untracked, but `main.py`, `lib.rs`,
-  `tauri.conf.json`, and `capabilities/default.json` (all modified) reference them.
-  Committing the tracked changes without the new files yields an `ImportError` at
-  backend startup and a Tauri build failure in CI.
-- **Fix:** commit the companion files together (or revert the references); verify
-  with a clean checkout.
-
-### T-02 — `set_version.py` does not update `Cargo.lock`; CI `--locked` will break
-- **Where:** `scripts/set_version.py:26,48-56`, `.github/workflows/ci.yml:89`, `Cargo.lock:3241-3242`
-- **Severity:** HIGH
-- **What:** the first version bump leaves `Cargo.lock` stale; `cargo clippy
-  --all-targets --locked` fails before the release build. `test_version.py` does
-  not check `Cargo.lock`, so drift is invisible locally.
-- **Fix:** update `Cargo.lock` in `set_version.py`; assert it in `test_version.py`;
-  add a "lockfile in sync" CI step.
+## Tests, CI, packaging
 
 ### T-03 — No Python lockfile; unbounded `>=` deps
 - **Where:** `pyproject.toml:10-34,46-51`, `.github/workflows/ci.yml:31,67`
@@ -1823,28 +1695,6 @@ Everything below is the long form.
   so `python -m scripts.*` only works from the repo root.
 - **Fix:** `namespaces=true` (or add `__init__.py`), package-data for
   `configs`/`migrations`/`queries`, and entry points.
-
-### T-05 — `lxml` is imported in production but undeclared
-- **Where:** `pyproject.toml:46-51`, `src/backend/office_addin/manifest.py:14`
-- **Severity:** HIGH
-- **What:** `lxml` arrives transitively via `python-docx`; `mypy --strict` fails on
-  a clean install, and `lxml-stubs` is undeclared.
-- **Fix:** declare `lxml` and `lxml-stubs`, or add a mypy override.
-
-### T-06 — `test_storage.test_remove_course_directory` is vacuous
-- **Where:** `tests/test_storage.py:136-139`
-- **Severity:** HIGH
-- **What:** it monkeypatches `config.get_settings`, but `storage.py` bound
-  `get_settings` at import, so the patch has no effect; the assertion
-  (`not os.path.exists(sandbox/...)`) is vacuously true. The test always passes.
-- **Fix:** patch `storage.get_settings`.
-
-### T-07 — `_temp_uploads` mutates the global `tempfile.tempdir` and never restores it
-- **Where:** `tests/test_storage.py:10-20`
-- **Severity:** HIGH
-- **What:** leaks state into every subsequent test; ignores `tmp_path_factory`;
-  `/tmp/course-proj-uploads` is a fixed shared path on Linux.
-- **Fix:** `monkeypatch.setattr(tempfile, "tempdir", ...)`.
 
 ### T-08 — `conftest` only pins a subset of env keys
 - **Where:** `tests/conftest.py:15-17`, `src/backend/common/config.py:19-31`
@@ -1901,29 +1751,13 @@ Everything below is the long form.
 - **What:** architectural inversion; breaks if tests move.
 - **Fix:** move seeding into `src/backend/evals/`.
 
-### T-16 — `eval_models.py` aborts the whole bake-off on a per-case provider error
-- **Where:** `scripts/eval_models.py:129-135`
-- **Severity:** MEDIUM
-- **What:** only `ProviderUnavailableError` is caught; rate-limit/budget errors
-  kill the run and lose the report. Exit code also ignores failed cases.
-- **Fix:** catch per case, record, continue; exit non-zero on failures.
-
-### T-17 — `set_version.py` silently skips a missing `package-lock.json`
-- **Where:** `scripts/set_version.py:51-56`
-- **Severity:** MEDIUM
-- **What:** leaves package.json/lock inconsistent, which `npm ci` rejects.
-- **Fix:** fail loudly.
-
-### T-18 — `build_desktop.py` reports success when no installer is produced
-- **Where:** `scripts/build_desktop.py:95-107`
-- **Severity:** LOW
-- **What:** `rglob` returns `[]`, `main` prints nothing and exits 0.
-- **Fix:** raise `SystemExit`.
-
-### T-19 — `build_desktop.py` swallows `rmtree` errors
-- **Where:** `scripts/build_desktop.py:90`
-- **Severity:** LOW
-- **Fix:** explicit `OSError` handling.
+### T-16 — Per-case evaluation provider failures
+- **Where:** `scripts/eval_models.py`
+- **Priority:** MEDIUM (candidate)
+- **Check:** failed/unresolved/empty evaluations now produce a nonzero exit.
+  Verify that budget, rate-limit, and unexpected per-case failures still retain
+  useful reports and allow the remaining cases to finish; do not regress the
+  corrected exit status.
 
 ### T-20 — `dump_openapi.py` doesn't assert a non-empty spec
 - **Where:** `scripts/dump_openapi.py:17`
@@ -1947,13 +1781,6 @@ Everything below is the long form.
 - **Where:** `.github/workflows/ci.yml:24,46,59,62`
 - **Severity:** LOW
 - **Fix:** pin SHAs; cache on the lockfile.
-
-### T-24 — Release workflow regexes `version.py` and builds without `--locked`
-- **Where:** `.github/workflows/release.yml:48-63`
-- **Severity:** MEDIUM
-- **What:** `re.search` raises `AttributeError` if formatting changes; `tauri
-  build` without `--locked` can ship a different dependency resolution than CI.
-- **Fix:** parse with `ast`/`tomllib`; pass `--locked`.
 
 ### T-25 — `conftest` keyring stub depends on the module-attribute import style
 - **Where:** `tests/conftest.py:54-67`, `providers.py:48`
@@ -1995,56 +1822,15 @@ Everything below is the long form.
 - **Fix:** import `api`, `artifacts`, `office_addin`, `runtime`, `scripts`; assert
   `create_app()`.
 
-### T-32 — No coverage for `api/companion.py` or the `student_model` subsystem
-- **Where:** `tests/` (gap)
-- **Severity:** LOW
-- **Fix:** add tests.
+## Docs and dead code
 
----
-
-## 8. Docs and dead code
-
-### D-01 — Docs describe a hosted Postgres, multi-user product that no longer exists
-- **Where:** `docs/system.md` throughout (e.g. `:70-140`, `:285-540`, `:1105+`)
-- **Severity:** MEDIUM
-- **What:** the whole storage/auth/tier/account-deletion narrative is superseded
-  by the local-first app, but the doc still presents it as current. Agents told to
-  "read system.md before structural changes" will design against a dead system.
-- **Fix:** trim to the local-first reality, or clearly quarantine superseded
-  sections.
-
-### D-02 — `main.py` imports `companion`; companion files untracked
-- **Where:** see T-01
-- **Severity:** CRITICAL (duplicate; listed here for the docs/consistency bucket)
-
-### D-03 — Frontend README points at removed `docs/decisions/`
-- **Where:** `src/frontend/README.md:164-165`
-- **Severity:** MEDIUM
-- **Fix:** point at `docs/notes.md`/git history.
-
-### D-04 — README "five checks" and docs list are stale
-- **Where:** `README.md:90,108-114`
-- **Severity:** LOW
-- **Fix:** enumerate the real gates and include `docs/notes.md`.
-
-### D-05 — `.env.example` omits most supported keys
-- **Where:** `.env.example` vs `common/config.py:64-81`
-- **Severity:** MEDIUM
-- **Fix:** document every key.
-
-### D-06 — `schemas/` is full of dead modules and lies
-- **Where:** `schemas/student_model.py:16-66`, `schemas/chat.py:15-46`, `schemas/evidence.py:11-24,44-61`, `schemas/identity.py:32-43`
-- **Severity:** MEDIUM
-- **What:** `student_model` has no tables; `chat.Conversation`/`ConversationTurn`
-  are unused duplicates; `RetrievalTrace.retrieved_chunk_ids: list[UUID]` does not
-  match the stored JSON object; `evidence.Claim/Citation/Response` are unused, and
-  `Citation` collides in name with `archive_notebook.Citation`.
-- **Fix:** delete or wire up; fix the type to match storage.
-
-### D-07 — `migrate.RETIRED_VERSIONS` is dead code claiming a hazard it doesn't prevent
-- **Where:** `src/backend/common/migrate.py:15`
-- **Severity:** MEDIUM
-- **Fix:** enforce it or delete it.
+### D-06 — Legacy schemas and stored trace shape
+- **Where:** `src/backend/common/schemas/`
+- **Priority:** MEDIUM (candidate)
+- **Check:** audit remaining unused chat/evidence/identity contracts and trace
+  shape against storage. Student practice now has real tables and coverage;
+  do not carry forward the old claim that the entire subsystem is dead.
+  Planned schemas need scope review rather than deletion by reference count.
 
 ### D-08 — `migrate` uses f-string SQL + `executescript` (implicit commit)
 - **Where:** `src/backend/common/migrate.py:60-65`
@@ -2054,20 +1840,13 @@ Everything below is the long form.
   adjacent to `BEGIN IMMEDIATE`.
 - **Fix:** parameterized insert; run statements deliberately.
 
-### D-09 — `chunk_embeddings` schema/comment mismatch kills the model-swap story
-- **Where:** `migrations/001_local_baseline.sql:107-115`, `queries/ingestion.sql:144-152`
-- **Severity:** MEDIUM
-- **What:** `chunk_id` is the PK (one row per chunk) and `replace_chunk_embedding`
-  overwrites on conflict, yet the comment and `system.md` claim a model swap
-  "orphans old rows filtered by model". Switching models destroys the old vector.
-- **Fix:** PK `(chunk_id, model)`, or correct the comment/docs.
-
-### D-10 — `storage.compress_for_storage` and `copy_stored` are test-only/dead
-- **Where:** `src/backend/common/storage.py:156-166,233-243`
-- **Severity:** LOW
-- **What:** `compress_for_storage` is a memory-loading duplicate of the streaming
-  path kept alive by tests only; the two implement independent `savings` math.
-- **Fix:** delete or unify.
+### D-09 — Embedding model-swap wording
+- **Where:** `common/migrations/001_local_baseline.sql`, `common/queries/ingestion.sql`
+- **Priority:** LOW (verified documentation mismatch)
+- **Check:** the primary key is chunk_id; replacement overwrites its model/vector.
+  Current product docs now say so. Correct the misleading query comment in a
+  code pass; never rewrite the applied baseline migration. If multiple vectors
+  per chunk become a requirement, choose it explicitly and add a new migration.
 
 ### D-11 — `course_archive._discard` embeds raw SQL outside the query registry
 - **Where:** `src/backend/common/course_archive.py:272-274`
@@ -2085,87 +1864,100 @@ Everything below is the long form.
 - **What:** no prompt, no `Intent.HTML`, no `compose.workspace_schema` branch.
 - **Fix:** wire it or delete it.
 
-### D-14 — `content.blank()` and several `KNOWN_*`/marker constants are unused
-- **Where:** `src/backend/artifacts/content.py:163-164`, `course_memory.py:43`
-- **Severity:** NIT
-- **Fix:** delete.
+### D-14 — Remaining marker/KNOWN_* constants
+- **Where:** `src/backend/common/schemas/`, artifact content
+- **Priority:** NIT (candidate)
+- **Check:** inspect actual unused constants. The blank-content wrapper and
+  course-memory truncation marker were already removed; no further cleanup is
+  established by the old allegation.
 
 ### D-15 — `memory/__init__.py` package is empty and collides with two other memory names
 - **Where:** `src/backend/memory/__init__.py:1-10`
 - **Severity:** LOW
 - **Fix:** rename or delete.
 
-### D-16 — `MODEL_TASKS` dead entries; `raw_pdf_bytes` dead parameter; `TYPE_CHECKING: pass`
-- **Where:** `src/backend/ingest/orchestrator.py:48-52`, `extract.py:278,330-331`, `extract.py:24-25`
-- **Severity:** NIT
-- **Fix:** delete.
+### D-16 — Remaining model-task mapping entries
+- **Where:** `src/backend/ingest/orchestrator.py:MODEL_TASKS`
+- **Priority:** NIT (candidate)
+- **Check:** OCR uses this mapping. Verify whether UPDATE_TOC and
+  EXTRACT_KNOWLEDGE entries remain purposeful scaffolding or can be removed.
+  The PDF bytes parameter is used and the empty type-checking block was removed;
+  neither belongs on the remaining cleanup queue.
 
 ### D-17 — `prompts.toml` `artifact_generation` text is never sent; version/comment drift
 - **Where:** `configs/prompts.toml:130-135`, `:1-2`
 - **Severity:** LOW
 - **Fix:** use or remove; version the text history.
 
-### D-18 — `queries/course_memory.sql get_memory` and `storage.copy_stored` unused
-- **Where:** `queries/course_memory.sql:58-68`
-- **Severity:** NIT
-- **Fix:** delete.
-
 ### D-19 — `_parse_timestamp` raises `ValueError` on corrupt rows
 - **Where:** `src/backend/common/db.py:54-56`
 - **Severity:** LOW
 - **Fix:** typed error.
 
-### D-20 — `CHARS_PER_TOKEN = 4` is the only budget model; `[truncated]` marker unused
-- **Where:** `src/backend/common/course_memory.py:38,43`
-- **Severity:** NIT
-- **Fix:** document or remove.
+### D-20 — Character-based focus budget approximation
+- **Where:** `src/backend/common/course_memory.py`
+- **Priority:** LOW (candidate)
+- **Check:** document or measure the character-to-token approximation against
+  supported models. The unused truncation marker was already removed.
 
-### D-21 — Two versions of `ExportView`, duplicated `_require_course` ×5, duplicated `require_*_token`
-- **Where:** `api/artifacts.py:161-163` vs `api/data.py:29-33`; `courses.py:76`, `sources.py:54`, `tutor.py:85`, `conversations.py:141`, `artifacts.py:186`; `deps.py:12` vs `office.py:55`
-- **Severity:** NIT
-- **Fix:** consolidate.
-
-### D-22 — `secrets.SERVICE_NAME = "course-assistant"` vs package "stacks"
-- **Where:** `src/backend/common/secrets.py:12`
-- **Severity:** NIT
-- **Fix:** align.
+### D-22 — Credential service naming compatibility
+- **Where:** `src/backend/common/secrets.py`
+- **Priority:** LOW (candidate)
+- **Check:** retaining the old keyring name preserves existing credentials.
+  Rename only with an explicit credential migration; branding alone is not a
+  reason to make stored keys disappear.
 
 ### D-23 — `Icon.svelte` includes unused icons
 - **Where:** `src/frontend/src/lib/components/Icon.svelte:82-91`
 - **Severity:** NIT
 - **Fix:** prune.
 
-### D-24 — `.env` is present in the working tree
-- **Where:** repo root
-- **Severity:** MEDIUM (verify)
-- **What:** `.env` is gitignored, but confirm it contains no real secrets and is not
-  in any commit (`git log --all -- .env`). The `.env.example` should be the
-  committed template.
-- **Fix:** verify history; rotate any leaked key.
+## Additional candidates from the 2026-09-29 review
 
----
+These keep the second review's IDs under a REV prefix. Duplicates point to the
+original ledger rather than creating a second task. No severity or recommended
+implementation is accepted without checking current code and behavior.
 
-## 9. Suggested triage order
+| Review ID | Location / existing task | Candidate or disposition |
+| --- | --- | --- |
+| REV-C1 | `common/provider.py` | Bound adaptation-cache growth under many endpoint/model failures; measure realistic growth before selecting an eviction policy. |
+| REV-C2 / REV-L18 | P-05 | Verify tokenizer/model download integrity and byte caps; revision pinning and hash pinning provide different guarantees. |
+| REV-C3 | `api/settings.py` | Setting a key can create a preset connection. Determine whether the UI/API intends this behavior and test it; do not assume it is critical. |
+| REV-H1 / REV-H2 | C-15; `api/sources.py` | Measure whole-file storage/source-response memory and consider bounded streaming; gzip accumulation is also a whole-result cost. |
+| REV-H3 | C-47 | Same whole-source export-memory candidate. |
+| REV-H4 | P-07 | Same course embedding materialization candidate. |
+| REV-H5 / REV-M10 | `student_model/learning.py` | Profile observations and suites in targets on realistic history; batch/index only when cost warrants it. |
+| REV-H6 / REV-M15 | `common/course_memory.py` | Profile full-material focus refresh and query costs; preserve evidence/freshness if introducing incremental updates. |
+| REV-H7 | P-01 | Same settings/environment parsing cost candidate. |
+| REV-H8 | Policy loaders | Process-lifetime config caches need change only if reload is promised; define invalidation for development/tests if required. |
+| REV-H9 | `common/sources_repo.py` | Temporary paths can coincide, causing duplicate missing_ok cleanup. Low-impact clarity candidate, not a demonstrated failure. |
+| REV-H10 | C-71 | Same add_turn reread/index assumptions; test transaction invariants before adding unreachable guards. |
+| REV-M1 | `tutor/answer.py` | Verify bounded empty/truncated-output retry count and latency; retry already has a one-retry bound, so do not add backoff without provider evidence. |
+| REV-M2 / REV-M3 / REV-M16 / REV-M17 | API/repository transaction lifetimes | Inspect actual connection ownership and writer overlap. create_suite already accepts conn; its alleged nested connection is unsupported. Independent usage writes and short read connections can be intentional. No blanket connection-pool/refactor mandate. |
+| REV-M4 | `common/maintenance.py` | Test whether a failed purge should prevent orphan sweep; preserve safe deletion ordering before independently recovering phases. |
+| REV-M5 | D-08 | Same migration transaction-boundary candidate; verify actual call context before changing executescript. |
+| REV-M6 | `api/sources.py` | Page 0/negative return 404; nonintegers return 422. API validation consistency candidate, not demonstrated broken behavior. |
+| REV-M7 / REV-L16 | C-60 | Check exact focus-budget/truncation behavior, including tiny budgets and locator readability. |
+| REV-M8 | C-50 | Same failed-import cleanup candidate; logging alone would not restore atomicity. |
+| REV-M9 | `student_model/learning.py` | Consider direct replay return instead of bounded recursive submission retry; preserve idempotency, course/suite conflict validation, and source scope. |
+| REV-M11 | B-06; `tutor/compose.py` | Exercise quiz heuristic false acceptance/refusal against independently reviewed cases, including numeric values and dates. |
+| REV-M12 | `tutor/workspace.py` | Test the specific fence parsing case before reopening: nested Markdown fences already have regression coverage; extracting a fence and json.loads are separate steps. |
+| REV-M13 | `ingest/extract.py` | Evaluate justified prose, merged-cell tables, and layout heuristics with extraction ground truth before adopting another parser. |
+| REV-M14 | P-15 | Same settings/provider overview query/keyring cost candidate. |
+| REV-L1 | `common/provider.py` | Local base64 import is a style-only candidate; Python caches imports. No functional defect established. |
+| REV-L2 | `common/config.py` | Test escaped/quoted .env values against documented development configuration; choose parser complexity based on actual supported syntax. |
+| REV-L3 | `common/db.py` | The connection closes uncommitted transactions, which SQLite rolls back; no bug follows from lacking an explicit rollback. Add a case only if lifecycle behavior differs. |
+| REV-L4 | `common/db.py` | Inspect actual cross-thread connection sharing/ownership before changing check_same_thread; the flag alone does not prove a race. |
+| REV-L6 | `common/providers.py` | resolve_choice is a read seam supporting legacy presets; do not replace it with a mutating ensure helper without a product migration contract. |
+| REV-L8 | X-24 | Same keyring unavailable-versus-absent error candidate. |
+| REV-L9 | `api/deps.py` | A shared missing-or-invalid token message is intentional nondisclosure; no demonstrated problem requires different auth errors. |
+| REV-L10 | `common/db.py` | Check json_ids caller typing and query contracts; do not assume every call is necessarily a UUID-only API. |
+| REV-L11 | `common/encoders.py` | Profile batch peak memory when hidden is reassigned; a retained batch temporary is not an established persistent leak. |
+| REV-L12 | `common/work_archive.py` | Missing live source mappings intentionally preserve embedded quotes with cleared links/new snapshot IDs. Verify archive rendering; raising on every missing chunk would discard supported archived passages. |
+| REV-L13 | C-52; `common/archive_notebook.py` | Verify validated cited_ids populate mappings before import; preserve rejection/repair semantics. Falling back to old UUIDs can create dangling cross-course references. |
+| REV-L14 | `api/learning.py` | Exactly one saved-message or artifact input is required. Readability-only candidate; preserve the existing validation. |
+| REV-L15 | `common/learning_config.py` | Check whether configurable evidence thresholds need an upper bound; avoid arbitrary limits unrelated to the learning policy. |
+| REV-L17 | `api/data.py` | Repeated path resolution is a low-impact clarity candidate; preserve containment and symlink behavior. |
 
-1. **T-01** (untracked companion breaks clean checkout/build) — blocking.
-2. **S-01, S-02** (arbitrary file write, XSS) — security.
-3. **S-03, S-04, S-06** (fail-open auth, exposed docs) — security.
-4. **C-01, C-02, C-03, C-04, C-05** (data loss / stuck runs / silent loss).
-5. **C-25** (eval kill-switch is measuring the wrong thing).
-6. **X-01, X-02, X-03, X-07** (startup deadlock, quit freeze, orphaned processes).
-7. **C-65, C-66, C-70** (ledger/quota/lost-update concurrency).
-8. **T-02, T-03, T-04, T-05** (build reproducibility).
-9. **F-01, F-03, F-04, F-35/X-35** (user-visible frontend breakage).
-10. Everything MEDIUM, then LOW/NIT as cleanup.
-
----
-
-## 10. Caveats
-
-- These findings are from a static read; many are not reproduced with a failing
-  test. Treat each as a hypothesis until verified.
-- A few line numbers may be off by a few lines where the working tree is dirty.
-- Some "dead code" calls are deliberate scaffolding for planned work; check
-  `docs/plan-notebook.md` before deleting.
-- The untracked `companion` feature appears to be mid-landing; several findings
-  there (R-11, R-12, C-80) may be moot once finished.
+REV-L5, REV-L7, REV-L19, and REV-L20 explicitly described correct behavior
+or a redundant early return in the source report; they are cleared, not tasks.

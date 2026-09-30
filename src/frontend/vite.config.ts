@@ -10,6 +10,11 @@ const proxyTarget = process.env.API_PROXY_TARGET ?? 'http://localhost:8000';
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
   clearScreen: false,
+  // Crawl every route for dependencies at startup. Otherwise the first visit
+  // to a lazily loaded route (the companion window, Settings) can discover a
+  // new dependency, re-bundle, and answer the pages already open with 504
+  // "Outdated Optimize Dep": a window stuck on the splash until restarted.
+  optimizeDeps: { entries: ['src/**/*.svelte', 'src/**/*.ts', '!src/**/*.test.*'] },
   server: {
     port: 5173,
     strictPort: true,

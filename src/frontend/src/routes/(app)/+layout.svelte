@@ -1,10 +1,10 @@
 <script lang="ts">
-  import { invoke, isTauri } from '@tauri-apps/api/core';
   import { fade, fly } from 'svelte/transition';
   import { page } from '$app/state';
   import Icon, { type IconName } from '$lib/components/Icon.svelte';
   import { currentTheme, toggleTheme } from '$lib/stores/theme.svelte';
   import { toast } from '$lib/stores/toast.svelte';
+  import { showCompanion } from '$lib/utils/companion';
 
   let { children } = $props();
 
@@ -32,17 +32,7 @@
     if (openingCompanion) return;
     openingCompanion = true;
     try {
-      if (isTauri()) {
-        await invoke('show_companion');
-      } else {
-        const opened = window.open(
-          '/companion',
-          'stacks-companion',
-          'popup=yes,width=420,height=760,resizable=yes'
-        );
-        if (!opened) throw new Error('Your browser blocked the companion window.');
-        opened.focus();
-      }
+      await showCompanion(page.params.id);
       drawerOpen = false;
     } catch (error) {
       toast(error instanceof Error ? error.message : 'Could not open the companion.', 'error');
@@ -75,7 +65,19 @@
   <div class={`flex h-full flex-col py-5 ${compact ? 'items-center px-2' : 'px-3'}`}>
     <div class={compact ? '' : 'px-2'}>{@render brand(compact)}</div>
 
-    <nav class={`mt-8 flex flex-col gap-0.5 ${compact ? 'items-center' : ''}`} aria-label="Main">
+    <button
+      type="button"
+      onclick={openCompanion}
+      disabled={openingCompanion}
+      title={compact ? 'Open Stacks companion' : undefined}
+      class={`mt-7 flex min-h-10 items-center rounded-lg bg-accent-soft text-[13px] font-semibold text-accent-text transition-colors hover:bg-accent-soft/75 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-60 ${compact ? 'w-10 justify-center' : 'gap-2 px-2.5'}`}
+      aria-label={compact ? 'Open Stacks companion' : undefined}
+    >
+      <Icon name="panel-right" class="h-4 w-4" />
+      {#if !compact}{openingCompanion ? 'Opening companion…' : 'Open companion'}{/if}
+    </button>
+
+    <nav class={`mt-5 flex flex-col gap-0.5 ${compact ? 'items-center' : ''}`} aria-label="Main">
       {#each navItems as item (item.href)}
         {@const active = isActive(item.href)}
         <a
@@ -100,18 +102,7 @@
       {/each}
     </nav>
 
-    <div class={`mt-auto space-y-2 border-t border-line pt-3 ${compact ? 'w-10' : ''}`}>
-      <button
-        type="button"
-        onclick={openCompanion}
-        disabled={openingCompanion}
-        title={compact ? 'Open companion' : undefined}
-        class={`flex min-h-10 w-full items-center rounded-lg text-[13px] font-medium text-muted transition-colors hover:bg-accent-soft hover:text-accent-text focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-wait disabled:opacity-60 ${compact ? 'justify-center' : 'gap-2 px-2'}`}
-        aria-label={compact ? 'Open companion' : undefined}
-      >
-        <Icon name="panel-right" class="h-4 w-4" />
-        {#if !compact}{openingCompanion ? 'Opening companion…' : 'Open companion'}{/if}
-      </button>
+    <div class={`mt-auto border-t border-line pt-3 ${compact ? 'w-10' : ''}`}>
       <button
         type="button"
         onclick={toggleTheme}
@@ -175,7 +166,11 @@
     <div
       class={`mx-auto px-4 pb-16 ${wide ? 'max-w-[1680px] pt-5 sm:px-6' : 'max-w-5xl pt-6 sm:px-8 sm:pt-10'}`}
     >
-      {@render children()}
+      <!-- Re-create the page when its address changes, so state from one course
+           (chat, panel, polling) never leaks into another. -->
+      {#key page.url.pathname}
+        {@render children()}
+      {/key}
     </div>
   </main>
 </div>

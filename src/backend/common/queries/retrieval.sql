@@ -20,6 +20,7 @@ JOIN sources AS source ON source.source_id = chunk.source_id
 WHERE chunks_fts MATCH :match
   AND source.course_id = :course_id
   AND source.status = 'indexed'
+  AND (:source_ids IS NULL OR source.source_id IN (SELECT value FROM json_each(:source_ids)))
 ORDER BY rank DESC, chunk.chunk_index
 LIMIT :limit;
 
@@ -59,6 +60,7 @@ JOIN chunks AS chunk ON chunk.chunk_id = span.chunk_id
 JOIN sources AS source ON source.source_id = chunk.source_id
 WHERE source.course_id = :course_id
   AND source.status = 'indexed'
+  AND (:source_ids IS NULL OR source.source_id IN (SELECT value FROM json_each(:source_ids)))
 ORDER BY matched_entries.position, chunk.chunk_index
 LIMIT :limit;
 
@@ -84,6 +86,7 @@ JOIN sources AS src ON src.source_id = chunk.source_id
 WHERE matched.concept_id IN (SELECT value FROM json_each(:concept_ids))
   AND matched.course_id = :course_id
   AND src.status = 'indexed'
+  AND (:source_ids IS NULL OR src.source_id IN (SELECT value FROM json_each(:source_ids)))
 UNION
 SELECT chunk.chunk_id,
        chunk.source_id,
@@ -98,6 +101,7 @@ JOIN sources AS src ON src.source_id = chunk.source_id
 WHERE matched.concept_id IN (SELECT value FROM json_each(:concept_ids))
   AND matched.course_id = :course_id
   AND src.status = 'indexed'
+  AND (:source_ids IS NULL OR src.source_id IN (SELECT value FROM json_each(:source_ids)))
 ORDER BY chunk_index, chunk_id
 LIMIT :limit;
 
@@ -118,7 +122,8 @@ JOIN chunks AS chunk ON chunk.chunk_id = emb.chunk_id
 JOIN sources AS source ON source.source_id = chunk.source_id
 WHERE source.course_id = :course_id
   AND source.status = 'indexed'
-  AND emb.model = :model;
+  AND emb.model = :model
+  AND (:source_ids IS NULL OR source.source_id IN (SELECT value FROM json_each(:source_ids)));
 
 -- name: locator_labels
 SELECT locator.locator_id,
@@ -139,3 +144,9 @@ SELECT concept_id, name, synonyms
 FROM concepts
 WHERE course_id = :course_id
 ORDER BY name, concept_id;
+
+-- name: chunk_locator_labels
+SELECT DISTINCT locator.label
+FROM chunk_locators AS span
+JOIN locators AS locator ON locator.locator_id = span.locator_id
+WHERE span.chunk_id IN (SELECT value FROM json_each(:chunk_ids));

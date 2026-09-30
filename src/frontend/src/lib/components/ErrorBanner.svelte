@@ -8,9 +8,27 @@
 
   let { error }: Props = $props();
 
+  function describe(value: unknown): string {
+    if (value instanceof Error) return value.message || 'something went wrong';
+    if (typeof value === 'string' && value.trim()) return value;
+    if (typeof value === 'object' && value !== null) {
+      const record = value as Record<string, unknown>;
+      for (const key of ['detail', 'message']) {
+        if (typeof record[key] === 'string' && record[key]) return record[key] as string;
+      }
+    }
+    return 'something went wrong';
+  }
+
   let apiError = $derived(error instanceof ApiError ? error : null);
-  let message = $derived(
-    error instanceof Error ? error.message : 'something went wrong'
+  let message = $derived(describe(error));
+  // Provider trouble (a rejected key, a rate limit, a bad model id) is fixed in Settings.
+  let settingsHint = $derived(
+    apiError !== null &&
+      (apiError.kind === 'unavailable' ||
+        apiError.kind === 'budget' ||
+        apiError.kind === 'unauthorized' ||
+        (apiError.kind === 'unknown' && [400, 429, 502, 504].includes(apiError.status)))
   );
   let tone = $derived<'refusal' | 'busy' | 'error'>(
     apiError?.kind === 'not_found' ? 'refusal'
@@ -31,18 +49,22 @@
 
 <div class={`rounded-xl border px-4 py-3 text-sm ${styles}`} role="alert">
   <div class="flex items-start gap-3">
-    <Icon name={icon} class="mt-0.5 h-4 w-4" />
-    <div class="min-w-0">
-      <p class="font-medium">{message}</p>
+    <Icon name={icon} class="mt-0.5 h-4 w-4 shrink-0" />
+    <div class="min-w-0 flex-1">
+      <p class="whitespace-pre-line font-medium [overflow-wrap:anywhere]">{message}</p>
       {#if tone === 'refusal'}
         <p class="mt-1 opacity-85">
-          The tutor only answers from your course materials — try rewording
-          the question, or upload a source that covers it.
+          It may have been deleted or moved. Go back to My courses and open it again.
         </p>
       {/if}
-      {#if apiError?.kind === 'unavailable' || apiError?.kind === 'budget'}
+      {#if apiError?.kind === 'network'}
         <p class="mt-1 opacity-85">
-          Choose or adjust the model in
+          Stacks lost contact with its background service. If this keeps happening, quit and reopen Stacks.
+        </p>
+      {/if}
+      {#if settingsHint}
+        <p class="mt-1 opacity-85">
+          Check your model and connection in
           <a href="/settings" class="font-medium underline underline-offset-2">Settings</a>.
         </p>
       {/if}

@@ -42,7 +42,7 @@
   function onPointerDown(event: PointerEvent) {
     if (stacked) return;
     dragging = true;
-    (event.target as Element).setPointerCapture(event.pointerId);
+    (event.currentTarget as Element).setPointerCapture(event.pointerId);
     event.preventDefault();
   }
 
@@ -50,13 +50,15 @@
     if (!dragging || !container) return;
     const rect = container.getBoundingClientRect();
     const next = rect.right - event.clientX;
-    width = Math.min(max, Math.max(min, Math.round(next)));
+    // Always leave the left pane room to breathe.
+    const room = Math.max(min, Math.min(max, rect.width - 360));
+    width = Math.min(room, Math.max(min, Math.round(next)));
   }
 
   function onPointerUp(event: PointerEvent) {
     if (!dragging) return;
     dragging = false;
-    (event.target as Element).releasePointerCapture?.(event.pointerId);
+    (event.currentTarget as Element).releasePointerCapture?.(event.pointerId);
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -67,37 +69,38 @@
   }
 </script>
 
-{#if stacked}
-  <div bind:this={container} class="flex flex-col gap-6">
-    {@render left()}
-    {#if !collapsed}{@render right()}{/if}
-  </div>
-{:else}
-  <div bind:this={container} class="flex min-h-0 items-stretch gap-0">
-    <div class="min-w-0 flex-1">{@render left()}</div>
-    {#if !collapsed}
-      <button
-        type="button"
-        aria-label="Resize panel"
-        onpointerdown={onPointerDown}
-        onpointermove={onPointerMove}
-        onpointerup={onPointerUp}
-        onpointercancel={onPointerUp}
-        onkeydown={onKeydown}
-        class={`group relative mx-1 w-2 shrink-0 cursor-col-resize touch-none rounded-full ${dragging ? 'bg-accent/40' : ''}`}
-      >
-        <span
-          class={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
-            dragging ? 'bg-accent' : 'bg-line group-hover:bg-accent-line'
-          }`}
-        ></span>
-      </button>
-      <div
-        class="min-w-0 scroll-mt-20"
-        style={`width:${width}px; flex: 0 0 ${width}px`}
-      >
-        {@render right()}
-      </div>
-    {/if}
-  </div>
-{/if}
+<!-- One tree for both layouts: swapping between two branches would remount
+     the left pane (chat) and lose what was typed whenever the window
+     crosses the stacking width. -->
+<div
+  bind:this={container}
+  class={stacked ? 'flex flex-col gap-6' : 'flex min-h-0 items-stretch gap-0'}
+>
+  <div class={stacked ? 'min-w-0' : 'min-w-0 flex-1'}>{@render left()}</div>
+  {#if !collapsed && !stacked}
+    <button
+      type="button"
+      aria-label="Resize panel"
+      onpointerdown={onPointerDown}
+      onpointermove={onPointerMove}
+      onpointerup={onPointerUp}
+      onpointercancel={onPointerUp}
+      onkeydown={onKeydown}
+      class={`group relative mx-1 w-2 shrink-0 cursor-col-resize touch-none rounded-full ${dragging ? 'bg-accent/40' : ''}`}
+    >
+      <span
+        class={`absolute inset-y-0 left-1/2 w-px -translate-x-1/2 transition-colors ${
+          dragging ? 'bg-accent' : 'bg-line group-hover:bg-accent-line'
+        }`}
+      ></span>
+    </button>
+  {/if}
+  {#if !collapsed}
+    <div
+      class="min-w-0 scroll-mt-20"
+      style={stacked ? undefined : `width:${width}px; flex: 0 0 ${width}px`}
+    >
+      {@render right()}
+    </div>
+  {/if}
+</div>

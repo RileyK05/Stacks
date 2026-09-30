@@ -11,6 +11,7 @@
   import Skeleton from '$lib/components/Skeleton.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
   import { toast } from '$lib/stores/toast.svelte';
+  import { artifactDraftStorage } from '$lib/stores/artifactDrafts';
   import { formatBytes } from '$lib/utils/format';
   import { plural } from '$lib/utils/labels';
 
@@ -39,7 +40,8 @@
   });
 
   async function load() {
-    loading = true;
+    // `loading` starts true: later reloads (after a restore) swap in place
+    // instead of flashing the skeleton and hiding any error banner.
     try {
       const [trashRes, memoryRes] = await Promise.all([
         api.GET('/trash'),
@@ -80,7 +82,7 @@
   async function deleteForever(course: TrashedCourse) {
     if (!(await confirmDialog({
       title: 'Delete permanently?',
-      message: `${course.name} and all of its files are erased from this computer now. Only its short course-memory summary is kept.`,
+      message: `${course.name} and its files are erased from the active library now. Only its short course-memory summary is kept. Existing backup files can still contain this course.`,
       confirmLabel: 'Delete permanently',
       danger: true
     }))) return;
@@ -92,6 +94,7 @@
       });
       if (err) throw err;
       toast(`Deleted ${course.name}.`);
+      await artifactDraftStorage.deleteCourse?.(course.course_id);
       await load();
     } catch (caught) {
       actionError = caught;

@@ -14,7 +14,7 @@ providers the user chooses. Encoders (embeddings, reranker) run in-process
 on ONNX Runtime. See `docs/project.md` for the product plan,
 `docs/system.md` for the current local architecture, and
 `docs/plan-notebook.md` for the release plan and handoff (**start at its
-"Start here" section**). Read them before making structural decisions.
+"Current handoff" section**). Read them before making structural decisions.
 
 > The six working docs (this file, `project.md`, `system.md`, `notes.md`,
 > `plan-notebook.md`, and `docket.md`) all live in `docs/`. `docket.md` is a
@@ -182,6 +182,7 @@ Frontend (see `src/frontend/README.md` — separate npm codebase, run from
 
 ```
 npm run check    # svelte-check typecheck/diagnostics (must pass)
+npm test         # save/recovery, quiz assistance, map scope and retry behavior
 npm run desktop  # the desktop app in dev (tauri dev; starts the backend)
 npm run build    # static SPA into build/
 npm run gen:api  # regenerate API types from the backend's OpenAPI schema
@@ -211,3 +212,20 @@ mechanical, prompt version is stamped into every run log under `runs/`.
 - Before writing code, look at existing patterns and reuse `src/backend/common/`.
 - Verify changes run and, where possible, pass tests + lint + typecheck.
 - Never commit unless explicitly requested.
+
+
+## Documentation lifecycle
+
+- Keep the six working docs listed above as the durable home. `system.md` owns
+  implemented behavior; `project.md` owns product scope; `docket.md` owns open
+  issues/decisions; `plan-notebook.md` owns the current handoff and release gates.
+- Temporary task plans/reviews are allowed while work is active. On completion,
+  transfer only lasting contracts and remaining work into those existing docs,
+  then delete the temporary file and fix current references. Do not leave a
+  completed checklist, duplicate issue queue, or archive directory behind.
+- Completion requires the intended behavior and relevant evidence, not merely
+  green tests. Native/semantic verification gaps remain open after implementation.
+  Unverified review claims stay candidates until reproduced or cleared.
+- Keep handoffs current rather than appending a new report for every pass.
+  Existing dated notes are append-only historical records; append only concise
+  consequential decisions/dispositions, not routine tool logs or repeated counts.

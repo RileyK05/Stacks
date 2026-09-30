@@ -20,7 +20,9 @@ def test_companion_is_created_on_demand_as_a_normal_window() -> None:
     companion = (TAURI / "src" / "companion.rs").read_text(encoding="utf-8")
     shell = (TAURI / "src" / "lib.rs").read_text(encoding="utf-8")
 
-    assert "pub fn show_companion" in companion
+    # Async, or building the webview on the main thread deadlocks WebView2:
+    # the companion opened white and a second click froze the app.
+    assert "pub async fn show_companion" in companion
     assert "WebviewWindowBuilder::new" in companion
     assert ".resizable(true)" in companion
     assert ".decorations(true)" in companion

@@ -9,6 +9,8 @@ let prompt = $state<(ConfirmOptions & { resolve: (ok: boolean) => void }) | null
 
 export function confirmDialog(options: ConfirmOptions): Promise<boolean> {
   return new Promise((resolve) => {
+    // A second dialog replaces the first: answer the first with "no".
+    prompt?.resolve(false);
     prompt = { ...options, resolve };
   });
 }

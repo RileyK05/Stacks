@@ -42,16 +42,15 @@ from src.backend.common.prompt_registry import (
 )
 from src.backend.common.providers import ProviderChoice
 from src.backend.common.queries import get
-from src.backend.retrieval import funnel, trace
+from src.backend.retrieval import funnel, rerank, trace
 from src.backend.retrieval.config import RetrievalPolicy
+from src.backend.student_model import learning
 from src.backend.tutor.compose import Intent, classify_intent
 
 # How much of the host's text is searched with and shown to the model. A
 # whole slide is small; a pasted document is bounded so a runaway selection
 # cannot blow the context window or the prompt fence.
 MAX_CONTEXT_CHARS = 8000
-# How many course chunks the model reads and may cite.
-MATERIAL_LIMIT = 8
 
 
 class OfficeAction(StrEnum):
@@ -140,8 +139,11 @@ def _query(action: OfficeAction, context: str, instruction: str) -> str:
 
 def is_graded_request(instruction: str, context: str) -> bool:
     """Whether this looks like a request to do graded work (the tutor's own
-    graded classifier plus a direct instruction scan)."""
-    probe = f"{instruction}\n{context}"
+    graded classifier plus a direct instruction scan. An explicit request
+    controls intent; selected document text is context and may describe an
+    assignment the student wants explained. With no instruction, retain the
+    conservative context-only refusal."""
+    probe = instruction.strip() or context
     return classify_intent(probe) is Intent.GRADED or bool(_GRADED.search(probe))
 
 
@@ -212,10 +214,9 @@ def answer(
         raise NothingRelevantFoundError(
             "nothing in this course's materials matches what you selected"
         )
-    candidates = result.candidates[:MATERIAL_LIMIT]
+    candidates = rerank.select_for_generation(query, result.candidates)
     numbered = "\n\n".join(
-        f"[{index + 1}] {candidate.text}"
-        for index, candidate in enumerate(candidates)
+        f"[{index + 1}] {candidate.text}" for index, candidate in enumerate(candidates)
     )
     host_label = host.strip() or "the document"
     looked_at = _context(context) or "(nothing selected)"
@@ -226,7 +227,21 @@ def answer(
         f"Student's request: {request}\n\n"
         f"Course material:\n{numbered}"
     )
-    prompt = grounded_prompt(load_prompt(_PROMPTS[action]), material)
+    focus, behavior, _ = learning.adaptation(
+        conn,
+        course_id,
+        instruction or context,
+        source_ids=list({c.source_id for c in candidates}),
+    )
+    if focus:
+        material += f"\n\nStudent focus observations:\n{focus}"
+    prompt = grounded_prompt(
+        load_prompt(_PROMPTS[action])
+        + load_prompt("learning_adaptation")
+        + "\n"
+        + behavior,
+        material,
+    )
     generation = provider.generate(
         "tutor_answer", prompt, course_id=course_id, choice=choice
     )

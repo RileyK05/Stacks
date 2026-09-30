@@ -57,6 +57,7 @@ def process_batch(
     while should_stop is None or not should_stop():
         with connection() as conn:
             _release_stale_claims(conn)
+            _fail_exhausted_claims(conn)
             claimed = runs.claim_pending_sources(conn, limit=limit)
             conn.commit()
         if not claimed:
@@ -78,6 +79,12 @@ def process_batch(
     for course_id in touched_courses:
         _refresh_course_memory(course_id)
     return attempted, succeeded
+
+
+def _recover_at_startup() -> None:
+    with connection() as conn:
+        recover_interrupted_runs(conn)
+        conn.commit()
 
 
 def _refresh_course_memory(course_id: UUID) -> None:
@@ -115,6 +122,40 @@ def _ingest_claimed(source_id: UUID, course_id: UUID) -> bool:
         logger.exception("ingestion worker error for source %s", source_id)
         _cleanup_orphaned_claim(source_id)
         return False
+
+
+def recover_interrupted_runs(conn: Connection) -> int:
+    """App-startup recovery: release every claim and close every run the
+    previous process left open. This process is the only worker, so a claim
+    that exists at startup is by definition dead — leaving it to the
+    heartbeat fence would strand a file the user saw "processing" when they
+    closed the app for STALE_CLAIM_AFTER, with nothing running. Returns
+    the number of claims released. Caller commits."""
+    conn.execute(get(_FILE, "fail_interrupted_stage_runs"))
+    conn.execute(get(_FILE, "fail_interrupted_runs"))
+    released = conn.execute(get(_FILE, "release_all_claims")).rowcount
+    if released > 0:
+        logger.warning(
+            "re-queued %s ingestion(s) interrupted by the last exit", released
+        )
+    return released
+
+
+def _fail_exhausted_claims(conn: Connection) -> None:
+    """A source claimed and lost `claimed_runs_max` times (the process died
+    each time — a file that crashes the parser) is never claimable again.
+    Mark it failed so the file browser offers Retry instead of a spinner
+    that never ends. Caller commits."""
+    for row in conn.execute(get(_FILE, "exhausted_claims")).fetchall():
+        message = (
+            "indexing was interrupted repeatedly (the app closed or crashed "
+            "while reading this file); use Retry to try again"
+        )
+        runs.mark_source_failed(conn, row["source_id"], message)
+        runs.record_history(
+            conn, row["source_id"], row["course_id"], "failed", row["queued_at"]
+        )
+        runs.clear_pending_source(conn, row["source_id"])
 
 
 def _release_stale_claims(conn: Connection) -> None:
@@ -166,6 +207,10 @@ async def run_forever(stop: asyncio.Event) -> None:
     interval = load_ingestion_config().poll_interval_seconds
     WAKEUP = asyncio.Event()
     _LOOP = asyncio.get_running_loop()
+    try:
+        await asyncio.to_thread(_recover_at_startup)
+    except Exception:
+        logger.exception("could not recover interrupted ingestion")
     while not stop.is_set():
         # Clear BEFORE the pass: an upload that lands mid-pass sets the
         # event again, so the next sleep ends immediately instead of

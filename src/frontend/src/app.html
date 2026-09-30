@@ -38,6 +38,29 @@
         border-radius: 50%;
         animation: boot-spin 0.8s linear infinite;
       }
+      #boot-splash.failed {
+        flex-direction: column;
+        gap: 14px;
+        padding: 0 24px;
+        text-align: center;
+      }
+      #boot-splash.failed p {
+        margin: 0;
+        max-width: 26rem;
+        line-height: 1.5;
+      }
+      #boot-splash button {
+        font: inherit;
+        padding: 9px 18px;
+        color: inherit;
+        background: transparent;
+        border: 1px solid currentColor;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+      #boot-splash button:hover {
+        background: rgba(128, 128, 128, 0.15);
+      }
       @keyframes boot-spin {
         to {
           transform: rotate(360deg);
@@ -48,6 +71,37 @@
   </head>
   <body data-sveltekit-preload-data="hover">
     <div id="boot-splash" role="status"><span></span>Starting Stacks…</div>
+    <script>
+      // If the app never boots (its bundle failed to load, e.g. right after an
+      // update), the splash would spin forever: offer a reload instead. The
+      // root layout removes the splash once the app is up, which disarms this.
+      (function () {
+        function fail() {
+          var splash = document.getElementById('boot-splash');
+          if (!splash || splash.className === 'failed') return;
+          splash.className = 'failed';
+          splash.textContent = '';
+          var message = document.createElement('p');
+          message.textContent =
+            "Stacks is taking longer than expected to start. Give it a moment, or reload; if it keeps happening, quit and reopen Stacks.";
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = 'Reload';
+          button.addEventListener('click', function () {
+            location.reload();
+          });
+          splash.appendChild(message);
+          splash.appendChild(button);
+        }
+        setTimeout(fail, 20000);
+        window.addEventListener('vite:preloadError', fail);
+        window.addEventListener('unhandledrejection', function (event) {
+          var reason = event.reason;
+          var text = String((reason && reason.message) || reason || '');
+          if (/dynamically imported module|importing a module script|error loading dynamically/i.test(text)) fail();
+        });
+      })();
+    </script>
     <div style="display: contents">%sveltekit.body%</div>
   </body>
 </html>

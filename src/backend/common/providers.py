@@ -381,7 +381,8 @@ def resolve(cls: TaskClass) -> ResolvedProvider | None:
     if choice is None and cls == TaskClass.BACKGROUND:
         choice = saved_choice(TaskClass.INTERACTIVE)
     if choice is not None:
-        resolved = resolve_choice(choice)
-        if resolved is not None:
-            return resolved
+        # A saved choice is an explicit user decision. If it is incomplete
+        # (for example its key was removed), do not silently send course
+        # content to the development environment endpoint instead.
+        return resolve_choice(choice)
     return _from_environment()

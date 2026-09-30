@@ -1,7 +1,7 @@
 <script lang="ts">
   import { isTauri } from '@tauri-apps/api/core';
   import { onDestroy, onMount, tick } from 'svelte';
-  import { goto } from '$app/navigation';
+  import { beforeNavigate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
   import Badge from '$lib/components/Badge.svelte';
@@ -25,8 +25,7 @@
   import { timeAgo } from '$lib/utils/format';
 
   const courseId = page.params.id ?? '';
-  const artifactId = page.params.artifactId ?? '';
-  const open = new OpenArtifact(courseId, artifactId);
+  let open = $state(new OpenArtifact(courseId, page.params.artifactId ?? ''));
 
   let courseName = $state('');
   let request = $state('');
@@ -37,15 +36,46 @@
   let versionsOpen = $state(false);
   let exportOpen = $state(false);
   let exported = $state<{ path: string; filename: string } | null>(null);
+  let replayingNavigation = false;
 
   onMount(async () => {
     await open.load();
-    const course = await api.GET('/courses/{course_id}', { params: { path: { course_id: courseId } } });
-    courseName = course.data?.name ?? '';
+    try {
+      const course = await api.GET('/courses/{course_id}', { params: { path: { course_id: courseId } } });
+      courseName = course.data?.name ?? '';
+    } catch {
+      // The back link just says "Course".
+    }
+  });
+
+  $effect(() => {
+    const nextArtifactId = page.params.artifactId ?? '';
+    if (open.artifactId === nextArtifactId) return;
+    open.dispose();
+    open = new OpenArtifact(courseId, nextArtifactId);
+    void open.load();
   });
 
   onDestroy(() => {
-    void open.flush();
+    open.dispose();
+    void open.flush().catch(() => false);
+  });
+
+  beforeNavigate((navigation) => {
+    if (!navigation.to || replayingNavigation || !open.dirty) return;
+    const destination = navigation.to.url;
+    navigation.cancel();
+    void open.flush().then((saved) => {
+      if (!saved) {
+        toast('Your edits are still here. Resolve the save issue before leaving.', 'error');
+        return;
+      }
+      replayingNavigation = true;
+      const navigation = destination.origin === window.location.origin
+        ? goto(destination)
+        : Promise.resolve().then(() => window.location.assign(destination.href));
+      void navigation.finally(() => { replayingNavigation = false; });
+    }).catch(() => toast('Your edits are still here. Resolve the save issue before leaving.', 'error'));
   });
 
   const kind = $derived(open.kind);
@@ -72,7 +102,8 @@
     quiz: ['Write 5 questions on the main ideas', 'Make the questions harder', 'Add explanations'],
     flashcards: ['Make 10 cards of key terms', 'Add cards for the formulas', 'Simplify the backs'],
     code: ['Explain this with comments', 'Fix any errors'],
-    chart: ['Label the axes', 'Use the numbers from the course']
+    chart: ['Label the axes', 'Use the numbers from the course'],
+    mind_map: ['Create a map of the main course topics', 'Clarify the named connections using the sources', 'Separate distinct movements into their own topic branches', 'Add source-supported examples']
   };
 
   async function propose(event?: SubmitEvent) {
@@ -85,6 +116,16 @@
 
   async function accept() {
     if (await open.accept()) toast('Change applied. Undo it from Versions if you change your mind.');
+  }
+
+  async function saveCopy() {
+    try {
+      const copy = await open.copy();
+      toast('Copy created.');
+      await goto(`/courses/${courseId}/artifacts/${copy.artifact_id}`);
+    } catch (caught) {
+      toast(caught instanceof Error ? caught.message : 'Could not create a copy.', 'error');
+    }
   }
 
   async function showCitation(n: number) {
@@ -113,24 +154,28 @@
       exported = await open.exportTo(format, path);
       toast(`Saved ${exported.filename}`);
     } catch (caught) {
-      open.saveError = caught;
+      // The artifact itself is saved; only the export failed.
+      toast(caught instanceof Error ? caught.message : 'Could not export.', 'error');
     }
   }
 
   async function reveal(path: string) {
-    if (isTauri()) {
-      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
-      await revealItemInDir(path);
-    } else {
-      await api.POST('/settings/reveal', { body: { path } });
+    try {
+      if (isTauri()) {
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        await revealItemInDir(path);
+      } else {
+        await api.POST('/settings/reveal', { body: { path } });
+      }
+    } catch {
+      toast('Could not open the folder.', 'error');
     }
   }
 
   async function restore(version: number, close: () => void) {
     close();
     try {
-      await open.restore(version);
-      toast(`Restored version ${version}.`);
+      if (await open.restore(version)) toast(`Restored version ${version}.`);
     } catch (caught) {
       open.saveError = caught;
     }
@@ -144,7 +189,12 @@
       danger: true
     });
     if (!ok) return;
-    await open.remove();
+    try {
+      await open.remove();
+    } catch (caught) {
+      toast(caught instanceof Error ? caught.message : 'Could not delete it.', 'error');
+      return;
+    }
     toast('Deleted.');
     await goto(`/courses/${courseId}?tab=artifacts`);
   }
@@ -175,6 +225,7 @@
           class="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-2 py-1 font-display text-[1.6rem] font-medium tracking-tight text-fg hover:border-line focus:border-accent focus:outline-none"
         />
         <Badge tone={status.tone} dot>{status.text}</Badge>
+        <Button variant="secondary" size="sm" onclick={saveCopy} disabled={open.saving || open.conflict}>Save a copy</Button>
         <span class="hidden text-xs text-subtle sm:inline">{KIND_LABELS[kind]} · v{open.artifact.version}</span>
         <div class="flex items-center gap-1">
           <Popover bind:open={versionsOpen} label="Versions" align="end" width="w-80">
@@ -233,10 +284,37 @@
       <div class="flex flex-wrap items-center gap-3 rounded-xl border border-warning/40 bg-warning-soft px-4 py-3 text-sm text-warning-text">
         <Icon name="alert-triangle" class="h-4 w-4" />
         <span class="flex-1">This {KIND_LABELS[kind].toLowerCase()} was saved from somewhere else since you opened it. Your latest changes here are not saved.</span>
-        <Button variant="secondary" size="sm" onclick={() => open.reload()}>Load the latest</Button>
+        <Button variant="secondary" size="sm" onclick={() => open.loadLatestAndDiscardDraft()}>Load latest and discard my draft</Button>
       </div>
     {/if}
-    {#if open.saveError}<ErrorBanner error={open.saveError} />{/if}
+    {#if open.recovered}
+      <p class="rounded-xl border border-accent-line bg-accent-soft/40 px-4 py-3 text-sm text-muted">Recovered unsaved edits from this device. They remain here until the next save succeeds.</p>
+    {/if}
+    {#each open.recoveryDrafts as draft (draft.key)}
+      <section class="rounded-xl border border-warning/40 bg-warning-soft px-4 py-3 text-sm text-warning-text">
+        {#if draft.baseVersion === open.artifact.version}
+          <p>A saved draft from another window is available for this artifact version.</p>
+        {:else}
+          <p>A saved draft is based on an older artifact version. Its contents remain available here while you decide how to continue.</p>
+        {/if}
+        <details class="mt-2">
+          <summary class="cursor-pointer font-medium">Copy the saved draft</summary>
+          <textarea readonly aria-label="Saved draft contents for copying" class="mt-2 h-36 w-full rounded-lg border border-warning/40 bg-surface p-3 font-mono text-xs text-fg">{JSON.stringify(draft, null, 2)}</textarea>
+        </details>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onclick={() => open.recoverSavedDraft(draft)}>Try this draft</Button>
+          <Button variant="ghost" size="sm" onclick={() => open.discardSavedDraft(draft)}>Discard this draft</Button>
+          <Button variant="ghost" size="sm" onclick={() => open.loadLatestAndDiscardDraft()}>Load latest and discard draft</Button>
+        </div>
+      </section>
+    {/each}
+    {#if open.recoveryError}
+      <p role="status" class="rounded-xl border border-danger/30 bg-danger-soft px-4 py-3 text-sm text-danger-text">Local recovery status: {open.recoveryError instanceof Error ? open.recoveryError.message : 'Could not persist or read this draft.'}</p>
+    {/if}
+    {#if open.saveError}
+      <ErrorBanner error={open.saveError} />
+      <Button variant="secondary" size="sm" onclick={() => open.retrySave()}>Retry save</Button>
+    {/if}
     {#if exported}
       <div class="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-sm text-muted">
         <Icon name="check" class="h-4 w-4 text-success-text" />
@@ -285,8 +363,11 @@
             {kind}
             title={open.title}
             content={open.content}
+            practice={{ courseId, artifactId: open.artifactId, version: open.artifact?.version ?? 1, ready: !open.dirty && !open.saving && !open.conflict }}
             onchange={() => open.touch()}
             oncite={showCitation}
+            mapContext={{ courseId, origin: { artifact_id: open.artifactId, artifact_version: open.artifact?.version ?? 1, item_index: 0 }, ready: !open.dirty && !open.saving && !open.conflict }}
+            mapSources={open.citations.map(c => c.citation)}
             onsection={(index) => (section = index)}
             bind:currentSlide={slide}
           />

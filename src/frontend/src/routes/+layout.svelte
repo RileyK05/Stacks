@@ -10,6 +10,7 @@
   import ConfirmHost from '$lib/components/ConfirmHost.svelte';
   import DebugHost from '$lib/components/DebugHost.svelte';
   import Toaster from '$lib/components/Toaster.svelte';
+  import { cleanOrphanedRecovery } from '$lib/stores/recoveryCleanup';
   import '$lib/stores/theme.svelte';
   import '../app.css';
 
@@ -17,6 +18,7 @@
 
   onMount(() => {
     document.getElementById('boot-splash')?.remove();
+    if (!data.backendError) void cleanOrphanedRecovery().catch(() => {});
   });
 
   // The app window only ever shows the app. A link out of it (a URL in an

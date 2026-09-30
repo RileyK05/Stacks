@@ -31,7 +31,9 @@ on write and read).
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -75,10 +77,14 @@ class ProviderRequestRejectedError(ProviderUnavailableError):
     `response_format`. Retrying without that option may succeed."""
 
 
-class EmptyModelError(RuntimeError):
+class EmptyModelError(ProviderUnavailableError):
     """The provider returned no usable text. Stages must fail on this —
     a model stage that 'succeeds' while writing no rows is a false
     success that empties the course knowledge base."""
+
+
+class ModelOutputTruncatedError(ProviderUnavailableError):
+    """The provider stopped at its output limit; partial text is unsafe to use."""
 
 
 def generate(
@@ -129,7 +135,7 @@ def generate(
         raw_text, input_tokens, output_tokens = _call_provider(
             task, endpoint, prompt, images=images, response_schema=response_schema
         )
-    except ProviderRateLimitedError:
+    except ProviderRateLimitedError as limited:
         # The user asked for the bigger model on purpose: quietly answering
         # with the small one instead would defeat the button.
         local = None if pinned else _local_fallback(endpoint)
@@ -140,13 +146,22 @@ def generate(
             endpoint.name,
             task,
         )
+        try:
+            _ensure_local_runtime(local.model)
+            raw_text, input_tokens, output_tokens = _call_provider(
+                task, local, prompt, images=images, response_schema=response_schema
+            )
+        except ProviderUnavailableError as err:
+            # The rate limit is what the student needs to hear about, not
+            # that a fallback they never set up could not start.
+            logger.warning("local fallback failed too: %s", err)
+            raise limited from err
         endpoint, fell_back = local, True
-        _ensure_local_runtime(endpoint.model)
-        raw_text, input_tokens, output_tokens = _call_provider(
-            task, endpoint, prompt, images=images, response_schema=response_schema
-        )
     if not raw_text.strip():
-        raise EmptyModelError(task)
+        raise EmptyModelError(
+            "The model returned no usable answer. Try again with a shorter "
+            "request or choose another model in Settings."
+        )
     usage_repo.record(
         task=task,
         provider=endpoint.name,
@@ -163,6 +178,19 @@ def generate(
         provider=endpoint.name,
         fell_back_to_local=fell_back,
     )
+
+
+def probe(endpoint: ResolvedProvider) -> None:
+    """One tiny real completion, for Settings' connection test. Listing an
+    endpoint's models proves the URL and key, not that the chosen model
+    answers: a mistyped name, or a free model the provider gates, only
+    fails on a real request. Raises ProviderUnavailableError with the
+    provider's own reason. Unrecorded: a handful of tokens, spent only
+    when the user presses Test."""
+    # A cut-off or empty reply still means the model answered: a reasoning
+    # model may spend the whole tiny reply thinking.
+    with contextlib.suppress(ModelOutputTruncatedError, EmptyModelError):
+        _call_provider("connection_test", endpoint, "Reply with the single word: ok")
 
 
 def _ensure_local_runtime(model_id: str) -> None:
@@ -281,37 +309,213 @@ def _call_provider(
     headers = (
         {"Authorization": f"Bearer {endpoint.api_key}"} if endpoint.api_key else {}
     )
+    who = endpoint.label or endpoint.name
+    learned = _ADAPTATIONS.setdefault((endpoint.base_url, endpoint.model), set())
 
     try:
-        response = httpx.post(
-            endpoint.base_url.rstrip("/") + "/chat/completions",
-            headers=headers,
-            json=body,
-            timeout=httpx.Timeout(defaults.request_timeout_seconds, connect=15.0),
-        )
+        while True:
+            _apply_adaptations(body, learned)
+            response = httpx.post(
+                endpoint.base_url.rstrip("/") + "/chat/completions",
+                headers=headers,
+                json=body,
+                timeout=httpx.Timeout(defaults.request_timeout_seconds, connect=15.0),
+            )
+            if response.status_code < 400:
+                break
+            detail = provider_error_detail(response)
+            logger.warning(
+                "%s answered %s (task=%s, model=%s): %s",
+                endpoint.name,
+                response.status_code,
+                task,
+                endpoint.model,
+                detail,
+            )
+            fix = _adaptation_for(response.status_code, detail, body)
+            if fix is None or fix in learned:
+                break
+            # The endpoint named a parameter it does not take (newer OpenAI
+            # models refuse `max_tokens` and custom temperatures; some
+            # servers refuse the local-runtime switches): drop or rename it
+            # and remember, so the next call goes straight through.
+            learned.add(fix)
         if response.status_code == 429:
             raise ProviderRateLimitedError(
-                f"{endpoint.name} rate-limited (task={task}, model={endpoint.model})"
+                f"{who} is rate-limiting requests right now"
+                + (f": {detail}" if detail else "")
+                + ". Wait a minute or pick another model."
             )
         if 400 <= response.status_code < 500:
             raise ProviderRequestRejectedError(
-                f"{endpoint.name} rejected the request ({response.status_code}, "
-                f"task={task}, model={endpoint.model})"
+                rejection_message(who, response.status_code, detail)
             )
-        response.raise_for_status()
+        if response.status_code >= 500:
+            raise ProviderUnavailableError(
+                f"{who} had a server error ({response.status_code})"
+                + (f": {detail}" if detail else "")
+                + ". Try again shortly."
+            )
         payload = response.json()
-        text = payload["choices"][0]["message"]["content"] or ""
+        if (
+            isinstance(payload, dict)
+            and payload.get("error")
+            and not payload.get("choices")
+        ):
+            # OpenRouter can report an upstream failure inside a 200.
+            raise ProviderUnavailableError(
+                f"{who} could not answer: {provider_error_detail(response)}. "
+                "Try again or pick another model."
+            )
+        choice = payload["choices"][0]
+        message = choice["message"]
+        if choice.get("finish_reason") in {"length", "max_tokens"}:
+            raise ModelOutputTruncatedError(
+                f"{who} ({endpoint.model}) hit its output limit before finishing. "
+                "Ask for something shorter or pick another model."
+            )
+        text = _visible_message_text(message.get("content"))
         usage = payload.get("usage") or {}
         input_tokens = int(usage.get("prompt_tokens", 0))
         output_tokens = int(usage.get("completion_tokens", 0))
-    except (ProviderRateLimitedError, ProviderRequestRejectedError):
+    except ProviderUnavailableError:
         raise
-    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as err:
+    except httpx.ConnectError as err:
         raise ProviderUnavailableError(
-            f"provider call failed ({endpoint.name}, task={task}, "
-            f"model={endpoint.model}): {err}"
+            f"Could not reach {who} at {endpoint.base_url}. Check your internet "
+            "connection, or that the server is running."
+        ) from err
+    except httpx.TimeoutException as err:
+        raise ProviderUnavailableError(
+            f"{who} did not answer in time ({endpoint.model}). Try again or pick "
+            "a faster model."
+        ) from err
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as err:
+        logger.warning(
+            "unreadable reply from %s (task=%s, model=%s): %r",
+            endpoint.name,
+            task,
+            endpoint.model,
+            err,
+        )
+        raise ProviderUnavailableError(
+            f"{who} sent a reply Stacks could not read ({endpoint.model}): {err}"
         ) from err
     return text, input_tokens, output_tokens
+
+
+# Request adjustments learned per (base_url, model) from the endpoint's own
+# 400 replies. Process-local: a restart simply relearns them in one call.
+_ADAPTATIONS: dict[tuple[str, str], set[str]] = {}
+_DETAIL_LIMIT = 300
+
+
+def _apply_adaptations(body: dict[str, Any], learned: set[str]) -> None:
+    if "max_completion_tokens" in learned and "max_tokens" in body:
+        body["max_completion_tokens"] = body.pop("max_tokens")
+    if "no_temperature" in learned:
+        body.pop("temperature", None)
+    if "no_runtime_switches" in learned:
+        body.pop("chat_template_kwargs", None)
+        body.pop("reasoning_effort", None)
+
+
+def _adaptation_for(status: int, detail: str, body: dict[str, Any]) -> str | None:
+    """Which adjustment a 400 asks for, when it names a parameter we can
+    drop or rename without changing what is asked."""
+    if status != 400:
+        return None
+    lowered = detail.lower()
+    if "max_completion_tokens" in lowered and "max_tokens" in body:
+        return "max_completion_tokens"
+    if "temperature" in lowered and "temperature" in body:
+        return "no_temperature"
+    if ("chat_template_kwargs" in lowered or "reasoning_effort" in lowered) and (
+        "chat_template_kwargs" in body or "reasoning_effort" in body
+    ):
+        return "no_runtime_switches"
+    return None
+
+
+def provider_error_detail(response: Any) -> str:
+    """The provider's own explanation from an error response, trimmed to one
+    readable line. OpenAI-compatible APIs put it at error.message; OpenRouter
+    nests the upstream provider's text under error.metadata.raw."""
+    try:
+        body: Any = response.json()
+    except ValueError:
+        body = None
+    text: Any = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            text = error.get("message")
+            raw = (error.get("metadata") or {}).get("raw")
+            if (
+                isinstance(raw, str)
+                and raw.strip()
+                and (not text or "provider returned error" in str(text).lower())
+            ):
+                text = raw
+        elif isinstance(error, str):
+            text = error
+        text = text or body.get("message") or body.get("detail")
+    if not isinstance(text, str) or not text.strip():
+        text = getattr(response, "text", "") or ""
+    line = " ".join(str(text).split())
+    return line if len(line) <= _DETAIL_LIMIT else line[: _DETAIL_LIMIT - 1] + "…"
+
+
+def rejection_message(who: str, status: int, detail: str) -> str:
+    """What the student reads when an endpoint refuses a request: the
+    provider's own words plus the one setting most likely to fix it."""
+    said = f': "{detail}"' if detail else ""
+    lowered = detail.lower()
+    if status == 401:
+        hint = "The API key was not accepted; replace it in Settings."
+    elif status == 402:
+        hint = "The account has run out of credits."
+    elif status == 404 or "model" in lowered:
+        hint = (
+            "Check the model name in Settings; Test on the connection lists "
+            "the names it accepts."
+        )
+    elif status == 403:
+        hint = "This key cannot use this model; pick a different model."
+    else:
+        hint = ""
+    return f"{who} rejected the request ({status}){said}." + (
+        f" {hint}" if hint else ""
+    )
+
+
+_THINK_BLOCK = re.compile(
+    r"<think(?:\s[^>]*)?>.*?</think\s*>", re.IGNORECASE | re.DOTALL
+)
+
+
+def _visible_message_text(content: Any) -> str:
+    """Read final text from OpenAI-compatible string or content-block replies.
+
+    Some local chat templates put their private chain of thought inside
+    ``<think>`` tags in the visible content. Never pass those tokens to
+    downstream parsing or the UI.
+    """
+    if isinstance(content, list):
+        pieces = [
+            block["text"]
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") in {"text", "output_text"}
+            and isinstance(block.get("text"), str)
+        ]
+        content = "\n".join(pieces)
+    if not isinstance(content, str):
+        raise TypeError("message content is not text")
+    visible = _THINK_BLOCK.sub("", content).strip()
+    if re.search(r"<think(?:\s[^>]*)?>", visible, re.IGNORECASE):
+        return ""
+    return visible
 
 
 # ---------------------------------------------------------------------

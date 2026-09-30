@@ -13,7 +13,12 @@ from src.backend.common.db import connection
 from src.backend.common.providers import ProviderChoice, TaskClass
 from src.backend.tutor import chat
 from tests.conftest import configure_test_provider
-from tests.factories import add_chunk, chunk_source_locator
+from tests.factories import (
+    add_chunk,
+    chunk_source_locator,
+    insert_chunks,
+    insert_source,
+)
 
 ANSWER = "Linearity preserves addition and scaling [1]."
 
@@ -143,6 +148,12 @@ def test_source_selection_narrows_retrieval(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     course_id = _course(client)
+    distractor_source = insert_source(UUID(course_id))
+    insert_chunks(
+        distractor_source,
+        100,
+        "linearity linearity linearity linearity linearity distractor passage",
+    )
     other = add_chunk(UUID(course_id), "linearity also appears in chapter two.")
     other_source, _ = chunk_source_locator(other)
     calls = configure_test_provider(monkeypatch, ANSWER)

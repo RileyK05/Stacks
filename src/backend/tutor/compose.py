@@ -31,13 +31,20 @@ from typing import Any, Protocol
 from src.backend.common.prompt_registry import (
     grounded_prompt,
     load_prompt,
+    load_prompt_policy,
     strip_fence_echo,
 )
+from src.backend.common.schemas.mind_map import MindMapContent, anchor_map_evidence
 from src.backend.retrieval.funnel import Candidate
 from src.backend.tutor import quotes as quote_anchors
+from src.backend.tutor.workspace import extract_workspace_items
 
 
 class Intent(StrEnum):
+    # Small talk ("hi", "thanks", "echo hello", "what can you do?"): answered
+    # by the model without course material, never refused as "nothing
+    # relevant found".
+    CHAT = "chat"
     ANSWER = "answer"
     GRADED = "graded"
     QUIZ = "quiz"
@@ -45,6 +52,7 @@ class Intent(StrEnum):
     SHEET = "sheet"
     SLIDES = "slides"
     CODE = "code"
+    MIND_MAP = "mind_map"
 
 
 # Requests to complete graded work never get a workspace item, whatever
@@ -71,10 +79,11 @@ _INTENT_RULES: tuple[tuple[Intent, re.Pattern[str]], ...] = (
         Intent.QUIZ,
         re.compile(
             r"\bquiz(?:zes|zed)?\b|\bmultiple[- ]choice\b|\btest me\b"
-            r"|\bpractice (?:questions?|problems?)\b|\bflash ?cards?\b",
+            r"|\bpractice (?:questions?|problems?|tests?|suites?)\b|\bflash ?cards?\b",
             re.IGNORECASE,
         ),
     ),
+    (Intent.MIND_MAP, re.compile(r"\b(?:mind|concept|topic)[ -]?map\b", re.IGNORECASE)),
     (
         Intent.SLIDES,
         re.compile(r"\bslides?\b|\bslide deck\b|\bpresentation\b", re.IGNORECASE),
@@ -106,13 +115,205 @@ _INTENT_RULES: tuple[tuple[Intent, re.Pattern[str]], ...] = (
 )
 
 
+# "and a quiz on that", "now make a table": a request may lead with a filler.
+_LEAD = r"^\s*(?:(?:and|also|now|then|ok|okay|so|next)\b[\s,]+)*"
+_ARTIFACT_REQUEST = re.compile(
+    _LEAD + r"(?:(?:please|could you|can you|would you|will you)\s+)*"
+    r"(?:make|create|generate|write|draft|build|prepare|produce|give me|show me|"
+    r"turn|convert|format|put|organize|quiz me|test me|"
+    r"i (?:want|need|would like))\b"
+    r"|" + _LEAD + r"(?:please\s+)?(?:quiz|test) me\b"
+    r"|" + _LEAD + r"(?:a |an |some )?(?:quiz|flash ?cards?|slides?|slide deck|"
+    r"study guide|notes|outline|table|spreadsheet|cheat sheet|review sheet|"
+    r"mind[ -]?map|concept[ -]?map|topic[ -]?map)\b",
+    re.IGNORECASE,
+)
+
+
+_SMALL_TALK = re.compile(
+    r"(?:(?:oh |ok |okay )?(?:hi|hello|hey|hiya|howdy|yo|sup|greetings"
+    r"|good (?:morning|afternoon|evening|day))"
+    r"(?: (?:there|again|tutor|everyone|all|stacks|friend))*"
+    r"|(?:thanks|thank you|thx|ty|cheers)(?: (?:so much|a lot|very much|again|tutor))*"
+    r"|ok|okay|k|cool|nice|great|awesome|perfect|got it|sounds good|makes sense"
+    r"|i see|understood|bye|goodbye|see you(?: later)?|later|good night"
+    r"|(?:echo|say) (?:hello|hi|hey|test|testing|world|hello world)"
+    r"|(?:test|testing|ping)(?: (?:test|message|123|1 2 3|please))*"
+    r"|how are you(?: doing)?|how is it going|how's it going|what's up|whats up"
+    r"|are you (?:there|working|awake)|can you hear me|who are you|what are you"
+    r"|what(?:'s| is) your name|what can you do|what do you do|how do you work"
+    r"|how can you help(?: me)?|can you help(?: me)?|help(?: me)?"
+    r"|what can i ask(?: you)?|what should i ask(?: you)?)",
+    re.IGNORECASE,
+)
+_NOT_WORD = re.compile(r"[^\w\s']+")
+
+
+def is_small_talk(question: str) -> bool:
+    """A greeting, thanks, connection test or "what can you do?": the whole
+    message, nothing else. Such a message has no course material to find, so
+    it is answered directly instead of being searched for."""
+    plain = " ".join(_NOT_WORD.sub(" ", question.replace("’", "'")).split())
+    return bool(plain) and _SMALL_TALK.fullmatch(plain) is not None
+
+
 def classify_intent(question: str) -> Intent:
     if _GRADED_WORK.search(question):
         return Intent.GRADED
+    if is_small_talk(question):
+        return Intent.CHAT
+    if not _ARTIFACT_REQUEST.search(question):
+        return Intent.ANSWER
     for intent, pattern in _INTENT_RULES:
         if pattern.search(question):
             return intent
     return Intent.ANSWER
+
+
+# Words that ask for a kind of output rather than name a subject: "quiz me
+# on the CPI" is about the CPI. What is left after removing them is what to
+# search the course for; nothing left means "the course in general".
+_REQUEST_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "the",
+        "some",
+        "my",
+        "me",
+        "i",
+        "you",
+        "we",
+        "please",
+        "can",
+        "could",
+        "would",
+        "will",
+        "make",
+        "create",
+        "generate",
+        "write",
+        "draft",
+        "build",
+        "prepare",
+        "produce",
+        "give",
+        "show",
+        "turn",
+        "convert",
+        "format",
+        "put",
+        "organize",
+        "want",
+        "need",
+        "like",
+        "to",
+        "quiz",
+        "test",
+        "tests",
+        "suite",
+        "suites",
+        "flashcard",
+        "flashcards",
+        "flash",
+        "card",
+        "cards",
+        "question",
+        "questions",
+        "practice",
+        "problems",
+        "multiple",
+        "choice",
+        "slide",
+        "slides",
+        "deck",
+        "presentation",
+        "table",
+        "spreadsheet",
+        "csv",
+        "comparison",
+        "chart",
+        "sheet",
+        "cheat",
+        "review",
+        "study",
+        "guide",
+        "notes",
+        "outline",
+        "document",
+        "mind",
+        "concept",
+        "topic",
+        "map",
+        "mindmap",
+        "summary",
+        "code",
+        "function",
+        "program",
+        "script",
+        "python",
+        "on",
+        "about",
+        "for",
+        "of",
+        "from",
+        "covering",
+        "cover",
+        "covers",
+        "over",
+        "regarding",
+        "related",
+        "with",
+        "into",
+        "and",
+        "or",
+        "this",
+        "that",
+        "it",
+        "these",
+        "those",
+        "all",
+        "everything",
+        "whole",
+        "entire",
+        "course",
+        "class",
+        "material",
+        "materials",
+        "sources",
+        "source",
+    }
+)
+_OVERVIEW_QUESTION = re.compile(
+    r"\bwhat(?:'s| is| are)? (?:this|the|my) (?:course|class|material|materials|"
+    r"syllabus|unit|sources?)\b(?: (?:is|are))? (?:about|cover|covers|covering)\b"
+    r"|\bwhat (?:topics|subjects|things) (?:are|do(?:es)?|does)\b"
+    r"|\bwhat (?:does|do) (?:this|the|my) (?:course|class|material|materials|"
+    r"syllabus|sources?) (?:cover|include|contain)\b"
+    r"|\boverview of (?:this|the|my) (?:course|class|material|materials)\b"
+    r"|\bsummar(?:y|ize|ise) (?:of )?(?:this|the|my) (?:whole |entire )?"
+    r"(?:course|class|material|materials|sources?)\b",
+    re.IGNORECASE,
+)
+_WORD = re.compile(r"[\w'-]+")
+
+
+def retrieval_topic(question: str) -> str:
+    """What to search the course for. A plain question is its own topic; a
+    request for a quiz, notes, slides... is searched by its subject alone,
+    because "make me a study guide" shares no words with the material it is
+    about. Empty when the request names no subject."""
+    if classify_intent(question) in (Intent.ANSWER, Intent.GRADED, Intent.CHAT):
+        return question
+    words = [w for w in _WORD.findall(question) if w.casefold() not in _REQUEST_WORDS]
+    return " ".join(words)
+
+
+def asks_for_overview(question: str) -> bool:
+    """A question about the course as a whole ("what is this course about?"),
+    which no single passage answers: it is answered from a spread of the
+    material instead of the passages nearest to its wording."""
+    return _OVERVIEW_QUESTION.search(question) is not None
 
 
 class AnswerMode(StrEnum):
@@ -204,6 +405,43 @@ def _object(properties: dict[str, Any]) -> dict[str, Any]:
 def workspace_schema(intent: Intent, material_count: int) -> dict[str, Any]:
     sources = _sources_schema(material_count)
     items: dict[Intent, dict[str, Any]] = {
+        Intent.MIND_MAP: _object(
+            {
+                "type": {"const": "mind_map"},
+                "title": _string(120),
+                "nodes": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 12,
+                    "items": _object(
+                        {
+                            "id": _string(40),
+                            "label": _string(100),
+                            "summary": _string(300),
+                            "sources": sources,
+                        }
+                    ),
+                },
+                "edges": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 18,
+                    "items": _object(
+                        {
+                            "source": _string(40),
+                            "target": _string(40),
+                            "kind": {
+                                "type": "string",
+                                "enum": ["branch", "similarity"],
+                            },
+                            "label": _string(100),
+                            "explanation": _string(300),
+                            "sources": sources,
+                        }
+                    ),
+                },
+            }
+        ),
         Intent.QUIZ: _object(
             {
                 "type": {"const": "quiz"},
@@ -215,6 +453,17 @@ def workspace_schema(intent: Intent, material_count: int) -> dict[str, Any]:
                     "items": _object(
                         {
                             "prompt": _string(400),
+                            "topic": _string(160),
+                            "capability": {
+                                "type": "string",
+                                "enum": [
+                                    "recognition",
+                                    "explanation",
+                                    "application",
+                                    "counterexample",
+                                    "transfer",
+                                ],
+                            },
                             "options": {
                                 "type": "array",
                                 "items": {
@@ -314,6 +563,209 @@ _SCHEMA_REMINDER = (
     '{"reply": "...", "item": {...}}.'
 )
 
+_PLACEHOLDER_OPTION = re.compile(
+    r"^(?:option|answer|choice|distractor)\s*\d*\s*[.:)]?$|^(?:a|b|c|d)[.)]?$",
+    re.IGNORECASE,
+)
+_GENERIC_QUIZ_PROMPT = re.compile(
+    r"^(?:question about (?:the )?(?:topic|material|subject)|what is the answer)\??$",
+    re.IGNORECASE,
+)
+_DATED_EVENT_VERBS = (
+    frozenset({"begin", "began", "begun", "start", "started"}),
+    frozenset({"found", "founded", "co-founded", "form", "formed"}),
+    frozenset({"join", "joined"}),
+    frozenset({"become", "became"}),
+    frozenset({"end", "ended"}),
+    frozenset({"sign", "signed"}),
+    frozenset({"pass", "passed"}),
+)
+_QUIZ_UNAVAILABLE = (
+    "I couldn't create a trustworthy quiz from these course passages. "
+    "Try again with a different source or model."
+)
+
+
+def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> bool:
+    """Reject schema-valid but content-free quiz scaffolding from small models."""
+    if item.get("type") != "quiz":
+        return False
+    questions = item.get("questions")
+    if not isinstance(questions, list) or not questions:
+        return False
+    for question in questions:
+        if not isinstance(question, dict):
+            return False
+        prompt = question.get("prompt")
+        options = question.get("options")
+        answer = question.get("answer")
+        explanation = question.get("explanation")
+        if (
+            not isinstance(prompt, str)
+            or len(prompt.strip()) < 12
+            or _GENERIC_QUIZ_PROMPT.fullmatch(prompt.strip())
+        ):
+            return False
+        if not isinstance(options, list) or len(options) < 2:
+            return False
+        if type(answer) is not int or not 0 <= answer < len(options):
+            return False
+        normalized = [
+            re.sub(r"\s+", " ", str(option)).strip(" .,:;!?").casefold()
+            for option in options
+        ]
+        if len(set(normalized)) != len(normalized):
+            return False
+        list_keys = []
+        for option in normalized:
+            parts = re.split(r"\s*(?:[,;]|\band\b)\s*", option)
+            key = tuple(sorted(re.sub(r"^the\s+", "", p.strip()) for p in parts))
+            if len(parts) > 1:
+                list_keys.append(key)
+        if len(set(list_keys)) != len(list_keys):
+            return False
+        selected_phrase = re.sub(r"^(?:the|a|an)\s+", "", normalized[answer])
+        if len(selected_phrase) >= 8 and selected_phrase in prompt.casefold():
+            return False
+        if any(_PLACEHOLDER_OPTION.fullmatch(option) for option in normalized):
+            return False
+        topic = question.get("topic", "")
+        if topic in (
+            "recognition",
+            "explanation",
+            "application",
+            "counterexample",
+            "transfer",
+        ) and not re.search(
+            rf"\b{re.escape(topic)}\b",
+            prompt.casefold() + " " + " ".join(c.text.casefold() for c in candidates),
+        ):
+            return False
+        if isinstance(explanation, str):
+            explained = explanation.casefold()
+            named_options = [
+                index
+                for index, option in enumerate(normalized)
+                if len(option) >= 4
+                and re.search(rf"(?<!\w){re.escape(option)}(?!\w)", explained)
+            ]
+            if len(named_options) == 1 and named_options[0] != answer:
+                return False
+            shortened = [
+                re.sub(r"^(?:the )?(?:function|map|transformation)\s+", "", option)
+                for option in normalized
+            ]
+            named_shortened = [
+                index
+                for index, option in enumerate(shortened)
+                if len(option) >= 12 and option in explained
+            ]
+            if len(named_shortened) == 1 and named_shortened[0] != answer:
+                return False
+        cited = question.get("sources")
+        if not isinstance(cited, list) or not cited:
+            return False
+        if any(type(n) is not int or not 1 <= n <= len(candidates) for n in cited):
+            return False
+        evidence = " ".join(candidates[n - 1].text for n in cited).casefold()
+        selected = str(options[answer])
+        dates = re.findall(r"\b\d{4}\b", selected)
+        if any(date not in evidence for date in dates):
+            return False
+        if dates and re.search(r"\b(?:when|what year|which year)\b", prompt.casefold()):
+            question_words = set(re.findall(r"[\w-]+", prompt.casefold()))
+            event_verbs = [
+                forms for forms in _DATED_EVENT_VERBS if forms & question_words
+            ]
+            if event_verbs:
+                dated_sentences = [
+                    sentence
+                    for sentence in re.split(r"(?<=[.!?])\s+", evidence)
+                    if any(date in sentence for date in dates)
+                ]
+                if not any(
+                    all(
+                        any(
+                            re.search(rf"(?<!\w){re.escape(form)}(?!\w)", sentence)
+                            for form in forms
+                        )
+                        for forms in event_verbs
+                    )
+                    for sentence in dated_sentences
+                ):
+                    return False
+        names = re.findall(r"\b[A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+)+\b", selected)
+        if names and not any(
+            re.search(rf"(?<!\w){re.escape(word.casefold())}(?!\w)", evidence)
+            for name in names
+            for word in name.split()
+            if len(word) >= 4
+        ):
+            return False
+    return True
+
+
+def _usable_quiz_questions(
+    item: Any, candidates: tuple[Candidate, ...]
+) -> list[dict[str, Any]]:
+    if not isinstance(item, dict) or item.get("type") != "quiz":
+        return []
+    questions = item.get("questions")
+    if not isinstance(questions, list):
+        return []
+    return [
+        question
+        for question in questions
+        if isinstance(question, dict)
+        and _usable_quiz({"type": "quiz", "questions": [question]}, candidates)
+    ]
+
+
+def _workspace_response(
+    parsed: dict[str, Any] | None,
+    intent: Intent,
+    material_count: int,
+    passages: list[str],
+) -> str | None:
+    item = parsed.get("item") if parsed else None
+    if not isinstance(item, dict) or item.get("type") != intent.value:
+        return None
+    if intent is Intent.MIND_MAP:
+        try:
+            original = extract_workspace_items(
+                "```workspace\n" + json.dumps(item) + "\n```", material_count
+            )
+            if original.withheld:
+                return None
+            mapped = MindMapContent.model_validate(
+                {k: v for k, v in item.items() if k in {"nodes", "edges"}}
+            )
+            anchored = anchor_map_evidence(mapped, passages)
+            item = {**item, **anchored.model_dump()}
+        except ValueError:
+            return None
+    content_key = {
+        Intent.DOCUMENT: "content",
+        Intent.SLIDES: "deck",
+        Intent.CODE: "code",
+    }.get(intent)
+    if content_key is not None:
+        content = item.get(content_key)
+        if not isinstance(content, str) or content.strip(" .\t\n`").casefold() in {
+            "",
+            "content",
+            "deck",
+            "markdown",
+            "code",
+        }:
+            return None
+    reply_value = parsed.get("reply") if parsed else None
+    reply = reply_value.strip() if isinstance(reply_value, str) else ""
+    block = json.dumps(item, ensure_ascii=False)
+    text = f"{reply}\n\n```workspace\n{block}\n```".strip()
+    extracted = extract_workspace_items(text, material_count)
+    return text if extracted.items and not extracted.withheld else None
+
 
 def compose_answer(
     question: str,
@@ -324,6 +776,7 @@ def compose_answer(
     select: Callable[[str, tuple[Candidate, ...]], tuple[Candidate, ...]] | None = None,
     answer_mode: AnswerMode = AnswerMode.PLAIN,
     conversation: str = "",
+    teaching: str = "",
 ) -> Composed:
     """Frame the task, generate, and return standard answer text.
 
@@ -335,16 +788,20 @@ def compose_answer(
     intent = classify_intent(question)
     material = numbered_material(question, candidates, conversation)
     if intent is Intent.ANSWER and answer_mode is AnswerMode.QUOTES:
-        return _compose_quoted(material, candidates, generate, on_schema_rejected)
-    if intent in (Intent.ANSWER, Intent.GRADED):
+        return _compose_quoted(
+            material, candidates, generate, on_schema_rejected, teaching
+        )
+    if intent in (Intent.ANSWER, Intent.GRADED, Intent.CHAT):
         instruction = "tutor_steer" if intent is Intent.GRADED else "tutor_answer"
-        prompt = grounded_prompt(load_prompt(instruction), material)
+        prompt = grounded_prompt(load_prompt(instruction) + teaching, material)
         text = generate("tutor_answer", prompt)
         return Composed(
             strip_fence_echo(text), intent, structured=False, candidates=candidates
         )
 
-    prompt = grounded_prompt(load_prompt(f"workspace_{intent.value}"), material)
+    prompt = grounded_prompt(
+        load_prompt(f"workspace_{intent.value}") + teaching, material
+    )
     schema = workspace_schema(intent, len(candidates))
     try:
         raw = generate("artifact_generation", prompt, response_schema=schema)
@@ -354,18 +811,123 @@ def compose_answer(
         raw = generate("artifact_generation", prompt + _SCHEMA_REMINDER)
     parsed = parse_json_object(raw)
     item = parsed.get("item") if parsed else None
-    if not isinstance(item, dict):
-        # Unusable structure: show whatever prose came back; the workspace
-        # gate has nothing to lift, so nothing uncited can slip through.
-        return Composed(
-            strip_fence_echo(raw), intent, structured=False, candidates=candidates
+    # The small local model can produce schema-valid but misleading quizzes.
+    # Keep individually verified questions across attempts, while never
+    # putting an untrustworthy answer key in the workspace or chat.
+    if intent is Intent.QUIZ and (
+        not isinstance(item, dict) or not _usable_quiz(item, candidates)
+    ):
+        accepted: list[dict[str, Any]] = []
+        seen: set[tuple[tuple[int, ...], str]] = set()
+        title = "Practice quiz"
+        reply = "Here are the questions I could build from your course material."
+
+        def collect(result: dict[str, Any] | None) -> None:
+            nonlocal title
+            if not result:
+                return
+            candidate_item = result.get("item")
+            if not isinstance(candidate_item, dict):
+                return
+            for valid in _usable_quiz_questions(candidate_item, candidates):
+                key = (
+                    tuple(valid["sources"]),
+                    str(valid["options"][valid["answer"]]).strip(" .,:;!?").casefold(),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                accepted.append(valid)
+                title = str(candidate_item.get("title") or title)
+
+        collect(parsed)
+        repair_instruction = (
+            load_prompt("workspace_quiz")
+            + "\n\n"
+            + load_prompt("workspace_quiz_repair")
+            + teaching
         )
-    reply = str(parsed.get("reply") or "").strip() if parsed else ""
-    block = json.dumps(item, ensure_ascii=False)
-    text = f"{reply}\n\n```workspace\n{block}\n```".strip()
+        repair_prompt = grounded_prompt(repair_instruction, material)
+        for _ in range(2):
+            if len(accepted) >= 2:
+                break
+            try:
+                repaired = generate(
+                    "artifact_generation", repair_prompt, response_schema=schema
+                )
+            except Exception as err:
+                if on_schema_rejected is None or not on_schema_rejected(err):
+                    repaired = ""
+                else:
+                    repaired = generate(
+                        "artifact_generation", repair_prompt + _SCHEMA_REMINDER
+                    )
+            parsed = parse_json_object(repaired)
+            item = parsed.get("item") if parsed else None
+            collect(parsed)
+        if not accepted:
+            return Composed(
+                _QUIZ_UNAVAILABLE,
+                intent,
+                structured=False,
+                candidates=candidates,
+            )
+        item = {"type": "quiz", "title": title, "questions": accepted[:3]}
+        parsed = {"reply": reply, "item": item}
+    passages = [c.text for c in candidates]
+    workspace_text = _workspace_response(parsed, intent, len(candidates), passages)
+    if workspace_text is None and intent is not Intent.QUIZ:
+        repair_prompt = grounded_prompt(
+            load_prompt(f"workspace_{intent.value}")
+            + "\n\n"
+            + load_prompt("workspace_repair")
+            + teaching,
+            material + "\n\nPrevious output to replace:\n" + raw,
+        )
+        try:
+            repaired = generate(
+                "artifact_generation", repair_prompt, response_schema=schema
+            )
+        except Exception as err:
+            if on_schema_rejected is None or not on_schema_rejected(err):
+                raise
+            repaired = generate("artifact_generation", repair_prompt + _SCHEMA_REMINDER)
+        workspace_text = _workspace_response(
+            parse_json_object(repaired), intent, len(candidates), passages
+        )
+    if workspace_text is None:
+        return Composed(
+            "I couldn't create a usable workspace item from this response. "
+            "Try again with a smaller request or a different model.",
+            intent,
+            structured=False,
+            candidates=candidates,
+        )
     return Composed(
-        strip_fence_echo(text), intent, structured=True, candidates=candidates
+        strip_fence_echo(workspace_text), intent, structured=True, candidates=candidates
     )
+
+
+def compose_chat(
+    question: str,
+    generate: Generate,
+    *,
+    conversation: str = "",
+    course_name: str = "",
+    teaching: str = "",
+) -> str:
+    """Reply to small talk (a greeting, thanks, a connection test, "what can
+    you do?") without searching the course: there is nothing to look up, and
+    refusing it as "nothing relevant found" made the tutor look broken."""
+    parts: list[str] = []
+    if course_name:
+        parts.append(f"The student is studying: {course_name}")
+    if conversation:
+        parts.append(f"Conversation so far (context only):\n{conversation}")
+    parts.append(f"Student message: {question}")
+    instruction = load_prompt_policy().prompts["tutor_chat"].strip() + teaching
+    prompt = grounded_prompt(instruction, "\n\n".join(parts))
+    return strip_fence_echo(generate("tutor_answer", prompt))
 
 
 def _compose_quoted(
@@ -373,11 +935,12 @@ def _compose_quoted(
     candidates: tuple[Candidate, ...],
     generate: Generate,
     on_schema_rejected: Callable[[Exception], bool] | None,
+    teaching: str = "",
 ) -> Composed:
     """Quote-first answer: evidence, then the answer; quotes verified
     against their chunks. An endpoint that rejects the schema, or a reply
     that is not the requested JSON, falls back to the plain answer."""
-    prompt = grounded_prompt(load_prompt("tutor_answer_quotes"), material)
+    prompt = grounded_prompt(load_prompt("tutor_answer_quotes") + teaching, material)
     try:
         raw = generate(
             "tutor_answer",
@@ -392,7 +955,8 @@ def _compose_quoted(
     answer = parsed.get("answer") if parsed else None
     if not isinstance(answer, str) or not answer.strip():
         text = generate(
-            "tutor_answer", grounded_prompt(load_prompt("tutor_answer"), material)
+            "tutor_answer",
+            grounded_prompt(load_prompt("tutor_answer") + teaching, material),
         )
         return Composed(
             strip_fence_echo(text),

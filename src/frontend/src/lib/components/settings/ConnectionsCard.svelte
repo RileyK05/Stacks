@@ -28,7 +28,7 @@
     anthropic: 'Create a key at console.anthropic.com → API keys.',
     google: 'Create a key at aistudio.google.com → Get API key.',
     openrouter:
-      'Create a key at openrouter.ai → Keys. Free models (ending in :free) need no credit.',
+      'Create a key at openrouter.ai → Keys. Free models (ending in :free) need no credit, but some are restricted — Test tells you if yours is.',
     groq: 'Create a key at console.groq.com → API keys.',
     lmstudio: "Start LM Studio's local server (Developer tab). No key needed.",
     ollama: 'Install Ollama and pull a model; it serves on this computer. No key needed.',
@@ -91,7 +91,7 @@
     saving = true;
     error = null;
     try {
-      const { error: err } = await api.POST('/settings/connections', {
+      const { data: created, error: err } = await api.POST('/settings/connections', {
         body: {
           preset: preset.name,
           name: form.name.trim() || null,
@@ -104,6 +104,9 @@
       toast(`${form.name.trim() || preset.label} added.`);
       adding = null;
       await onchanged();
+      // Try it straight away: a wrong model name should show up here, not
+      // as a failed answer in the middle of studying.
+      if (created) void test(created);
     } catch (caught) {
       error = caught;
     } finally {
@@ -140,6 +143,7 @@
       editing = null;
       toast('Saved.');
       await onchanged();
+      void test(connection);
     } catch (caught) {
       error = caught;
     } finally {
@@ -171,7 +175,21 @@
     else await onchanged();
   }
 
-  async function test(connection: Connection) {
+  async function useModel(connection: Connection, model: string) {
+    const { error: err } = await api.PATCH('/settings/connections/{connection_id}', {
+      params: { path: { connection_id: connection.id } },
+      body: { default_model: model }
+    });
+    if (err) {
+      error = err;
+      return;
+    }
+    toast(`${connection.name} now uses ${model}.`);
+    await onchanged();
+    await test(connection);
+  }
+
+  async function test(connection: Pick<Connection, 'id'>) {
     testing = connection.id;
     try {
       const { data, error: err } = await api.POST('/settings/connections/{connection_id}/test', {
@@ -243,13 +261,27 @@
             </div>
 
             {#if result}
-              <p class={`text-xs ${result.ok ? 'text-success-text' : 'text-danger-text'}`}>
-                {#if result.ok}
-                  Connected · {result.models?.length ?? 0} model{(result.models?.length ?? 0) === 1 ? "" : "s"} offered
-                {:else}
-                  Could not connect: {result.error}
+              <div class="flex flex-col gap-1.5 text-xs">
+                <p class={result.ok ? 'text-success-text' : 'text-danger-text'}>
+                  {#if result.ok}
+                    Connected · {result.models?.length ?? 0} model{(result.models?.length ?? 0) === 1 ? "" : "s"} offered
+                  {:else}
+                    Could not connect: {result.error}
+                  {/if}
+                </p>
+                {#if result.model && result.model_ok}
+                  <p class="text-success-text">{result.model} answered a test message.</p>
+                {:else if result.model && result.model_ok === false}
+                  <p class="break-words text-danger-text">{result.model} doesn't work yet: {result.model_error}</p>
+                  {#if result.suggested_models?.length}
+                    <div class="flex flex-wrap gap-1.5">
+                      {#each result.suggested_models as model (model)}
+                        <Button variant="secondary" size="sm" onclick={() => useModel(connection, model)}>Use {model}</Button>
+                      {/each}
+                    </div>
+                  {/if}
                 {/if}
-              </p>
+              </div>
             {/if}
 
             {#if editing === connection.id}

@@ -44,9 +44,10 @@
       danger: true
     });
     if (!ok) return;
+    const wasActive = chats.activeId === id;
     try {
       await chats.remove(id);
-      if (!chats.activeId) onselect(null);
+      if (wasActive) onselect(null);
     } catch {
       toast('Could not delete the chat.', 'error');
     }

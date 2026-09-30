@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte';
+  import { untrack, type Snippet } from 'svelte';
 
   interface TriggerProps {
     onclick: () => void;
@@ -27,6 +27,24 @@
   }: Props = $props();
 
   let root = $state<HTMLElement | null>(null);
+  let panel = $state<HTMLElement | null>(null);
+  /** Nudge that keeps the panel on screen when its trigger sits near an edge
+   * (a toolbar that wrapped onto its own line on a narrow window). */
+  let shift = $state(0);
+
+  $effect(() => {
+    if (!open || !panel) {
+      shift = 0;
+      return;
+    }
+    const rect = panel.getBoundingClientRect();
+    const base = untrack(() => shift);
+    const left = rect.left - base;
+    const right = rect.right - base;
+    const margin = 8;
+    const width = document.documentElement.clientWidth;
+    shift = left < margin ? margin - left : right > width - margin ? width - margin - right : 0;
+  });
 
   function close() {
     open = false;
@@ -57,9 +75,11 @@
   })}
   {#if open}
     <div
+      bind:this={panel}
       role="dialog"
       aria-label={label}
-      class={`absolute top-full z-40 mt-2 origin-top animate-rise overflow-hidden rounded-xl border border-line bg-surface shadow-lift ${width} ${
+      style:translate={shift ? `${shift}px 0` : undefined}
+      class={`absolute max-w-[calc(100vw-1rem)] top-full z-40 mt-2 origin-top animate-rise overflow-hidden rounded-xl border border-line bg-surface shadow-lift ${width} ${
         align === 'end' ? 'right-0' : 'left-0'
       }`}
     >

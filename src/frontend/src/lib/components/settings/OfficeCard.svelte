@@ -52,7 +52,7 @@
     const ok = await confirmDialog({
       title: 'Disconnect Office?',
       message:
-        'The Stacks button disappears from Word, Excel and PowerPoint after they restart, and Stacks removes its local certificate (Windows asks you to confirm). Your documents are not touched.',
+        'Stacks removes its Office add-in and local certificate. Your computer may ask you to confirm. Restart Office afterward. Your documents are not touched.',
       confirmLabel: 'Disconnect'
     });
     if (ok) await run(disconnectOffice);
@@ -74,7 +74,7 @@
   {#if !status}
     <p class="text-sm text-muted">{error || 'Checking…'}</p>
   {:else if !status.supported}
-    <p class="text-sm text-muted">The Office add-in is set up automatically on Windows with Microsoft 365 or Office 2016 or later.</p>
+    <p class="text-sm text-muted">Office connections require compatible desktop apps on Windows or macOS. You can also connect exported documents in the companion.</p>
   {:else}
     <div class="flex flex-col gap-4">
       <div class="flex flex-wrap items-center gap-3">
@@ -110,9 +110,9 @@
 
       {#if !status.connected}
         <p class="text-xs text-subtle">
-          Connecting adds a Stacks button to the Home tab in Word, Excel and PowerPoint. Windows will ask once
-          whether to trust Stacks' local certificate — choose Yes; it only works for this computer. No admin
-          rights needed.
+          Connecting installs the Stacks add-in for Word, Excel and PowerPoint. Approve the local certificate
+          trust request on your computer. On Mac, restart Office and choose Stacks under Home → Add-ins.
+          Keep the Office pane open for live companion refreshes.
         </p>
       {/if}
 
