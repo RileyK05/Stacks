@@ -51,6 +51,10 @@ def build_backend() -> Path:
     common = ROOT / "src" / "backend" / "common"
     datas = [
         (ROOT / "configs", "configs"),
+        (
+            ROOT / "src/backend/office_reader/capture_windows.ps1",
+            "src/backend/office_reader",
+        ),
         (common / "migrations", "src/backend/common/migrations"),
         (common / "queries", "src/backend/common/queries"),
         # The Office task pane the backend serves (src/backend/office_addin).

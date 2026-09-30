@@ -82,6 +82,6 @@
       <Icon name="download" class="h-3.5 w-3.5" /> .csv
     </Button>
   </div>
-  <p class="text-xs text-subtle">Edits stay in this browser session — nothing is saved to your course.</p>
+  <p class="text-xs text-subtle">Edits stay in this browser session until you choose Save to artifacts.</p>
   <SourceChips cited={session.item.sources} {sources} />
 </div>

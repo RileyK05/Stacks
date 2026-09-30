@@ -71,6 +71,11 @@ def test_refusal_check_requires_marker() -> None:
     assert not ok and "no refusal marker" in why
 
 
+def test_natural_missing_information_refusal_is_recognized() -> None:
+    ok, why = refusal_check("I don't have information about the office phone number.")
+    assert ok, why
+
+
 def test_steer_check_rejects_fillin_and_accepts_redirect() -> None:
     ok, why = steer_check(
         "Let's work through why [1] applies, and I'll set up practice."
@@ -151,6 +156,19 @@ def test_unknown_kind_fails_closed() -> None:
     )
     passed, detail = _score(case, "anything", ("chunk",))
     assert not passed and "unknown case kind" in detail
+
+
+def test_factual_expectations_reject_cited_but_content_free_answers() -> None:
+    case = _case("green_grounded", expectation={
+        "required_patterns": [r"\baddition\b", r"scalar multiplication|scaling"],
+        "forbidden_patterns": ["preserves nothing"],
+    })
+    for text in ("Here is your answer [1].", "Preserves addition [1].",
+                 "Preserves nothing, addition, scaling [1]."):
+        passed, detail = _score(case, text, ("material",))
+        assert not passed and "content check failed" in detail
+    passed, detail = _score(case, "Preserves addition and scaling [1].", ("material",))
+    assert passed, detail
 
 
 class ScriptedGenerate:
@@ -266,6 +284,9 @@ def test_run_answer_eval_end_to_end(tmp_path) -> None:
     assert "per-case inspection records" in log_text
     assert "chunk_ids:" in log_text
     assert "preserves addition and scalar" in log_text
+    assert "response_schema:" in log_text
+    assert "raw output:" in log_text
+    assert "[quiz workspace prompt + schema]" not in log_text
 
 
 def test_seed_label_typo_is_unresolved_not_a_model_failure(tmp_path) -> None:

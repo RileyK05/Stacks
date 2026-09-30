@@ -32,6 +32,8 @@ export interface QuizQuestion {
   answer: number;
   explanation: string;
   sources: number[];
+  topic?: string;
+  capability?: components['schemas']['PracticeQuestion']['capability'];
 }
 export interface QuizContent {
   questions: QuizQuestion[];
@@ -159,13 +161,20 @@ export class OpenArtifact {
     this.content = structuredClone($state.snapshot(view.content));
     this.dirty = false;
     this.conflict = false;
+    this.saveError = null;
   }
 
   async loadCitations(): Promise<void> {
-    const { data } = await api.GET('/courses/{course_id}/artifacts/{artifact_id}/citations', {
-      params: { path: this.path }
-    });
-    this.citations = data ?? [];
+    // The list of cited passages is a nicety: failing to fetch it must not
+    // make an artifact that loaded (or saved) fine look broken.
+    try {
+      const { data } = await api.GET('/courses/{course_id}/artifacts/{artifact_id}/citations', {
+        params: { path: this.path }
+      });
+      this.citations = data ?? [];
+    } catch {
+      // keep the citations we already have
+    }
   }
 
   /** Mark the content (or title) changed; it saves shortly after. */
@@ -313,8 +322,9 @@ export class OpenArtifact {
       params: { path: this.path }
     });
     if (error) throw error;
+    // Nothing left to save: leaving the page must not PUT to a deleted artifact.
+    this.dirty = false;
   }
-
 }
 
 export async function listArtifacts(courseId: string): Promise<ArtifactSummary[]> {
@@ -341,11 +351,12 @@ export async function createArtifact(
 export async function saveFromMessage(
   courseId: string,
   messageId: string,
-  itemIndex: number
+  itemIndex: number,
+  draft: string | string[][] | null = null
 ): Promise<ArtifactView> {
   const { data, error } = await api.POST('/courses/{course_id}/artifacts/from-message', {
     params: { path: { course_id: courseId } },
-    body: { message_id: messageId, item_index: itemIndex }
+    body: { message_id: messageId, item_index: itemIndex, draft }
   });
   if (error || !data) throw error ?? new Error('unexpected empty response');
   return data;

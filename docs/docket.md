@@ -1,5 +1,45 @@
 # docket.md — Bugs, latent bugs, and optimizations
 
+## Code cleanup review (2026-09-29)
+
+See [code-health.md](code-health.md) for the current maintenance pass and three
+decisions about draft persistence, local-model scheduling, and integration
+authority. Verified cleanup addresses D-10/D-14/D-18, the empty type-checking
+block in D-16, repeated course checks in D-21, P-13, and storage-test findings
+T-06/T-07. Retrieval evaluation now follows a chunk's full locator span, and
+Office token comparison handles non-ASCII input. C-01, D-07, and the dead PDF
+parameter allegation in D-16 do not apply as written to the current tree; their
+evidence is explained in the review. Historical entries below remain intact.
+
+## Verified companion and quiz findings (2026-09-28)
+
+- **Blank packaged companion:** the static build had only `index.html`
+  while the native secondary webview requested `/companion`. The build now
+  emits `companion/index.html`, and the native URL includes the trailing slash.
+  Production preview served the route and rendered the companion shell with an
+  isolated backend. An installed-build smoke test is still open in
+  `plan-notebook.md`.
+- **Rapid open race:** two native open requests could both pass the
+  absence check while the first window was building. The lookup and creation
+  now share a process lock. Installed double-click verification remains open.
+- **Companion discoverability:** on course pages, the only launcher was
+  an icon at the bottom of a narrow navigation rail. A labeled course-header
+  action and a highlighted launcher near the top of navigation now expose it.
+- **Office context gap:** Open in Office did not focus the companion or
+  select the course. It now does both; switching course clears old turns.
+- **Empty-course guidance:** the companion previously offered action buttons
+  without explaining why a new course could not answer. It now links to the
+  library to add a source; this was checked in the browser preview.
+- **Unreliable quiz generation:** a schema-valid quiz could contain `option1`,
+  point its answer key at a distractor, or ask for the date of an undated event.
+  A live MiniCPM5-2B probe reproduced the latter two with César Chávez
+  passages. The quiz path now filters each question, makes up to two repair
+  attempts, retains verified questions across attempts, and declines when
+  none survive. The latest three local-model probes yielded useful cited
+  quizzes; indexed-course and installed-app checks remain open.
+
+---
+
 > **Status: static-review ledger, triaged for the companion release on
 > 2026-09-28 and superseded by the central-library direction later that day.**
 > Findings remain candidates until reproduced or verified. The current product

@@ -10,7 +10,7 @@ new run.
 import asyncio
 import io
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from src.backend.common import courses_repo, sources_repo
@@ -105,6 +105,12 @@ def test_worker_records_failures_without_zombies(course_id: UUID) -> None:
     assert (attempted, succeeded) == (1, 0)
     assert _source_status(stored.source_id) == "failed"
     assert _queue_row(stored.source_id) is None
+    with connection() as conn:
+        message = conn.execute(
+            "SELECT error_message FROM sources WHERE source_id = ?",
+            (stored.source_id,),
+        ).fetchone()["error_message"]
+    assert "no text extraction handler" in message, "the user sees the real cause"
 
 
 def test_worker_requeue_after_failure(course_id: UUID) -> None:
@@ -216,3 +222,76 @@ def test_upload_wakes_the_worker_immediately() -> None:
             worker.process_batch = original
 
     assert asyncio.run(scenario()) < 2.0
+
+
+def test_startup_recovery_releases_a_live_looking_claim(course_id: UUID) -> None:
+    """The user closes the app mid-ingest: the claim's heartbeat is seconds
+    old, so the stale fence would wait half an hour. At startup nothing can
+    be running, so the claim is released at once and the dead run closed."""
+    stored = _upload(course_id)
+    with connection() as conn:
+        assert len(runs.claim_pending_sources(conn, limit=1)) == 1
+        conn.execute(
+            "INSERT INTO ingestion_runs (run_id, source_id, pipeline_version,"
+            " status) VALUES (?, ?, 'v', 'running')",
+            (uuid4(), stored.source_id),
+        )
+        conn.commit()
+    _set_claim(stored.source_id, datetime.now(UTC), datetime.now(UTC))
+    assert _release_and_claim() == []  # the stale fence alone would not help
+
+    with connection() as conn:
+        assert worker.recover_interrupted_runs(conn) == 1
+        conn.commit()
+
+    with connection() as conn:
+        run = conn.execute(
+            "SELECT status, error_message FROM ingestion_runs"
+        ).fetchone()
+    assert run["status"] == "failed" and "interrupted" in run["error_message"]
+    assert worker.process_batch(limit=10) == (1, 1)
+    assert _source_status(stored.source_id) == "indexed"
+
+
+def test_source_lost_to_repeated_crashes_fails_instead_of_spinning(
+    course_id: UUID,
+) -> None:
+    """Once a queue row has burned every claim it is never claimable again;
+    it must surface as a failed source (Retry works), not "processing"
+    forever."""
+    stored = _upload(course_id)
+    with connection() as conn:
+        conn.execute(
+            "UPDATE pending_ingestion SET claimed_runs = claimed_runs_max"
+            " WHERE source_id = ?",
+            (stored.source_id,),
+        )
+        conn.commit()
+    assert worker.process_batch(limit=10) == (0, 0)
+    assert _source_status(stored.source_id) == "failed"
+    assert _queue_row(stored.source_id) is None
+    with connection() as conn:
+        assert runs.requeue_failed_source(conn, stored.source_id, course_id)
+        conn.commit()
+    assert worker.process_batch(limit=10) == (1, 1)
+    assert _source_status(stored.source_id) == "indexed"
+
+
+def test_run_forever_recovers_interrupted_claims_at_startup(course_id: UUID) -> None:
+    stored = _upload(course_id)
+    with connection() as conn:
+        runs.claim_pending_sources(conn, limit=1)
+        conn.commit()
+
+    async def scenario() -> None:
+        stop = asyncio.Event()
+        task = asyncio.create_task(worker.run_forever(stop))
+        for _ in range(500):
+            if _source_status(stored.source_id) == "indexed":
+                break
+            await asyncio.sleep(0.02)
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(scenario())
+    assert _source_status(stored.source_id) == "indexed"

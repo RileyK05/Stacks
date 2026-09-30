@@ -175,6 +175,39 @@ SET claimed_at = NULL, heartbeat_at = NULL
 WHERE claimed_at IS NOT NULL
   AND COALESCE(heartbeat_at, claimed_at) < :threshold;
 
+-- name: release_all_claims
+-- App startup: this process is the only worker, so a claim that exists
+-- now belongs to a run the previous process never finished (the app was
+-- closed or crashed mid-ingest). Waiting out the heartbeat fence would
+-- leave the file "processing" with nothing running for half an hour.
+UPDATE pending_ingestion
+SET claimed_at = NULL, heartbeat_at = NULL
+WHERE claimed_at IS NOT NULL;
+
+-- name: fail_interrupted_runs
+-- Run-ledger rows the dead process left open; a fresh run is created on
+-- the next claim, so these must not read as "running" forever.
+UPDATE ingestion_runs
+SET status = 'failed',
+    error_message = 'interrupted: the app closed before this run finished',
+    completed_at = now_utc()
+WHERE status IN ('pending', 'running');
+
+-- name: fail_interrupted_stage_runs
+UPDATE ingestion_stage_runs
+SET status = 'failed',
+    error_message = 'interrupted: the app closed before this stage finished',
+    completed_at = now_utc()
+WHERE status = 'running';
+
+-- name: exhausted_claims
+-- Queue rows that were claimed (and lost to a crash) the maximum number
+-- of times: never claimable again, so without this they read as
+-- "processing" forever.
+SELECT source_id, course_id, created_at AS queued_at
+FROM pending_ingestion
+WHERE claimed_at IS NULL AND claimed_runs >= claimed_runs_max;
+
 -- name: heartbeat_claim
 UPDATE pending_ingestion
 SET heartbeat_at = now_utc()

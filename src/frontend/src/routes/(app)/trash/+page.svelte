@@ -39,7 +39,8 @@
   });
 
   async function load() {
-    loading = true;
+    // `loading` starts true: later reloads (after a restore) swap in place
+    // instead of flashing the skeleton and hiding any error banner.
     try {
       const [trashRes, memoryRes] = await Promise.all([
         api.GET('/trash'),

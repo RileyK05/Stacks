@@ -254,6 +254,45 @@ def test_upload_rejects_uningestable_mime_before_storing(client: TestClient) -> 
     assert _count_sources(course_id) == 0
 
 
+@pytest.mark.parametrize(
+    ("filename", "declared", "stored"),
+    [
+        ("notes.md", "", "text/markdown"),
+        ("notes.md", "application/octet-stream", "text/markdown"),
+        ("data.csv", "application/vnd.ms-excel", "text/csv"),
+        ("plain.txt", "text/plain; charset=utf-8", "text/plain"),
+        ("Paper.PDF", "application/x-pdf", "application/pdf"),
+        ("config.yml", "application/octet-stream", "application/yaml"),
+    ],
+)
+def test_upload_accepts_what_the_os_mislabels(
+    client: TestClient, filename: str, declared: str, stored: str
+) -> None:
+    """A webview reports the OS registry's guess, not the file's type: `.md`
+    arrives as "" on Windows and `.csv` as an Excel type. Those used to be
+    rejected as unsupported, so ordinary notes could not be uploaded."""
+    course_id = _course(client)
+    response = _upload(client, course_id, filename, b"# Notes\nbody text", declared)
+    assert response.status_code == 201, response.text
+    assert response.json()["mime_type"] == stored
+
+
+def test_unsupported_upload_names_the_file_and_what_is_supported(
+    client: TestClient,
+) -> None:
+    course_id = _course(client)
+    response = _upload(
+        client,
+        course_id,
+        "lecture.mp4",
+        b"not a document",
+        "video/mp4",
+    )
+    assert response.status_code == 415
+    assert "lecture.mp4" in response.json()["detail"]
+    assert "PDF" in response.json()["detail"]
+
+
 def test_source_list_shows_status(client: TestClient) -> None:
     course_id = _course(client)
     assert _upload(client, course_id, "good.txt", b"readable text").status_code == 201
@@ -320,3 +359,42 @@ def test_delete_source_removes_row_queue_and_file(client: TestClient) -> None:
     assert client.delete(f"/courses/{course_id}/sources/{source_id}").status_code == 404
     # The same bytes can be uploaded again once the old copy is gone.
     assert _upload(client, course_id, "drop.txt", b"delete me").status_code == 201
+
+
+def test_deleting_a_source_frees_chats_narrowed_to_it(client: TestClient) -> None:
+    """A chat limited to a deleted source would search nothing and answer
+    "nothing matches" forever. The id leaves every selection in the course;
+    a selection left empty falls back to every source."""
+    from tests.factories import insert_source
+
+    course_id = _course(client)
+    other_course = _course(client, "Other")
+    keep, drop = insert_source(course_id), insert_source(course_id)
+    foreign = insert_source(other_course)
+
+    def chat(selection: list[UUID] | None, in_course: UUID = course_id) -> str:
+        created = client.post(f"/courses/{in_course}/conversations", json={})
+        chat_id = created.json()["conversation_id"]
+        if selection is not None:
+            patched = client.patch(
+                f"/courses/{in_course}/conversations/{chat_id}",
+                json={"source_ids": [str(s) for s in selection]},
+            )
+            assert patched.status_code == 200, patched.text
+        return str(chat_id)
+
+    def selection(chat_id: str, in_course: UUID = course_id) -> list[str] | None:
+        found = client.get(f"/courses/{in_course}/conversations/{chat_id}").json()
+        return found["source_ids"]
+
+    both = chat([keep, drop])
+    only_dropped = chat([drop])
+    everything = chat(None)
+    elsewhere = chat([foreign], other_course)
+
+    assert client.delete(f"/courses/{course_id}/sources/{drop}").status_code == 204
+
+    assert selection(both) == [str(keep)]
+    assert selection(only_dropped) is None
+    assert selection(everything) is None
+    assert selection(elsewhere, other_course) == [str(foreign)]

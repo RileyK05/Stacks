@@ -39,6 +39,25 @@ DELETE FROM sources
 WHERE source_id = :source_id AND course_id = :course_id
 RETURNING source_id;
 
+-- name: prune_source_from_chats
+-- A chat narrowed to a source that no longer exists would search nothing
+-- and answer "nothing matches" forever: drop the id from every chat's
+-- selection in the course. A selection left empty becomes NULL (every
+-- source), the same meaning "choose at least one source" protects.
+UPDATE conversations
+SET source_ids = CASE
+        WHEN (SELECT COUNT(*) FROM json_each(conversations.source_ids)
+              WHERE value != :source_id) = 0
+        THEN NULL
+        ELSE (SELECT json_group_array(value)
+              FROM (SELECT value FROM json_each(conversations.source_ids)
+                    WHERE value != :source_id ORDER BY key))
+    END
+WHERE course_id = :course_id
+  AND source_ids IS NOT NULL
+  AND EXISTS (SELECT 1 FROM json_each(conversations.source_ids)
+              WHERE value = :source_id);
+
 -- name: archive_sources
 -- Everything `.course` export needs to write each source's original bytes
 -- and describe it in the manifest. Oldest first, so an import recreates

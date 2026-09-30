@@ -1,0 +1,30 @@
+[version]
+learning_policy_version = "1"
+
+[scoring]
+assisted_weight = 0.25
+assisted_only_cap = 40
+initial_cap = 60
+two_item_cap = 75
+three_item_cap = 85
+five_item_cap = 95
+proficient_items = 8
+
+[practice]
+focus_slots = 2
+maintenance_slots = 1
+weak_below = 60
+strong_at = 90
+cooldown_days = 1
+maintenance_days = 14
+experiment_lifetime_days = 42
+experiment_max_checks = 3
+max_open_experiments = 12
+context_chars = 2200
+method_exploration_interval = 4
+
+[methods]
+step_by_step = "Explain one connection at a time, then invite an independent attempt."
+worked_example = "Use a small source-supported worked example, then a different independent example."
+analogy = "Use a clearly labeled analogy only when it preserves the source's relationships."
+visual_structure = "Show a compact diagram or structured comparison when it clarifies relationships."

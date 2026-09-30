@@ -68,6 +68,17 @@ def test_ask_is_honest_about_missing_provider(client: TestClient) -> None:
     assert _trace_count(course_id) == 0
 
 
+def test_empty_model_reply_has_actionable_error_without_saving_a_trace(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    course_id = _seeded_course(client)
+    configure_test_provider(monkeypatch, "")
+    response = _ask(client, course_id)
+    assert response.status_code == 503
+    assert "no usable answer" in response.json()["detail"]
+    assert _trace_count(course_id) == 0
+
+
 def test_ask_is_blocked_by_spent_cloud_budget(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

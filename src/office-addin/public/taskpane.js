@@ -17,7 +17,10 @@ import {
   hostKey,
   listCourses,
   resolveBridgeBase,
-  sendAssist
+  sendAssist,
+  publishDocument,
+  publishPackage,
+  wholePackage
 } from './bridge.js';
 
 const BRIDGE = resolveBridgeBase(window.location.search, window.location.origin);
@@ -42,7 +45,9 @@ const el = {
   citations: /** @type {HTMLUListElement} */ (byId('citations')),
   insert: /** @type {HTMLButtonElement} */ (byId('insert')),
   replace: /** @type {HTMLButtonElement} */ (byId('replace')),
-  engine: /** @type {HTMLElement} */ (byId('engine'))
+  engine: /** @type {HTMLElement} */ (byId('engine')),
+  connectWork: /** @type {HTMLButtonElement} */ (byId('connect-work')),
+  workPurpose: /** @type {HTMLSelectElement} */ (byId('work-purpose'))
 };
 
 let host = null;
@@ -243,7 +248,20 @@ function setBusy(value) {
   busy = value;
   for (const button of el.actions.querySelectorAll('button')) button.disabled = value || !el.course.value;
   el.ask.disabled = value || !el.course.value;
+  el.connectWork.disabled = value || !el.course.value;
+  el.course.disabled = value;
+  el.workPurpose.disabled = value;
   el.refresh.disabled = value;
+  el.retry.disabled = value;
+  updateWriteButtons();
+}
+
+function clearAnswer() {
+  lastResult = null;
+  el.answerPanel.hidden = true;
+  el.result.textContent = '';
+  el.citations.replaceChildren();
+  el.engine.textContent = '';
   updateWriteButtons();
 }
 
@@ -297,7 +315,7 @@ async function ask(action) {
   }
   setBusy(true);
   setStatus('Stacks is reading your course…');
-  lastResult = null;
+  clearAnswer();
   try {
     const request = assistRequest(courseId, action, host, el.selection.value, el.question.value);
     lastResult = await sendAssist(fetch, BRIDGE, request, TOKEN);
@@ -352,6 +370,7 @@ function remember(courseId) {
 }
 
 async function connect() {
+  setBusy(true);
   el.retry.hidden = true;
   setStatus('Connecting to Stacks…');
   try {
@@ -370,10 +389,49 @@ async function connect() {
     }
   } catch {
     el.course.replaceChildren(new Option('Stacks is not reachable', ''));
+    clearAnswer();
     setStatus('Stacks is not reachable. Open the Stacks app, then retry.', 'error');
     el.retry.hidden = false;
+  } finally {
+    setBusy(false);
   }
-  setBusy(false);
+}
+
+async function connectWork() {
+  if (busy || !el.course.value) return;
+  setBusy(true);
+  setStatus('Reading the whole document for your companion…');
+  try {
+    const url = Office.context.document.url || '';
+    const externalId = url || `unsaved:${host}:${crypto.randomUUID()}`;
+    const storageKey = `stacks.work:${el.course.value}:${externalId}`;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch { }
+    const filename = `${host === 'powerpoint' ? 'Presentation' : host === 'excel' ? 'Workbook' : 'Document'}.${host === 'powerpoint' ? 'pptx' : host === 'excel' ? 'xlsx' : 'docx'}`;
+    const common = { course_id: el.course.value, purpose: el.workPurpose.value, session_id: saved?.session_id ?? null, expected_revision: saved?.revision ?? 0 };
+    let result;
+    if (host === 'word' && supports('WordApi', '1.1')) {
+      const text = await Word.run(async context => {
+        const body = context.document.body;
+        body.load('text');
+        await context.sync();
+        return body.text;
+      });
+      result = await publishDocument(fetch, BRIDGE, { ...common, document: {
+        title: url ? url.split('/').pop().slice(0, 300) : 'Word document', text, origin: 'office', external_id: externalId,
+        coverage: 'partial', warnings: ['Main document body captured; headers, footnotes, comments, and embedded images may be missing.']
+      } }, TOKEN);
+    } else {
+      const bytes = await wholePackage(Office.context.document);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      result = await publishPackage(fetch, BRIDGE, { ...common, filename, external_id: externalId, package_b64: btoa(binary) }, TOKEN);
+    }
+    try { localStorage.setItem(storageKey, JSON.stringify({ session_id: result.session_id, revision: result.revision })); } catch { }
+    setStatus(`Connected snapshot ${result.revision} to the companion. Select “${result.title}” there.`, 'ok');
+  } catch (error) {
+    setStatus(error.detail || error.message || 'Could not connect this document. Use Connect file in the companion.', 'error');
+  } finally { setBusy(false); }
 }
 
 function wire() {
@@ -388,10 +446,12 @@ function wire() {
   el.question.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') ask('explain');
   });
+  el.connectWork.addEventListener('click', connectWork);
   el.refresh.addEventListener('click', refreshSelection);
   el.retry.addEventListener('click', connect);
   el.course.addEventListener('change', () => {
     remember(el.course.value);
+    clearAnswer();
     setBusy(false);
   });
   el.insert.addEventListener('click', () => write('insert'));

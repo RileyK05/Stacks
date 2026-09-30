@@ -143,7 +143,16 @@
         <Spinner class="h-5 w-5" />
       </div>
     {:else if activeArtifact.open.error}
-      <p class="p-5 text-sm text-danger-text">Could not open this artifact.</p>
+      <div class="flex flex-col items-start gap-2 p-5 text-sm text-danger-text">
+        <p>Could not open this artifact.</p>
+        <button
+          type="button"
+          onclick={() => activeArtifact.open.reload()}
+          class="rounded-lg px-2 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-fg"
+        >
+          Try again
+        </button>
+      </div>
     {:else if activeArtifact.open.artifact}
       <div class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
         <div class="flex items-center gap-2">
@@ -153,21 +162,38 @@
             aria-label="Title"
             class="min-w-0 flex-1 rounded-lg border border-transparent bg-transparent px-1 py-0.5 font-display text-lg font-medium tracking-tight text-fg hover:border-line focus:border-accent focus:outline-none"
           />
-          {#if activeArtifact.open.saving || activeArtifact.open.dirty}
-            <span class="text-[11px] text-subtle">Saving…</span>
-          {:else if activeArtifact.open.conflict}
+          {#if activeArtifact.open.conflict}
             <span class="text-[11px] text-warning-text">Changed elsewhere</span>
+          {:else if activeArtifact.open.saveError}
+            <span class="text-[11px] text-danger-text">Not saved</span>
+            <button
+              type="button"
+              onclick={() => activeArtifact.open.touch()}
+              class="text-[11px] font-medium text-accent-text hover:underline"
+            >
+              Retry
+            </button>
+          {:else if activeArtifact.open.saving || activeArtifact.open.dirty}
+            <span class="text-[11px] text-subtle">Saving…</span>
           {/if}
         </div>
         {#if activeArtifact.open.conflict}
-          <p class="rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-[12px] text-warning-text">
-            This was saved from somewhere else. Reload to see the latest.
+          <p class="flex flex-wrap items-center gap-2 rounded-lg border border-warning/40 bg-warning-soft px-3 py-2 text-[12px] text-warning-text">
+            <span class="flex-1">This was saved from somewhere else, so your latest changes here are not saved.</span>
+            <button
+              type="button"
+              onclick={() => activeArtifact.open.reload()}
+              class="rounded-md bg-surface px-2 py-1 font-medium text-fg ring-1 ring-inset ring-line-strong hover:bg-surface-2"
+            >
+              Load the latest
+            </button>
           </p>
         {/if}
         <ArtifactContent
           kind={activeArtifact.kind}
           title={activeArtifact.open.title}
           content={activeArtifact.open.content}
+          practice={{ courseId: activeArtifact.open.courseId, artifactId: activeArtifact.artifactId, version: activeArtifact.open.artifact.version, ready: !activeArtifact.open.dirty && !activeArtifact.open.saving && !activeArtifact.open.conflict }}
           onchange={() => activeArtifact.open.touch()}
         />
       </div>

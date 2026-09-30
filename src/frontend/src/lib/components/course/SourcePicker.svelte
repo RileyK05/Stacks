@@ -20,7 +20,14 @@
 
   let open = $state(false);
   const usable = $derived(sources.filter((s) => s.status === 'indexed'));
-  const chosen = $derived(new Set(selected ?? usable.map((s) => s.source_id)));
+  // Sources removed since the choice was saved no longer count; if none of
+  // the chosen ones are left, the chat is effectively reading everything.
+  const live = $derived(
+    (selected ?? []).filter((id) => usable.some((s) => s.source_id === id))
+  );
+  const chosen = $derived(
+    new Set(selected !== null && live.length > 0 ? live : usable.map((s) => s.source_id))
+  );
   const count = $derived(usable.filter((s) => chosen.has(s.source_id)).length);
   const label = $derived(
     selected === null || count === usable.length

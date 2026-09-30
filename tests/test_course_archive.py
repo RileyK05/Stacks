@@ -332,3 +332,103 @@ def test_data_folder_and_reveal_are_scoped(client: TestClient, tmp_path: Path) -
     outside.write_text("x")
     response = client.post("/settings/reveal", json={"path": str(outside)})
     assert response.status_code == 404
+
+
+def test_export_to_an_unwritable_folder_is_a_readable_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course_id = client.post("/courses", json={"name": "Full disk"}).json()["course_id"]
+
+    def full(*args: object, **kwargs: object) -> None:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr("src.backend.common.course_archive.export_course", full)
+    response = client.post(f"/courses/{course_id}/export")
+    assert response.status_code == 507
+    assert "No space left on device" in response.json()["detail"]
+
+
+def test_learning_round_trip_reopens_same_complete_test_with_remapped_evidence(client):
+    from src.backend.common.schemas.learning import PracticeQuestion
+    from src.backend.student_model import learning
+    from tests.factories import insert_chunk
+
+    old_id = _course_with_sources(client)
+    source = UUID(client.get(f"/courses/{old_id}/sources").json()[0]["source_id"])
+    chunk = insert_chunk(source, "An eigenvalue scales its eigenvector.")
+    chat = conversations_repo.create(UUID(old_id))
+    with connection() as conn:
+        suite = learning.create_suite(
+            conn,
+            UUID(old_id),
+            "Eigenvalue test",
+            [
+                PracticeQuestion(
+                    prompt="What does an eigenvalue do?",
+                    options=["Scales its eigenvector", "Names a room"],
+                    answer=0,
+                    sources=[1],
+                    topic="Eigenvalues",
+                    capability="recognition",
+                )
+            ],
+            (chunk,),
+            {"trace_id": str(uuid4())},
+            "worked_example",
+        )
+        conversations_repo.add_turn(
+            conn,
+            chat.conversation_id,
+            question="Make a quiz",
+            answer="A grounded quiz",
+            trace_id=None,
+            payload={
+                "chunk_ids": [str(chunk)],
+                "workspace": [
+                    {
+                        "type": "quiz",
+                        "practice_id": str(suite),
+                        "title": "Eigenvalue test",
+                        "questions": [
+                            q.model_dump()
+                            for q in learning.suite(conn, UUID(old_id), suite).questions
+                        ],
+                    }
+                ],
+            },
+        )
+        conn.commit()
+    submission = client.post(
+        f"/courses/{old_id}/practice/{suite}/runs",
+        json={"run_id": str(uuid4()), "answers": [1]},
+    )
+    assert submission.status_code == 200
+    root = client.get("/learning/core").json()
+    path = Path(client.post(f"/courses/{old_id}/export").json()["path"])
+    imported = _import(client, path)
+    assert imported.status_code == 201, imported.text
+    new_id = imported.json()["course"]["course_id"]
+    view = client.get(f"/courses/{new_id}/learning").json()
+    run = view["runs"][0]
+    assert run["answers"] == [1] and run["results"] == [False]
+    assert run["suite_id"] != str(suite)
+    reopened = client.get(f"/courses/{new_id}/practice/{run['suite_id']}").json()
+    assert reopened["latest_run"]["run_id"] == run["run_id"]
+    new_sources = {
+        s["source_id"] for s in client.get(f"/courses/{new_id}/sources").json()
+    }
+    assert reopened["suite"]["evidence"][0]["source_id"] in new_sources
+    assert reopened["suite"]["evidence"][0]["chunk_id"] != str(chunk)
+    assert client.get("/learning/core").json() == root
+    with connection() as conn:
+        messages = conn.execute(
+            "SELECT payload FROM messages WHERE conversation_id IN "
+            "(SELECT conversation_id FROM conversations WHERE course_id = ?)",
+            (UUID(new_id),),
+        ).fetchall()
+        quiz = next(
+            r["payload"]["workspace"][0]
+            for r in messages
+            if r["payload"].get("workspace")
+        )
+        assert quiz["practice_id"] == run["suite_id"]

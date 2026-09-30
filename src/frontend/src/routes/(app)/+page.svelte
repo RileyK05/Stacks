@@ -74,10 +74,12 @@
 
   async function createCourse(event: SubmitEvent) {
     event.preventDefault();
+    const name = newName.trim();
+    if (!name || creating) return;
     creating = true;
     createError = null;
     try {
-      const { data, error: err } = await api.POST('/courses', { body: { name: newName } });
+      const { data, error: err } = await api.POST('/courses', { body: { name } });
       if (err || !data) throw err ?? new Error('unexpected empty response');
       newName = '';
       await goto(`/courses/${data.course_id}`);

@@ -27,6 +27,7 @@ export interface Turn {
   citations: Citation[];
   citationsLoading: boolean;
   citationsLoaded: boolean;
+  citationsError: unknown;
   error: unknown;
   showSources: boolean;
 }
@@ -47,6 +48,7 @@ function emptyTurn(question: string, bigger: boolean): Turn {
     citations: [],
     citationsLoading: false,
     citationsLoaded: false,
+    citationsError: null,
     error: null,
     showSources: false
   };
@@ -61,7 +63,7 @@ function applyReply(turn: Turn, reply: MessageView): void {
     return;
   }
   turn.answer = answer.text;
-  turn.workspace = (answer.workspace ?? []).map(openSession);
+  turn.workspace = (answer.workspace ?? []).map((item, index) => openSession(item, { message_id: reply.message_id, item_index: index }));
   turn.withheld = answer.withheld ?? [];
   turn.traceId = answer.trace_id;
   turn.fellBackToLocal = answer.fell_back_to_local ?? false;
@@ -72,11 +74,20 @@ function applyReply(turn: Turn, reply: MessageView): void {
 
 function turnsFrom(messages: MessageView[]): Turn[] {
   const turns: Turn[] = [];
+  const answered = new Set<Turn>();
   for (const message of messages) {
     if (message.role === 'user') {
       turns.push(emptyTurn(message.text, false));
     } else if (turns.length > 0) {
       applyReply(turns[turns.length - 1], message);
+      answered.add(turns[turns.length - 1]);
+    }
+  }
+  // A saved question with no reply would otherwise show "Reading your course
+  // material…" forever (and block the composer): offer to ask it again.
+  for (const turn of turns) {
+    if (!answered.has(turn)) {
+      turn.error = new Error('This question never got an answer.');
     }
   }
   return turns;
@@ -94,8 +105,21 @@ export class CourseChats {
   turns = $state<Turn[]>([]);
   listLoading = $state(true);
   threadLoading = $state(false);
-  sending = $state(false);
   error = $state<unknown>(null);
+  private openRequest = 0;
+  /** Creating the draft chat; shared so two quick actions make one chat. */
+  private creating: Promise<string> | null = null;
+  /** Settings changes (model, sources) go out one at a time, before any send. */
+  private patching: Promise<unknown> = Promise.resolve();
+  /** Questions still waiting for their reply, by chat: switching away and
+   * back keeps showing them instead of dropping them from the thread. */
+  private pending = new Map<string, Turn>();
+  private removed = new Set<string>();
+
+  /** Whether the open thread is waiting for a reply. */
+  get sending(): boolean {
+    return this.turns.some((turn) => turn.answer === null && !turn.error);
+  }
 
   active = $derived(
     this.conversations.find((c) => c.conversation_id === this.activeId) ?? null
@@ -123,13 +147,18 @@ export class CourseChats {
   }
 
   startNew(): void {
+    this.openRequest += 1;
+    this.creating = null;
     this.activeId = null;
     this.turns = [];
     this.error = null;
+    this.threadLoading = false;
   }
 
   async open(conversationId: string): Promise<void> {
     if (this.activeId === conversationId && this.turns.length > 0) return;
+    const request = ++this.openRequest;
+    this.creating = null;
     this.activeId = conversationId;
     this.turns = [];
     this.error = null;
@@ -140,11 +169,16 @@ export class CourseChats {
         { params: { path: { ...this.path, conversation_id: conversationId } } }
       );
       if (error || !data) throw error ?? new Error('unexpected empty response');
-      if (this.activeId === conversationId) this.turns = turnsFrom(data.messages);
+      if (this.openRequest === request && this.activeId === conversationId) {
+        const turns = turnsFrom(data.messages);
+        const waiting = this.pending.get(conversationId);
+        if (waiting) turns.push(waiting);
+        this.turns = turns;
+      }
     } catch (caught) {
-      this.error = caught;
+      if (this.openRequest === request) this.error = caught;
     } finally {
-      this.threadLoading = false;
+      if (this.openRequest === request) this.threadLoading = false;
     }
   }
 
@@ -156,65 +190,102 @@ export class CourseChats {
   }
 
   /** The active chat's id, creating the draft chat if needed. */
-  async ensureConversation(): Promise<string> {
-    if (this.activeId) return this.activeId;
-    const { data, error } = await api.POST('/courses/{course_id}/conversations', {
-      params: { path: this.path },
-      body: { title: '' }
-    });
-    if (error || !data) throw error ?? new Error('unexpected empty response');
-    this.upsert(data);
-    this.activeId = data.conversation_id;
-    return data.conversation_id;
+  ensureConversation(): Promise<string> {
+    if (this.activeId) return Promise.resolve(this.activeId);
+    if (this.creating) return this.creating;
+    const view = this.openRequest;
+    const creating = (async () => {
+      const { data, error } = await api.POST('/courses/{course_id}/conversations', {
+        params: { path: this.path },
+        body: { title: '' }
+      });
+      if (error || !data) throw error ?? new Error('unexpected empty response');
+      this.upsert(data);
+      // The student may have opened another chat while this was being made.
+      if (this.openRequest === view) this.activeId = data.conversation_id;
+      return data.conversation_id;
+    })();
+    this.creating = creating;
+    const clear = () => {
+      if (this.creating === creating) this.creating = null;
+    };
+    creating.then(clear, clear);
+    return creating;
   }
 
   async send(question: string, bigger = false): Promise<Turn> {
-    this.sending = true;
+    this.error = null;
     this.turns = [...this.turns, emptyTurn(question, bigger)];
     const turn = this.turns[this.turns.length - 1];
+    return this.run(turn);
+  }
+
+  private async run(turn: Turn): Promise<Turn> {
+    let conversationId: string | null = null;
     try {
-      const conversationId = await this.ensureConversation();
+      conversationId = await this.ensureConversation();
+      this.pending.set(conversationId, turn);
+      await this.patching.catch(() => undefined);
       const { data, error } = await api.POST(
         '/courses/{course_id}/conversations/{conversation_id}/messages',
         {
           params: { path: { ...this.path, conversation_id: conversationId } },
-          body: { question, bigger_model: bigger }
+          body: { question: turn.question, bigger_model: turn.bigger }
         }
       );
       if (error || !data) throw error ?? new Error('unexpected empty response');
       applyReply(turn, data.reply);
       turn.showSources = !turn.noMatch;
-      this.upsert(data.conversation);
+      if (!this.removed.has(data.conversation.conversation_id)) this.upsert(data.conversation);
       if (!turn.noMatch) void this.loadCitations(turn);
     } catch (caught) {
       turn.error = caught;
     } finally {
-      this.sending = false;
+      if (conversationId && this.pending.get(conversationId) === turn) {
+        this.pending.delete(conversationId);
+      }
     }
     return turn;
   }
 
-  /** Ask again after an error: drop the failed turn and resend it. */
-  async retry(turn: Turn): Promise<void> {
-    this.turns = this.turns.filter((t) => t !== turn);
-    await this.send(turn.question, turn.bigger);
+  /** Ask again after an error, in place: the question is not added twice
+   * (the server only stores a question together with its reply). */
+  async retry(turn: Turn): Promise<Turn | null> {
+    if (turn.answer !== null || !turn.error || !this.turns.includes(turn)) return null;
+    turn.error = null;
+    return this.run(turn);
   }
 
   async loadCitations(turn: Turn): Promise<void> {
     if (!turn.traceId || turn.citationsLoaded || turn.citationsLoading) return;
     turn.citationsLoading = true;
+    turn.citationsError = null;
     try {
-      const { data } = await api.GET('/courses/{course_id}/traces/{trace_id}/citations', {
+      const { data, error } = await api.GET('/courses/{course_id}/traces/{trace_id}/citations', {
         params: { path: { ...this.path, trace_id: turn.traceId } }
       });
+      if (error) throw error;
       turn.citations = data ?? [];
       turn.citationsLoaded = true;
+    } catch (caught) {
+      turn.citationsError = caught;
     } finally {
       turn.citationsLoading = false;
     }
   }
 
-  private async patch(
+  private patch(
+    conversationId: string,
+    body: components['schemas']['ConversationUpdate']
+  ): Promise<void> {
+    const job = this.patching
+      .catch(() => undefined)
+      .then(() => this.sendPatch(conversationId, body));
+    this.patching = job;
+    return job;
+  }
+
+  private async sendPatch(
     conversationId: string,
     body: components['schemas']['ConversationUpdate']
   ): Promise<void> {
@@ -245,6 +316,8 @@ export class CourseChats {
       params: { path: { ...this.path, conversation_id: conversationId } }
     });
     if (error) throw error;
+    this.removed.add(conversationId);
+    this.pending.delete(conversationId);
     this.conversations = this.conversations.filter((c) => c.conversation_id !== conversationId);
     if (this.activeId === conversationId) this.startNew();
   }

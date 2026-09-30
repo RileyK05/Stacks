@@ -209,17 +209,19 @@ def main(argv: list[str] | None = None) -> int:
             server = get_server()
             args.base_url = f"http://127.0.0.1:{server.port}/v1"
             args.local = True
-            for model_id in args.runtime_model:
-                started = time.perf_counter()
-                server.start(model_id)
-                print(f"{model_id}: loaded in {time.perf_counter() - started:.1f}s")
-                reports.append(_run_model(args, model_id, run_dir))
-            server.stop()
+            try:
+                for model_id in args.runtime_model:
+                    started = time.perf_counter()
+                    server.start(model_id)
+                    print(f"{model_id}: loaded in {time.perf_counter() - started:.1f}s")
+                    reports.append(_run_model(args, model_id, run_dir))
+            finally:
+                server.stop()
 
     for report in reports:
         total = report.passed + report.failed
         print(
-            f"{report.model}: {report.passed}/{total} passed"
+            f"{report.model}: {report.passed}/{total} contract checks passed"
             f" ({report.unresolved} unresolved), "
             f"{report.mean_seconds:.1f}s/case, "
             f"{report.input_tokens} in / {report.output_tokens} out tokens"
@@ -236,7 +238,10 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     print(f"report: {output}")
-    return 0 if all(not r.errors for r in reports) else 1
+    print("Mechanical checks only; inspect factual accuracy and usefulness separately.")
+    return 0 if reports and all(
+        r.passed > 0 and not (r.errors or r.failed or r.unresolved) for r in reports
+    ) else 1
 
 
 if __name__ == "__main__":

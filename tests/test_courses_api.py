@@ -93,3 +93,16 @@ def test_app_token_is_required_when_configured(
     assert client.get("/courses", headers={"X-App-Token": "wrong"}).status_code == 401
     ok = client.get("/courses", headers={"X-App-Token": "launch-secret"})
     assert ok.status_code == 200
+
+
+def test_course_names_are_trimmed_and_cannot_be_blank(client: TestClient) -> None:
+    """A whitespace-only name used to be accepted: a course with nothing to
+    click. Names are trimmed on create and rename."""
+    assert client.post("/courses", json={"name": "   "}).status_code == 422
+    course = _create(client, "  Biology 101  ")
+    assert course["name"] == "Biology 101"
+    course_id = course["course_id"]
+    blank = client.patch(f"/courses/{course_id}", json={"name": "  "})
+    assert blank.status_code == 422
+    renamed = client.patch(f"/courses/{course_id}", json={"name": " Chem "})
+    assert renamed.json()["name"] == "Chem"

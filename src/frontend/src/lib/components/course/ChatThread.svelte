@@ -14,13 +14,22 @@
     /** The model behind "Ask a bigger model"; null hides the button. */
     biggerModel: string | null;
     hasSources: boolean;
+    /** Some sources are still being read, so questions cannot use them yet. */
+    indexing?: boolean;
     onopenworkspace: (turnIndex: number) => void;
     /** Whether the right panel is currently shown (label only). */
     panelVisible: boolean;
   }
 
-  let { chats, canvas, biggerModel, hasSources, onopenworkspace, panelVisible }: Props =
-    $props();
+  let {
+    chats,
+    canvas,
+    biggerModel,
+    hasSources,
+    indexing = false,
+    onopenworkspace,
+    panelVisible
+  }: Props = $props();
 
   const QUESTION_MAX_LENGTH = 2000;
   let question = $state('');
@@ -38,20 +47,34 @@
     end?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }
 
+  async function finish(turn: Turn) {
+    await scrollToEnd();
+    // The student may have opened another chat while this one was thinking.
+    const index = chats.turns.indexOf(turn);
+    if (index !== -1 && turn.workspace.length > 0) onopenworkspace(index);
+  }
+
   async function send(text: string, bigger = false) {
     const trimmed = text.trim();
     if (!trimmed || chats.sending) return;
     void scrollToEnd();
-    const turn = await chats.send(trimmed, bigger);
-    await scrollToEnd();
-    if (turn.workspace.length > 0) onopenworkspace(chats.turns.length - 1);
+    await finish(await chats.send(trimmed, bigger));
+  }
+
+  async function retry(turn: Turn) {
+    void scrollToEnd();
+    const retried = await chats.retry(turn);
+    if (retried) await finish(retried);
   }
 
   function submit(event: SubmitEvent) {
     event.preventDefault();
+    // Keep what was typed while a reply is still coming.
+    if (chats.sending || !question.trim()) return;
     const text = question;
     question = '';
-    resize();
+    // The textarea only shrinks back once its cleared value is rendered.
+    void tick().then(resize);
     void send(text);
   }
 
@@ -95,7 +118,18 @@
       <Skeleton class="ml-auto h-10 w-1/2 rounded-2xl" />
     </div>
   {:else if chats.error}
-    <ErrorBanner error={chats.error} />
+    <div class="flex flex-col items-start gap-2">
+      <ErrorBanner error={chats.error} />
+      {#if chats.activeId}
+        <button
+          type="button"
+          onclick={() => chats.activeId && chats.open(chats.activeId)}
+          class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-fg"
+        >
+          <Icon name="rotate-ccw" class="h-3.5 w-3.5" /> Try again
+        </button>
+      {/if}
+    </div>
   {:else if chats.turns.length === 0}
     <div class="flex flex-col items-center rounded-2xl border border-line bg-surface px-6 py-10 text-center shadow-card sm:px-10 sm:py-14">
       <span class="flex h-12 w-12 items-center justify-center rounded-2xl bg-accent-soft text-accent-text ring-1 ring-accent-line/50">
@@ -103,7 +137,9 @@
       </span>
       <h2 class="mt-5 font-display text-2xl font-medium tracking-tight text-fg">What do you want to learn?</h2>
       <p class="mt-2 max-w-md text-[15px] leading-relaxed text-muted">
-        {#if hasSources}
+        {#if indexing && !hasSources}
+          Your sources are still being read. You can ask as soon as the first one is indexed.
+        {:else if hasSources}
           Answers cite the exact material they came from. Ask for a quiz or a study guide and it
           opens in the workspace beside the chat. Every chat is saved.
         {:else}
@@ -130,7 +166,7 @@
       {#each chats.turns as turn, index (index)}
         <article class="flex animate-rise flex-col gap-4">
           <div class="flex justify-end">
-            <p class="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-tr-md bg-accent-soft px-4 py-2.5 text-[15px] leading-relaxed text-fg">
+            <p class="max-w-[85%] whitespace-pre-wrap [overflow-wrap:anywhere] rounded-2xl rounded-tr-md bg-accent-soft px-4 py-2.5 text-[15px] leading-relaxed text-fg">
               {turn.question}
             </p>
           </div>
@@ -144,7 +180,7 @@
                 <ErrorBanner error={turn.error} />
                 <button
                   type="button"
-                  onclick={() => chats.retry(turn)}
+                  onclick={() => retry(turn)}
                   disabled={chats.sending}
                   class="inline-flex items-center gap-1.5 self-start rounded-lg px-2 py-1 text-xs font-medium text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
                 >
@@ -279,6 +315,14 @@
                         {/each}
                       </ol>
                     {/if}
+                    {#if turn.showSources && turn.citationsError}
+                      <div class="flex items-center justify-between gap-3 border-t border-line px-3.5 py-2.5 text-xs text-danger-text">
+                        <span>Could not load the cited passages.</span>
+                        <button type="button" class="font-medium underline" onclick={() => chats.loadCitations(turn)}>Try again</button>
+                      </div>
+                    {:else if turn.showSources && turn.citationsLoaded && turn.citations.length === 0}
+                      <p class="border-t border-line px-3.5 py-2.5 text-xs text-muted">No passages were returned for this answer.</p>
+                    {/if}
                   </div>
                 {/if}
               {/if}
@@ -302,7 +346,11 @@
         rows="1"
         maxlength={QUESTION_MAX_LENGTH}
         autocomplete="off"
-        placeholder={hasSources ? 'Ask something, or say: quiz me on …' : 'Add a source first'}
+        placeholder={hasSources
+          ? 'Ask something, or say: quiz me on …'
+          : indexing
+            ? 'Waiting for your sources to finish indexing…'
+            : 'Add a source first'}
         disabled={!hasSources}
         class="max-h-[200px] min-w-0 flex-1 resize-none self-center bg-transparent py-2 text-[15px] leading-relaxed text-fg placeholder:text-subtle focus:outline-none disabled:cursor-not-allowed"
       ></textarea>

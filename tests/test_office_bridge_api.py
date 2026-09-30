@@ -104,6 +104,24 @@ def test_courses_mark_the_one_office_was_opened_from(
     assert first.course_id != second.course_id
 
 
+@pytest.mark.parametrize("received", ["wrong-secret", "caf\u00e9-secret"])
+def test_bridge_rejects_invalid_tokens_without_crashing(monkeypatch, received) -> None:
+    from fastapi import HTTPException
+    from src.backend.api.office import require_office_token
+
+    monkeypatch.setenv("APP_OFFICE_TOKEN", "office-secret")
+    with pytest.raises(HTTPException) as caught:
+        require_office_token(received)
+    assert caught.value.status_code == 401
+
+
+def test_bridge_accepts_a_matching_unicode_token(monkeypatch) -> None:
+    from src.backend.api.office import require_office_token
+
+    monkeypatch.setenv("APP_OFFICE_TOKEN", "caf\u00e9-secret")
+    require_office_token("caf\u00e9-secret")
+
+
 # --- the merged reader --------------------------------------------------
 
 

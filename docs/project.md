@@ -72,7 +72,8 @@ that can be evaluated on real courses. The target is an ordinary laptop
 
 The system has six layers (mirrored by `src/backend/common/schemas/`). The
 SQLite baseline (migration 001) holds layers 1–3 and 6. Saved chats and
-typed artifacts have their own migrations; the student model remains planned.
+typed artifacts have their own migrations; adaptive practice and student memory
+use migration 008 (006 and 007 remain retired).
 
 ### 1. Courses
 
@@ -120,11 +121,15 @@ eval set, and fusion must beat the best single seam, or it is dropped.
 
 ### 4. Student model
 
-Assessment items (prompt, concepts tested, difficulty, rubric), attempts
-(multi-concept, confidence before feedback, evaluation, error category), concept
-mastery (a ladder: unseen → exposed → can recognize → can reproduce with
-cues → can apply independently → can transfer — not one fake-precise score), and
-recommendations ("what to study next," traceable to attempts and concepts).
+Complete multiple-choice practice suites retain every answer, help flag, source
+snapshot, and reviewed answer key. COURSE memory estimates each topic separately
+for recognition, explanation, application, counterexample, and transfer on a
+0–100 scale; untested capabilities remain unknown. Evidence strength and freshness
+accompany each estimate. Repeating a revealed question cannot establish
+proficiency. CORE memory holds teaching preferences and observations across
+courses. Chat supplies tentative experiments, never capability scores. Adaptation
+runs quietly; the Memory tab exposes evidence, corrections, and forgetting.
+See `docs/learning-memory.md` for the baseline policy and its limits.
 
 ### 5. Chat history
 
@@ -150,7 +155,7 @@ A single-course MVP for one student on their own laptop.
 
 1. I can install the app, create a course, and upload PDFs, Markdown notes, and text.
 2. I can open a movable, resizable companion beside another app and ask about
-   copied context without leaving the central library running in the background.
+   connected document snapshots, saved work sessions, and course references.
 3. I can keep separate saved conversations in a course, choose their
    sources and model, and open an answer's cited passage in the source.
 4. I can create and edit cited course notes, schedules, study decks, quizzes,

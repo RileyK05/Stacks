@@ -31,6 +31,10 @@
 
   function onKeydown(event: KeyboardEvent) {
     if (mode !== 'view' || total < 2) return;
+    // Arrow keys belong to whatever the student is typing into (the chat box).
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === 'ArrowRight') step(1);
     if (event.key === 'ArrowLeft') step(-1);
   }
@@ -80,7 +84,7 @@
       class="w-full resize-y rounded-xl border border-line-strong bg-surface p-4 font-mono text-[13px] leading-relaxed text-fg transition-[border-color,box-shadow] focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent/15"
     ></textarea>
     <p class="text-xs text-subtle">
-      Markdown; a line with just --- starts a new slide. Edits stay in this browser session.
+      Markdown; a line with just --- starts a new slide. Choose Save to artifacts to keep your edits.
     </p>
   {:else if total > 0}
     <div

@@ -1,0 +1,8 @@
+version = 1
+max_document_chars = 300000
+max_upload_bytes = 20000000
+document_context_chars = 8000
+history_context_chars = 2000
+source_context_chars = 5000
+section_chars = 1800
+capture_timeout_seconds = 20

@@ -1,26 +1,34 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, StringConstraints
+from src.backend.api.deps import require_course
 from src.backend.common import course_memory_repo, courses_repo
 from src.backend.common.schemas.identity import Course, CourseMemory
 
 router = APIRouter(tags=["courses"])
 
+# Trimmed before the length check: "   " used to pass min_length=1 and made a
+# course with no visible name (nothing to click, nothing to rename).
+CourseName = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+]
+
 
 class CourseCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=200)
+    name: CourseName
 
 
 class CourseUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=200)
+    name: CourseName
 
 
 class CourseView(BaseModel):
@@ -73,9 +81,7 @@ def list_courses() -> list[CourseView]:
 
 @router.get("/courses/{course_id}", response_model=CourseView)
 def get_course(course_id: UUID) -> CourseView:
-    course = courses_repo.get_course(course_id)
-    if course is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
+    course = require_course(course_id)
     return _view(course, courses_repo.source_stats([course_id]))
 
 

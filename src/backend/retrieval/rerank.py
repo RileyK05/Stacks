@@ -10,6 +10,7 @@ happens.
 from __future__ import annotations
 
 import logging
+import math
 
 from src.backend.common import provider
 from src.backend.retrieval.config import RerankPolicy, load_rerank_policy
@@ -30,8 +31,14 @@ def select_for_generation(
         scores = provider.rerank_scores(
             policy.model, question, [candidate.text for candidate in candidates]
         )
+        if len(scores) != len(candidates) or not all(
+            math.isfinite(float(score)) for score in scores
+        ):
+            raise ValueError("reranker returned invalid scores")
     except Exception:
-        logger.exception("reranker unavailable; keeping fused order")
+        logger.exception(
+            "reranker unavailable or returned invalid scores; keeping fused order"
+        )
         return candidates[: policy.generation_k]
     ranked = sorted(
         zip(scores, range(len(candidates)), candidates, strict=True),

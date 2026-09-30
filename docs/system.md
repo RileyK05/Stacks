@@ -206,10 +206,43 @@ Office.js type and logic checks, the production frontend build, and Rust clippy
 on Windows x64, Apple Silicon macOS, and Linux x64. Version tags trigger native
 build jobs and attach each platform's installers to the same release.
 
-## 12. Planned subsystem
+## 12. Adaptive practice and student memory
 
-The student model remains planned. Its intended records are diagnostic items,
-attempts, confidence, concept-linked errors, mastery states, and transparent
-study recommendations. It may not claim mastery from passive reading or chat
-activity. Implementation waits for a versioned evaluation path and real course
-use.
+Migration 008 adds immutable practice suites, complete test sessions, separate
+answer-key corrections, distilled course observations, a bounded experiment
+docket, teaching events, and cross-course method observations. Named queries live
+in `common/queries/learning.sql`; `student_model/learning.py` owns assessment,
+scoring, source-scoped practice planning, and method selection. All parameters
+are versioned in `configs/learning.toml`. `course_memory.refresh` remains the only
+writer of the course focus node.
+
+`tutor.answer` applies root presentation preferences and fenced course focus
+before generation, then pins generated quizzes to server-owned suites. Office
+and companion answers share presentation adaptation. Saved quizzes resolve their
+canonical version through the practice API. `PracticeSession` and `Quiz.svelte`
+handle both workspace and artifact tests; a result appears after the backend
+confirms the complete submission. Retry IDs prevent duplicated sessions.
+
+After an eligible saved chat exchange, `student_model/research.py` can propose up
+to two tentative checks through the chosen conversation provider. The app requires
+an exact student quote and cited passages, bounds the docket, and enforces its
+expiry, cooldown, and maximum checks. Research failure leaves the reply intact.
+It cannot assign proficiency or write behavior instructions.
+
+The optional course Memory tab exposes both scopes, supporting evidence, full
+sessions, exclusion/correction, and forgetting. `.course` archives include course
+practice and evidence, without copying global CORE preferences or duplicating
+CORE outcomes when imported. See `docs/learning-memory.md` for behavior contracts
+and verification evidence.
+
+
+## Companion document assistance (2026-09-29)
+
+The companion uses the `/api/companion/courses/{course_id}/work` API for saved
+work sessions (migration 009), outside the tutoring conversation and learning
+observation pipelines. Snapshot capture is explicit. Office's authenticated
+bridge can publish live document text or packages to the same work-session
+repository. A Windows reader offers accessibility text with window-render OCR
+fallback; capture remains partial until the host establishes document coverage.
+Long-document context selection reports its scope. `docs/companion-work.md`
+defines persistence, evidence, memory isolation, and first-version limitations.

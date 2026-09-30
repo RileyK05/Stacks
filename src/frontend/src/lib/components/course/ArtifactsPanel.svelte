@@ -41,7 +41,13 @@
     { kind: 'flashcards', hint: 'Terms to memorise' }
   ];
 
+  function focusOnMount(node: HTMLInputElement) {
+    node.focus();
+    node.select();
+  }
+
   async function create(kind: ArtifactKind) {
+    if (creating !== null) return;
     creating = kind;
     error = null;
     try {
@@ -134,8 +140,16 @@
             </div>
             {#if renaming === artifact.artifact_id}
               <form onsubmit={(event) => { event.preventDefault(); void rename(artifact.artifact_id); }} class="flex gap-2">
-                <input aria-label="Artifact title" bind:value={newTitle} maxlength="200" class="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-2 py-1 text-sm text-fg" />
+                <input
+                  aria-label="Artifact title"
+                  bind:value={newTitle}
+                  maxlength="200"
+                  use:focusOnMount
+                  onkeydown={(e) => e.key === 'Escape' && (renaming = null)}
+                  class="min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-2 py-1 text-sm text-fg"
+                />
                 <button type="submit" class="text-xs font-medium text-accent-text">Save</button>
+                <button type="button" onclick={() => (renaming = null)} class="text-xs text-muted hover:text-fg">Cancel</button>
               </form>
             {:else}
               <button

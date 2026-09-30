@@ -19,13 +19,15 @@
   import OfficeMenu from '$lib/components/course/OfficeMenu.svelte';
   import SourcePicker from '$lib/components/course/SourcePicker.svelte';
   import SourcesPanel from '$lib/components/course/SourcesPanel.svelte';
+  import MemoryPanel from '$lib/components/course/MemoryPanel.svelte';
   import { listArtifacts, saveFromMessage, type ArtifactSummary } from '$lib/stores/artifact.svelte';
   import { CourseChats, type ModelChoice } from '$lib/stores/chat.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
   import { PanelState } from '$lib/stores/panel.svelte';
   import { toast } from '$lib/stores/toast.svelte';
-  import { WorkspaceCanvas } from '$lib/stores/workspace.svelte';
+  import { draftForSaving, WorkspaceCanvas } from '$lib/stores/workspace.svelte';
   import { formatBytes } from '$lib/utils/format';
+  import { showCompanion } from '$lib/utils/companion';
   import { plural } from '$lib/utils/labels';
 
   type CourseView =
@@ -43,10 +45,10 @@
   let error = $state<unknown>(null);
   let actionError = $state<unknown>(null);
 
-  type Tab = 'chat' | 'artifacts' | 'sources';
+  type Tab = 'chat' | 'artifacts' | 'sources' | 'memory';
   const requestedTab = page.url.searchParams.get('tab');
   let activeTab = $state<Tab>(
-    requestedTab === 'artifacts' || requestedTab === 'sources' ? requestedTab : 'chat'
+    requestedTab === 'artifacts' || requestedTab === 'sources' || requestedTab === 'memory' ? requestedTab : 'chat'
   );
   let artifacts = $state<ArtifactSummary[]>([]);
   let artifactsLoading = $state(true);
@@ -62,6 +64,19 @@
   let thread = $state<ReturnType<typeof ChatThread> | null>(null);
   let workspaceRef = $state<HTMLElement | null>(null);
   let chatsOpen = $state(false);
+  let openingCompanion = $state(false);
+
+  async function openCourseCompanion() {
+    if (openingCompanion) return;
+    openingCompanion = true;
+    try {
+      await showCompanion(courseId);
+    } catch (caught) {
+      toast(caught instanceof Error ? caught.message : 'Could not open the companion.', 'error');
+    } finally {
+      openingCompanion = false;
+    }
+  }
 
   /** What Settings would answer with, and what "Ask a bigger model" uses. */
   let defaultModel = $state<string | null>(null);
@@ -81,12 +96,40 @@
   );
   let hasIndexed = $derived(sources.some((source) => source.status === 'indexed'));
 
+  let destroyed = false;
+
   onMount(() => {
     load().catch((err) => {
       error = err;
       loading = false;
     });
+    return () => {
+      destroyed = true;
+    };
   });
+
+  /** The header's counts and size come from the course itself: re-read them
+   * after anything that adds or removes sources or artifacts. */
+  async function refreshCourse() {
+    try {
+      const { data } = await api.GET('/courses/{course_id}', {
+        params: { path: { course_id: courseId } }
+      });
+      if (data && !destroyed) course = data;
+    } catch {
+      // The counts stay as they were; the next change tries again.
+    }
+  }
+
+  async function sourcesChanged() {
+    await loadSources();
+    void refreshCourse();
+  }
+
+  async function artifactsChanged() {
+    await loadArtifacts();
+    void refreshCourse();
+  }
 
   async function load() {
     loading = true;
@@ -120,20 +163,35 @@
   }
 
   async function loadArtifacts() {
-    artifactsLoading = true;
+    // The skeleton is only for the first load; later refreshes swap in place.
     try {
       artifacts = await listArtifacts(courseId);
+      // A tab open on an artifact that was deleted has nothing left to show.
+      panel.prune(new Set(artifacts.map((artifact) => artifact.artifact_id)));
+      // A rename or restore elsewhere bumps the version; an open tab still on
+      // the old one would report a false "changed elsewhere" on its next save.
+      for (const tab of panel.tabs) {
+        const fresh = artifacts.find((artifact) => artifact.artifact_id === tab.artifactId);
+        const open = tab.open;
+        if (fresh && open.artifact && fresh.version !== open.artifact.version && !open.dirty && !open.saving) {
+          void open.reload().then(() => (tab.title = open.title || tab.title));
+        }
+      }
     } finally {
       artifactsLoading = false;
     }
   }
 
   async function saveToArtifacts(turnIndex: number, itemIndex: number) {
-    const messageId = chats.turns[turnIndex]?.messageId;
-    if (!messageId) return;
+    const turn = chats.turns[turnIndex];
+    const messageId = turn?.messageId;
+    const session = turn?.workspace[itemIndex];
+    if (!messageId || !session) return;
+    const draft = draftForSaving(session);
     try {
-      const saved = await saveFromMessage(courseId, messageId, itemIndex);
+      const saved = await saveFromMessage(courseId, messageId, itemIndex, draft);
       artifacts = [saved, ...artifacts];
+      void refreshCourse();
       toast(`Saved "${saved.title}" to this course's artifacts.`);
     } catch (caught) {
       actionError = caught;
@@ -162,26 +220,33 @@
     // Poll every 1.5s while anything is in flight; one loop at a time.
     if (polling) return;
     polling = true;
+    let failures = 0;
     try {
-      for (let attempt = 0; attempt < 600 && anyPending; attempt++) {
+      for (let attempt = 0; attempt < 600 && anyPending && !destroyed; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, 1500));
-        if (!course) return;
-        const res = await api.GET('/courses/{course_id}/sources', {
-          params: { path: { course_id: courseId } }
-        });
-        if (res.data) sources = res.data;
+        if (destroyed) return;
+        try {
+          const res = await api.GET('/courses/{course_id}/sources', {
+            params: { path: { course_id: courseId } }
+          });
+          failures = 0;
+          if (res.data && !destroyed) sources = res.data;
+        } catch {
+          // A blip must not freeze the "Indexing" badges; give up after a few.
+          if (++failures >= 5) return;
+        }
       }
-    } catch {
-      // A failed poll just stops; the Sources tab has Retry.
     } finally {
       polling = false;
+      // Indexing changes the stored size and what the tutor can answer from.
+      if (!destroyed) void refreshCourse();
     }
   }
 
   $effect(() => {
     // Keep the open chat in the address, so a reload comes back to it.
     const id = chats.activeId;
-    if (loading) return;
+    if (loading || page.params.id !== courseId) return;
     const url = new URL(page.url);
     if (id) url.searchParams.set('chat', id);
     else url.searchParams.delete('chat');
@@ -228,19 +293,30 @@
     renaming = true;
   }
 
+  let savingRename = false;
+
   async function saveRename(event: SubmitEvent) {
     event.preventDefault();
+    const name = renameValue.trim();
+    if (!name || savingRename) return;
+    if (name === course?.name) {
+      renaming = false;
+      return;
+    }
     actionError = null;
+    savingRename = true;
     try {
       const { data, error: err } = await api.PATCH('/courses/{course_id}', {
         params: { path: { course_id: courseId } },
-        body: { name: renameValue }
+        body: { name }
       });
       if (err || !data) throw err ?? new Error('unexpected empty response');
       course = data;
       renaming = false;
     } catch (caught) {
       actionError = caught;
+    } finally {
+      savingRename = false;
     }
   }
 
@@ -264,8 +340,11 @@
   }
 
   async function reveal(path: string) {
-    const { error: err } = await api.POST('/settings/reveal', { body: { path } });
-    if (err) toast('Could not open the folder.', 'error');
+    try {
+      await api.POST('/settings/reveal', { body: { path } });
+    } catch {
+      toast('Could not open the folder.', 'error');
+    }
   }
 
   async function moveToTrash() {
@@ -294,7 +373,8 @@
   const tabs: { id: Tab; label: string; icon: IconName }[] = [
     { id: 'chat', label: 'Chat', icon: 'message-square' },
     { id: 'artifacts', label: 'Artifacts', icon: 'package' },
-    { id: 'sources', label: 'Sources', icon: 'file-text' }
+    { id: 'sources', label: 'Sources', icon: 'file-text' },
+    { id: 'memory', label: 'Memory', icon: 'bookmark' }
   ];
 </script>
 
@@ -325,6 +405,7 @@
                 required
                 maxlength={200}
                 aria-label="Course name"
+                onkeydown={(e) => e.key === 'Escape' && (renaming = false)}
                 class="min-w-0 flex-1 rounded-lg border border-line-strong bg-surface px-3 py-1.5 font-display text-xl text-fg focus:border-accent focus:outline-none"
               />
               <Button type="submit" size="sm">Save</Button>
@@ -343,6 +424,9 @@
         </div>
       </div>
       <div class="flex shrink-0 flex-wrap items-center gap-1">
+        <Button variant="secondary" size="sm" onclick={openCourseCompanion} loading={openingCompanion}>
+          <Icon name="panel-right" class="h-4 w-4" /> Companion
+        </Button>
         <OfficeMenu {courseId} />
         <Button variant="ghost" size="sm" onclick={startRename}>
           <Icon name="pencil" class="h-4 w-4" /> Rename
@@ -460,6 +544,7 @@
                 {canvas}
                 {biggerModel}
                 hasSources={hasIndexed}
+                indexing={anyPending}
                 onopenworkspace={openWorkspace}
                 panelVisible={rightOpen}
               />
@@ -488,14 +573,18 @@
         {courseId}
         {artifacts}
         loading={artifactsLoading}
-        onchanged={loadArtifacts}
+        onchanged={artifactsChanged}
         onopen={(summary) => {
           activeTab = 'chat';
           void panel.openArtifact(summary);
         }}
       />
     {:else}
-      <SourcesPanel {courseId} {sources} onchanged={loadSources} />
+      {#if activeTab === 'memory'}
+        <MemoryPanel {courseId} />
+      {:else}
+        <SourcesPanel {courseId} {sources} onchanged={sourcesChanged} />
+      {/if}
     {/if}
   </div>
 {/if}

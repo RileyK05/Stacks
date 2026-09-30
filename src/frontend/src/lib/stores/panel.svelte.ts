@@ -70,6 +70,17 @@ export class PanelState {
     this.persist();
   }
 
+  /** Drop tabs whose artifact no longer exists (deleted elsewhere). */
+  prune(existing: Set<string>): void {
+    const kept = this.tabs.filter((tab) => existing.has(tab.artifactId));
+    if (kept.length === this.tabs.length) return;
+    this.tabs = kept;
+    if (this.activeId !== null && !existing.has(this.activeId)) {
+      this.activeId = kept[kept.length - 1]?.artifactId ?? null;
+    }
+    this.persist();
+  }
+
   hide(): void {
     this.visible = false;
     this.persist();

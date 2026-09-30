@@ -185,12 +185,18 @@ def reindex_source(course_id: UUID, source_id: UUID) -> bool:
 
 
 def delete_source(course_id: UUID, source_id: UUID) -> bool:
-    """Remove one source: its rows cascade, then its stored file goes."""
+    """Remove one source: its rows cascade, chats stop being narrowed to it,
+    then its stored file goes."""
     with connection() as conn:
         row = conn.execute(
             get(_FILE, "delete_source"),
             {"course_id": course_id, "source_id": source_id},
         ).fetchone()
+        if row is not None:
+            conn.execute(
+                get(_FILE, "prune_source_from_chats"),
+                {"course_id": course_id, "source_id": source_id},
+            )
         conn.commit()
     if row is None:
         return False

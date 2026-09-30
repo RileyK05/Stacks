@@ -52,9 +52,15 @@ def test_background_falls_back_to_interactive_choice() -> None:
     assert interactive is not None and interactive.model == "minicpm5-2b"
 
 
-def test_cloud_preset_needs_its_key(_memory_keyring: dict[str, str]) -> None:
+def test_cloud_preset_needs_its_key(
+    _memory_keyring: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLM_BASE_URL", "https://dev-endpoint.test/v1")
+    monkeypatch.setenv("LLM_MODEL", "dev-model")
     providers.save_choice(TaskClass.INTERACTIVE, ProviderChoice(preset="openrouter"))
-    assert providers.resolve(TaskClass.INTERACTIVE) is None, "no key yet"
+    assert providers.resolve(TaskClass.INTERACTIVE) is None, (
+        "an unavailable explicit choice must not silently switch providers"
+    )
     _memory_keyring["openrouter"] = "sk-or-test"
     resolved = providers.resolve(TaskClass.INTERACTIVE)
     assert resolved is not None
@@ -320,6 +326,30 @@ def test_http_429_raises_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("<think>private reasoning</think>final answer", "final answer"),
+        ([{"type": "text", "text": "final answer"}], "final answer"),
+    ],
+)
+def test_transport_returns_only_visible_text(
+    monkeypatch: pytest.MonkeyPatch, content: Any, expected: str
+) -> None:
+    payload = {"choices": [{"message": {"content": content}}], "usage": {}}
+    _capture_post(monkeypatch, _Response(200, payload))
+    assert REAL_CALL("tutor_answer", _endpoint(), "prompt")[0] == expected
+
+
+def test_transport_rejects_truncated_output(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = {
+        "choices": [{"message": {"content": '{"partial":'}, "finish_reason": "length"}]
+    }
+    _capture_post(monkeypatch, _Response(200, payload))
+    with pytest.raises(provider.ModelOutputTruncatedError, match="output limit"):
+        REAL_CALL("tutor_answer", _endpoint(), "prompt")
+
+
+@pytest.mark.parametrize(
     "response",
     [_Response(500, {}), _Response(200, {"choices": []}), _Response(200, {"x": 1})],
 )
@@ -329,3 +359,122 @@ def test_transport_failures_fail_closed(
     _capture_post(monkeypatch, response)
     with pytest.raises(provider.ProviderUnavailableError):
         REAL_CALL("tutor_answer", _endpoint(), "prompt")
+
+
+def _sequence_post(monkeypatch: pytest.MonkeyPatch, *responses: Any) -> list[dict]:
+    """Serve `responses` in order; record a copy of each request body (the
+    call adjusts its body in place between attempts)."""
+    captured: list[dict] = []
+    queue = list(responses)
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured.append(dict(json))
+        return queue.pop(0)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(provider, "_ADAPTATIONS", {})
+    return captured
+
+
+def test_rejection_carries_the_providers_own_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare "custom rejected the request (400)" is undiagnosable: the
+    student sees the endpoint's words and which setting to change."""
+    body = {"error": {"code": "400", "message": "Unsupported model mimo-2.6-flash"}}
+    _sequence_post(monkeypatch, _Response(400, body))
+    endpoint = _endpoint(name="custom", label="Xiaomi", is_local=False, model="m")
+    with pytest.raises(provider.ProviderRequestRejectedError) as caught:
+        REAL_CALL("tutor_answer", endpoint, "prompt")
+    message = str(caught.value)
+    assert message.startswith("Xiaomi rejected the request (400)")
+    assert "Unsupported model mimo-2.6-flash" in message
+    assert "model name in Settings" in message
+
+
+def test_openrouter_upstream_error_prefers_the_raw_reason() -> None:
+    body = {
+        "error": {
+            "message": "Provider returned error",
+            "metadata": {"raw": "context length exceeded"},
+        }
+    }
+    assert provider.provider_error_detail(_Response(400, body)) == (
+        "context length exceeded"
+    )
+
+
+def test_named_unsupported_parameters_are_adapted_and_remembered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Newer OpenAI models refuse `max_tokens` and custom temperatures."""
+    tokens = {
+        "error": {
+            "message": "Unsupported parameter: 'max_tokens'. "
+            "Use 'max_completion_tokens' instead."
+        }
+    }
+    temperature = {
+        "error": {
+            "message": "Unsupported value: 'temperature' does "
+            "not support 0.2 with this model."
+        }
+    }
+    captured = _sequence_post(
+        monkeypatch,
+        _Response(400, tokens),
+        _Response(400, temperature),
+        _Response(200, OK_BODY),
+        _Response(200, OK_BODY),
+    )
+    endpoint = _endpoint(name="openai", is_local=False, model="gpt-x", api_key="sk")
+    assert REAL_CALL("tutor_answer", endpoint, "p")[0] == "hello"
+    assert "max_tokens" in captured[0] and "temperature" in captured[0]
+    assert "max_completion_tokens" in captured[2] and "temperature" not in captured[2]
+    REAL_CALL("tutor_answer", endpoint, "p")
+    assert len(captured) == 4, "the second call goes straight through"
+    assert "max_tokens" not in captured[3] and "temperature" not in captured[3]
+
+
+def test_unfixable_rejection_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _sequence_post(
+        monkeypatch, _Response(403, {"error": {"message": "not for you"}})
+    )
+    with pytest.raises(provider.ProviderRequestRejectedError, match="not for you"):
+        REAL_CALL("tutor_answer", _endpoint(), "p")
+    assert len(captured) == 1
+
+
+def test_error_inside_a_200_is_reported_not_a_parse_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _sequence_post(
+        monkeypatch, _Response(200, {"error": {"message": "upstream overloaded"}})
+    )
+    with pytest.raises(provider.ProviderUnavailableError, match="upstream overloaded"):
+        REAL_CALL("tutor_answer", _endpoint(), "p")
+
+
+def test_probe_accepts_a_reply_cut_short_by_thinking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    truncated = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+    _sequence_post(monkeypatch, _Response(200, truncated))
+    monkeypatch.setattr(provider, "_call_provider", REAL_CALL)
+    provider.probe(_endpoint())
+
+
+def test_failed_local_fallback_keeps_the_rate_limit_message(
+    monkeypatch: pytest.MonkeyPatch, _memory_keyring: dict[str, str]
+) -> None:
+    _memory_keyring["openrouter"] = "sk-or-test"
+    providers.save_choice(TaskClass.INTERACTIVE, ProviderChoice(preset="openrouter"))
+
+    def fake_call(task, endpoint, prompt, **kwargs):
+        if endpoint.is_local:
+            raise provider.ProviderUnavailableError("the local model could not start")
+        raise provider.ProviderRateLimitedError("OpenRouter is rate-limiting requests")
+
+    monkeypatch.setattr(provider, "_call_provider", fake_call)
+    with pytest.raises(provider.ProviderRateLimitedError, match="rate-limiting"):
+        provider.generate("tutor_answer", "prompt")

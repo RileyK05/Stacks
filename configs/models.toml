@@ -40,7 +40,7 @@ disclosure = true
 [presets.openrouter]
 label = "OpenRouter"
 base_url = "https://openrouter.ai/api/v1"
-default_model = "inclusionai/ling-3.0-tiny:free"
+default_model = "nvidia/nemotron-3.5-lightning:free"
 requires_key = true
 disclosure = true
 

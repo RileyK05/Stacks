@@ -26,6 +26,7 @@ from src.backend.api import (
     conversations,
     courses,
     data,
+    learning,
     office_setup,
     runtime,
     settings,
@@ -73,6 +74,7 @@ def create_api() -> FastAPI:
     api.include_router(settings.router)
     api.include_router(runtime.router)
     api.include_router(data.router)
+    api.include_router(learning.router)
     api.include_router(office_setup.router)
 
     @api.get("/health")
@@ -124,6 +126,9 @@ def create_app() -> FastAPI:
         allow_origins=cors_origins(),
         allow_methods=["*"],
         allow_headers=["*"],
+        # A cross-origin webview can only read response headers listed here;
+        # the source viewer needs the PDF page count (api/sources.py).
+        expose_headers=["X-Page-Count"],
         max_age=600,
     )
     app.mount("/api", create_api())

@@ -198,6 +198,95 @@ def test_sources_must_belong_to_the_course(client: TestClient) -> None:
 # --- from a chat ---
 
 
+def _stored_workspace_reply(client: TestClient, item: dict[str, Any]):
+    from src.backend.common import conversations_repo
+    from src.backend.common.db import connection
+
+    course_id, chunks = _course(client)
+    chat = conversations_repo.create(UUID(course_id))
+    with connection() as conn:
+        _, reply = conversations_repo.add_turn(
+            conn,
+            chat.conversation_id,
+            question="Make study material",
+            answer="Here is the original study material.",
+            trace_id=None,
+            payload={
+                "chunk_ids": [str(chunk) for chunk in chunks],
+                "trace_id": "",
+                "workspace": [item],
+            },
+        )
+        conn.commit()
+    return course_id, chunks, chat.conversation_id, reply.message_id
+
+
+@pytest.mark.parametrize(
+    ("item", "draft", "expected"),
+    [
+        (
+            {"type": "document", "content": "Original notes [2]", "sources": [2]},
+            "My corrected notes [2]",
+            {"markdown": "My corrected notes [1]"},
+        ),
+        (
+            {"type": "document", "content": "Original notes [2]", "sources": [2]},
+            "",
+            {"markdown": ""},
+        ),
+        (
+            {"type": "sheet", "columns": ["Topic", "Definition"],
+             "rows": [["Original", "Definition [2]"]], "sources": [2]},
+            [["Corrected", "My definition [2]"], ["Added", "My new row [2]"]],
+            {"columns": ["Topic", "Definition"],
+             "rows": [["Corrected", "My definition [1]"], ["Added", "My new row [1]"]]},
+        ),
+        (
+            {"type": "slides", "deck": "# Original\nOld detail [2]", "sources": [2]},
+            "# Corrected\nMy detail [2]\n\n---\n\n# Added\nMy new slide [2]",
+            {"slides": [
+                {"title": "Corrected", "body": "My detail [1]", "notes": ""},
+                {"title": "Added", "body": "My new slide [1]", "notes": ""},
+            ]},
+        ),
+    ],
+)
+def test_saving_and_reopening_a_workspace_keeps_the_students_edits(
+    client: TestClient, item, draft, expected,
+) -> None:
+    course_id, chunks, chat_id, message_id = _stored_workspace_reply(client, item)
+    saved = client.post(
+        f"/courses/{course_id}/artifacts/from-message",
+        json={"message_id": str(message_id), "draft": draft},
+    )
+    assert saved.status_code == 201, saved.text
+    artifact_id = saved.json()["artifact_id"]
+    reopened = client.get(f"/courses/{course_id}/artifacts/{artifact_id}").json()
+    assert reopened["content"] == expected
+    assert reopened["sources"] == [str(chunks[1])]
+    assert reopened["origin"]["message_id"] == str(message_id)
+    versions = client.get(
+        f"/courses/{course_id}/artifacts/{artifact_id}/versions"
+    ).json()
+    assert versions[0]["author"] == "you"
+    history = client.get(f"/courses/{course_id}/conversations/{chat_id}").json()
+    assert history["messages"][1]["answer"]["workspace"][0] == item | {"title": None}
+
+
+@pytest.mark.parametrize("draft", ["Unsupported citation [3]", [["wrong shape"]]])
+def test_a_workspace_draft_cannot_change_its_evidence_or_kind(
+    client: TestClient, draft,
+) -> None:
+    item = {"type": "document", "content": "Original notes [2]", "sources": [2]}
+    course_id, _, _, message_id = _stored_workspace_reply(client, item)
+    saved = client.post(
+        f"/courses/{course_id}/artifacts/from-message",
+        json={"message_id": str(message_id), "draft": draft},
+    )
+    assert saved.status_code == 422, saved.text
+    assert client.get(f"/courses/{course_id}/artifacts").json() == []
+
+
 def _quiz_reply() -> str:
     return json.dumps(
         {
@@ -665,3 +754,61 @@ def test_listing_skips_kinds_from_the_retired_office_editors(
     listed = client.get(f"/courses/{course['course_id']}/artifacts")
     assert listed.status_code == 200
     assert [a["title"] for a in listed.json()] == ["Notes"]
+
+
+def test_export_to_a_locked_file_explains_itself(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Saving over a document that is open in Word is a PermissionError on
+    Windows; the user must get a readable message, not a bare 500."""
+    course_id, _ = _course(client)
+    doc = _create(client, course_id, "doc", title="Study guide")
+
+    def locked(self: Path, data: bytes) -> int:
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "write_bytes", locked)
+    response = client.post(
+        f"/courses/{course_id}/artifacts/{doc['artifact_id']}/export",
+        json={"format": "docx", "path": str(tmp_path / "Study guide.docx")},
+    )
+    assert response.status_code == 409
+    assert "Study guide.docx" in response.json()["detail"]
+    assert "Permission denied" in response.json()["detail"]
+
+
+def test_blank_titles_are_refused_and_padding_is_trimmed(client: TestClient) -> None:
+    course_id, _ = _course(client)
+    doc = _create(client, course_id, "doc", title="Notes")
+    assert _save(client, course_id, doc, title="   ").status_code == 422
+    renamed = client.post(
+        f"/courses/{course_id}/artifacts/{doc['artifact_id']}/rename",
+        json={"base_version": 1, "title": "  Week 1  "},
+    )
+    assert renamed.status_code == 200 and renamed.json()["title"] == "Week 1"
+    blank = client.post(
+        f"/courses/{course_id}/artifacts/{doc['artifact_id']}/rename",
+        json={"base_version": 2, "title": " "},
+    )
+    assert blank.status_code == 422
+
+
+def test_an_edit_still_works_when_the_embedding_model_is_unavailable(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Like every other question endpoint, editing falls back to keyword
+    search instead of failing with a 503 when the encoder cannot load."""
+    from src.backend.common import provider
+
+    def unavailable(text: str) -> list[float]:
+        raise provider.ProviderUnavailableError("embedding model unavailable")
+
+    monkeypatch.setattr(provider, "embed_query", unavailable)
+    course_id, _ = _course(client)
+    doc = _create(client, course_id, "doc")
+    configure_test_provider(monkeypatch, "# Linearity\nIt preserves addition [1].\n")
+    proposal = client.post(
+        f"/courses/{course_id}/artifacts/{doc['artifact_id']}/propose-edit",
+        json={"request": "write about linearity and addition"},
+    )
+    assert proposal.status_code == 200, proposal.text

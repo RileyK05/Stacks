@@ -75,6 +75,12 @@ def export_course(course_id: UUID) -> ExportView:
         )
     except LookupError as err:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found") from err
+    except OSError as err:
+        raise HTTPException(
+            status.HTTP_507_INSUFFICIENT_STORAGE,
+            f"couldn't write the export to {get_settings().export_dir}: "
+            f"{err.strerror or err}",
+        ) from err
     return ExportView(
         path=str(result.path),
         filename=result.path.name,

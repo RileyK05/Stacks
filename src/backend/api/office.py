@@ -39,12 +39,27 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
-from src.backend.common import courses_repo, provider, sources_repo, usage_repo
+from src.backend.common import (
+    courses_repo,
+    provider,
+    sources_repo,
+    usage_repo,
+    work_repo,
+)
 from src.backend.common.config import get_settings
 from src.backend.common.db import connection
 from src.backend.common.embeddings_config import load_embedding_policy
+from src.backend.common.schemas.work import (
+    DocumentUpdate,
+    WorkCreate,
+    WorkPackage,
+    WorkPublish,
+    WorkSession,
+)
 from src.backend.office_addin import service as office_service
+from src.backend.office_reader.work_files import read_work_file
 from src.backend.retrieval.config import load_retrieval_policy
+from src.backend.tutor import answer as tutor_answer
 from src.backend.tutor import office as office_tutor
 
 router = APIRouter(tags=["office"])
@@ -63,7 +78,9 @@ def require_office_token(
     expected = get_settings().office_bridge_token
     if not expected:
         return
-    if x_office_token is None or not hmac.compare_digest(x_office_token, expected):
+    if x_office_token is None or not hmac.compare_digest(
+        x_office_token.encode("utf-8"), expected.encode("utf-8")
+    ):
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED, "missing or invalid office token"
         )
@@ -244,7 +261,7 @@ def assist(request: AssistRequest) -> AssistResult:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
     action = office_tutor.OfficeAction(request.action)
     try:
-        query_embedding = provider.embed_query(
+        query_embedding = tutor_answer.embed_search(
             f"{request.instruction}\n{request.context[:600]}".strip()
         )
         with connection() as conn:
@@ -366,4 +383,68 @@ def read_document(request: ReadRequest) -> ReadResult:
         ],
         warnings=list(merged.warnings),
         units=[{"label": unit.label, "text": unit.text} for unit in merged.units],
+    )
+
+
+@router.post(
+    "/work-document",
+    response_model=WorkSession,
+    dependencies=[Depends(require_office_token)],
+)
+def publish_work(request: WorkPublish) -> WorkSession:
+    if courses_repo.get_course(request.course_id) is None:
+        raise HTTPException(404, "course not found")
+    try:
+        with connection() as conn:
+            session_id = request.session_id
+            if session_id is None:
+                work = work_repo.create(
+                    conn,
+                    request.course_id,
+                    WorkCreate(title=request.document.title, purpose=request.purpose),
+                )
+                session_id = work.session_id
+            document = request.document.model_copy(update={"origin": "office"})
+            work = work_repo.update_document(
+                conn,
+                request.course_id,
+                session_id,
+                DocumentUpdate(
+                    **document.model_dump(), expected_revision=request.expected_revision
+                ),
+            )
+            conn.commit()
+            return work
+    except work_repo.WorkNotFoundError as err:
+        raise HTTPException(404, str(err)) from err
+    except work_repo.WorkConflictError as err:
+        raise HTTPException(409, str(err)) from err
+    except ValueError as err:
+        raise HTTPException(422, str(err)) from err
+
+
+@router.post(
+    "/work-package",
+    response_model=WorkSession,
+    dependencies=[Depends(require_office_token)],
+)
+def publish_package(request: WorkPackage) -> WorkSession:
+    try:
+        document = read_work_file(
+            request.filename, _decode(request.package_b64, what="package_b64")
+        )
+    except Exception as err:
+        raise HTTPException(
+            422,
+            "The Office document could not be read. Connect a text version instead.",
+        ) from err
+    document.external_id = request.external_id
+    return publish_work(
+        WorkPublish(
+            course_id=request.course_id,
+            session_id=request.session_id,
+            expected_revision=request.expected_revision,
+            purpose=request.purpose,
+            document=document,
+        )
     )

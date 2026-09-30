@@ -22,10 +22,15 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
+from src.backend.common.schemas.learning import Capability
 
-WORKSPACE_BLOCK_RE = re.compile(r"```workspace[ \t]*\r?\n(.*?)```", re.DOTALL)
+WORKSPACE_BLOCK_RE = re.compile(
+    r"```workspace[ \t]*\r?\n(.*?)(?:^```[ \t]*(?=\r?$)|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
 INLINE_CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
@@ -35,6 +40,8 @@ class QuizQuestion(BaseModel):
     answer: int
     explanation: str | None = None
     sources: list[int] = Field(min_length=1)
+    topic: str = Field(default="", max_length=160)
+    capability: Capability = "recognition"
 
     @model_validator(mode="after")
     def _answer_is_an_option(self) -> QuizQuestion:
@@ -50,6 +57,7 @@ class WorkspaceQuiz(BaseModel):
     type: Literal["quiz"]
     title: str | None = None
     questions: list[QuizQuestion] = Field(min_length=1, max_length=20)
+    practice_id: UUID | None = None
 
 
 class WorkspaceDocument(BaseModel):
@@ -72,6 +80,16 @@ class WorkspaceCode(BaseModel):
     language: str | None = None
     code: str = Field(min_length=1)
     sources: list[int] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _python_syntax(self) -> WorkspaceCode:
+        if (self.language or "").strip().casefold() in {"python", "python3", "py"}:
+            try:
+                # Compilation checks syntax without executing generated code.
+                compile(self.code, "<workspace>", "exec")
+            except (SyntaxError, ValueError) as err:
+                raise ValueError("Python code has invalid syntax") from err
+        return self
 
 
 class WorkspaceSheet(BaseModel):

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+  import { page } from '$app/state';
   import type { QuizSession } from '$lib/stores/workspace.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
@@ -7,22 +9,30 @@
   interface Props {
     session: QuizSession;
     sources: SourceRef[];
-    onfollowup: (question: string) => void;
+    onfollowup?: (question: string) => void;
+    courseId?: string;
   }
 
-  let { session, sources, onfollowup }: Props = $props();
+  let { session, sources, onfollowup, courseId = page.params.id ?? '' }: Props = $props();
+  $effect(() => {
+    const current = session;
+    const course = courseId;
+    untrack(() => { void current.connect(course); });
+  });
 
-  const questions = $derived(session.quiz.questions);
+  const questions = $derived(session.questions);
   const followUp = $derived(session.submitted ? session.missedFollowUp() : null);
   const answered = $derived(session.responses.filter((response) => response !== null).length);
-  const perfect = $derived(session.submitted && session.score === questions.length);
+  const assessed = $derived(session.run?.results.filter((result) => result !== null).length ?? questions.length);
+  const perfect = $derived(session.submitted && assessed > 0 && session.score === assessed);
 
   type OptionState = 'idle' | 'picked' | 'correct' | 'wrong' | 'dim';
 
   function optionState(questionIndex: number, optionIndex: number): OptionState {
     const picked = session.responses[questionIndex] === optionIndex;
     if (!session.submitted) return picked ? 'picked' : 'idle';
-    if (optionIndex === questions[questionIndex].answer) return 'correct';
+    if (session.correctAnswer(questionIndex) === null) return 'dim';
+    if (optionIndex === session.correctAnswer(questionIndex)) return 'correct';
     return picked ? 'wrong' : 'dim';
   }
 
@@ -44,6 +54,13 @@
 </script>
 
 <div class="flex flex-col gap-7">
+  {#if session.error}
+    <div class="rounded-lg border border-danger/40 p-3 text-sm text-danger-text" role="alert">
+      <p>{session.error}</p>
+      {#if !session.ready}<Button variant="secondary" onclick={() => session.connect(courseId)}>Retry loading</Button>{/if}
+    </div>
+  {/if}
+  {#if session.loading}<p class="text-sm text-muted">Loading practice history…</p>{/if}
   {#if session.submitted}
     <div
       class={`flex items-center gap-4 rounded-xl border p-4 ${
@@ -51,14 +68,14 @@
       }`}
     >
       <p class="font-display text-3xl font-medium tabular-nums text-fg">
-        {session.score}<span class="text-lg text-subtle">/{questions.length}</span>
+        {session.score}<span class="text-lg text-subtle">/{assessed}</span>
       </p>
       <div class="min-w-0">
         <p class="text-sm font-semibold text-fg">
           {perfect ? 'Perfect score!' : session.score === 0 ? 'Worth another look' : 'Nice work — a few to review'}
         </p>
         <p class="text-[13px] text-muted">
-          {perfect ? 'Every answer was correct.' : 'Correct answers are highlighted below with an explanation.'}
+          Saved test session. {questions.length - assessed > 0 ? `${questions.length - assessed} flagged question(s) excluded.` : 'Answers are checked against the current key.'}
         </p>
       </div>
     </div>
@@ -77,7 +94,7 @@
         <button
           type="button"
           onclick={() => session.choose(questionIndex, optionIndex)}
-          disabled={session.submitted}
+          disabled={session.submitted || session.saving || session.submissionPending || !session.ready}
           aria-pressed={session.responses[questionIndex] === optionIndex}
           class={`flex w-full items-start gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition-all ${optionStyles[state]}`}
         >
@@ -96,23 +113,29 @@
         </button>
       {/each}
       {#if session.submitted}
+        {#if session.correctAnswer(questionIndex) === null}
+          <p class="text-sm text-muted">This question is flagged and does not affect memory.</p>
+        {/if}
         {#if question.explanation}
           <p class="mt-1 flex gap-2 rounded-lg bg-surface-2 px-3 py-2.5 text-[13px] leading-relaxed text-muted">
             <Icon name="info" class="mt-0.5 h-3.5 w-3.5 text-subtle" />
             <span>{question.explanation}</span>
           </p>
         {/if}
-        <SourceChips cited={question.sources} {sources} />
+        <SourceChips cited={question.sources ?? []} sources={session.evidence.length ? session.evidence : sources} />
+        <button type="button" onclick={() => session.challenge(questionIndex)} disabled={session.saving || session.correctAnswer(questionIndex) === null} class="self-start text-xs text-muted hover:underline disabled:opacity-40">Flag an incorrect or ambiguous question</button>
+      {:else}
+        <label class="flex gap-2 text-xs text-muted"><input type="checkbox" bind:checked={session.helped[questionIndex]} disabled={session.saving || session.submissionPending || !session.ready} /> I used help or notes</label>
       {/if}
     </fieldset>
   {/each}
 
   <div class="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
     {#if session.submitted}
-      <Button variant="ghost" onclick={() => session.reset()}>
+      <Button variant="ghost" onclick={() => session.reset()} disabled={session.saving}>
         <Icon name="rotate-ccw" class="h-4 w-4" /> Try again
       </Button>
-      {#if followUp}
+      {#if followUp && onfollowup}
         <Button variant="soft" onclick={() => onfollowup(followUp)}>
           <Icon name="sparkles" class="h-4 w-4" /> Ask about what I missed
         </Button>
@@ -127,7 +150,7 @@
         </div>
         <p class="whitespace-nowrap text-xs text-subtle">{answered}/{questions.length} answered</p>
       </div>
-      <Button onclick={() => session.submit()} disabled={!session.answeredAll}>Submit answers</Button>
+      <Button onclick={() => session.submit()} disabled={!session.answeredAll || !session.ready || session.saving}>{session.saving ? 'Saving test…' : 'Submit answers'}</Button>
     {/if}
   </div>
 </div>

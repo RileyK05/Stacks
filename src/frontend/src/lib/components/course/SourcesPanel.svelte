@@ -34,6 +34,8 @@
   let uploadError = $state<unknown>(null);
   let actionError = $state<unknown>(null);
   let dragOver = $state(false);
+  /** The source with a retry / reindex / remove in flight: one click, one request. */
+  let busyId = $state<string | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
 
   const sourceTypeOptions = [
@@ -50,40 +52,52 @@
     'code'
   ].map((value) => ({ value: value as SourceType, label: humanize(value) }));
 
-  async function uploadFile(file: File) {
+  async function uploadFiles(files: File[]) {
+    if (uploading || files.length === 0) return;
     uploading = true;
     uploadError = null;
+    let uploaded = 0;
     try {
-      const form = new FormData();
-      form.append('file', file);
-      form.append('source_type', sourceType);
-      const { error: err } = await api.POST('/courses/{course_id}/sources', {
-        params: { path: { course_id: courseId } },
-        body: form as unknown as UploadBody
-      });
-      if (err) throw err;
-      if (fileInput) fileInput.value = '';
-      await onchanged();
-    } catch (caught) {
-      uploadError = caught;
+      for (const file of files) {
+        const form = new FormData();
+        form.append('file', file);
+        form.append('source_type', sourceType);
+        try {
+          await api.POST('/courses/{course_id}/sources', {
+            params: { path: { course_id: courseId } },
+            body: form as unknown as UploadBody
+          });
+          uploaded += 1;
+        } catch (caught) {
+          // Keep going: one bad file should not drop the rest of the batch.
+          uploadError = files.length > 1 ? new Error(`${file.name}: ${errorText(caught)}`) : caught;
+        }
+      }
     } finally {
+      // Picking the same file again must fire a change event again.
+      if (fileInput) fileInput.value = '';
       uploading = false;
     }
+    if (uploaded > 0) await onchanged().catch(() => undefined);
+  }
+
+  function errorText(caught: unknown): string {
+    return caught instanceof Error ? caught.message : 'upload failed';
   }
 
   function onFilePicked() {
-    const file = fileInput?.files?.[0];
-    if (file) void uploadFile(file);
+    void uploadFiles(Array.from(fileInput?.files ?? []));
   }
 
   function onDrop(event: DragEvent) {
     event.preventDefault();
     dragOver = false;
-    const file = event.dataTransfer?.files?.[0];
-    if (file) void uploadFile(file);
+    void uploadFiles(Array.from(event.dataTransfer?.files ?? []));
   }
 
   async function requeue(sourceId: string) {
+    if (busyId) return;
+    busyId = sourceId;
     actionError = null;
     try {
       const { error: err } = await api.POST('/courses/{course_id}/sources/{source_id}/requeue', {
@@ -93,10 +107,14 @@
       await onchanged();
     } catch (caught) {
       actionError = caught;
+    } finally {
+      busyId = null;
     }
   }
 
   async function reindex(sourceId: string) {
+    if (busyId) return;
+    busyId = sourceId;
     actionError = null;
     try {
       const { error: err } = await api.POST('/courses/{course_id}/sources/{source_id}/reindex', {
@@ -107,6 +125,8 @@
       toast('Reindexing source with the latest extraction.');
     } catch (caught) {
       actionError = caught;
+    } finally {
+      busyId = null;
     }
   }
 
@@ -120,6 +140,8 @@
       }))
     )
       return;
+    if (busyId) return;
+    busyId = sourceId;
     actionError = null;
     try {
       const { error: err } = await api.DELETE('/courses/{course_id}/sources/{source_id}', {
@@ -130,6 +152,8 @@
       toast('File removed.');
     } catch (caught) {
       actionError = caught;
+    } finally {
+      busyId = null;
     }
   }
 </script>
@@ -164,12 +188,12 @@
             {#if uploading}
               Uploading…
             {:else}
-              Drop a file here, or <span class="text-accent-text underline underline-offset-2">browse</span>
+              Drop files here, or <span class="text-accent-text underline underline-offset-2">browse</span>
             {/if}
           </p>
-          <p class="mt-0.5 text-xs text-subtle">PDF, Markdown, or plain text · indexed automatically</p>
+          <p class="mt-0.5 text-xs text-subtle">PDF, Word, PowerPoint, Excel, Markdown, or text · indexed automatically</p>
         </div>
-        <input bind:this={fileInput} type="file" class="hidden" onchange={onFilePicked} />
+        <input bind:this={fileInput} type="file" multiple accept=".pdf,.docx,.pptx,.xlsx,.txt,.md,.markdown,.csv,.json,.xml,.yaml,.yml" class="hidden" onchange={onFilePicked} />
       </div>
     </div>
     {#if uploadError}<div class="mt-4"><ErrorBanner error={uploadError} /></div>{/if}
@@ -207,12 +231,12 @@
             </div>
             <div class="flex shrink-0 items-center gap-2">
               {#if source.status === 'failed'}
-                <Button variant="secondary" size="sm" onclick={() => requeue(source.source_id)}>
+                <Button variant="secondary" size="sm" loading={busyId === source.source_id} onclick={() => requeue(source.source_id)}>
                   <Icon name="refresh" class="h-3.5 w-3.5" /> Retry
                 </Button>
               {/if}
               {#if source.status === 'indexed'}
-                <button type="button" onclick={() => reindex(source.source_id)} class="text-xs text-muted hover:text-accent-text" title="Rebuild the search index with the latest extractor">Reindex</button>
+                <button type="button" disabled={busyId === source.source_id} onclick={() => reindex(source.source_id)} class="text-xs text-muted hover:text-accent-text disabled:opacity-50" title="Rebuild the search index with the latest extractor">Reindex</button>
               {/if}
               {#if pending}
                 <Badge tone="info"><Spinner class="h-3 w-3" /> Indexing</Badge>
@@ -226,7 +250,8 @@
               <button
                 type="button"
                 onclick={() => removeSource(source.source_id, source.filename)}
-                class="rounded-lg p-1.5 text-subtle transition-colors hover:bg-danger-soft hover:text-danger-text"
+                disabled={busyId === source.source_id}
+                class="rounded-lg disabled:opacity-50 p-1.5 text-subtle transition-colors hover:bg-danger-soft hover:text-danger-text"
                 aria-label={`Remove ${source.filename}`}
               >
                 <Icon name="trash" class="h-4 w-4" />

@@ -15,11 +15,11 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from src.backend.api.deps import require_course
 from src.backend.api.tutor import AnswerView, answer_view
 from src.backend.common import (
     conversations_repo,
-    courses_repo,
     provider,
     providers,
     sources_repo,
@@ -29,8 +29,10 @@ from src.backend.common.conversations_repo import Conversation, Message
 from src.backend.common.db import connection
 from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.retrieval.config import load_retrieval_policy
+from src.backend.student_model import research
 from src.backend.tutor import answer as tutor_answer
 from src.backend.tutor import chat
+from src.backend.tutor.compose import Intent, classify_intent
 
 router = APIRouter(prefix="/courses/{course_id}/conversations", tags=["conversations"])
 
@@ -101,6 +103,13 @@ class SendMessage(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     bigger_model: bool = False
 
+    @field_validator("question")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("write a question first")
+        return value
+
 
 def _summary_view(conversation: Conversation) -> ConversationSummaryView:
     return ConversationSummaryView(
@@ -138,13 +147,8 @@ def _message_view(message: Message) -> MessageView:
     )
 
 
-def _require_course(course_id: UUID) -> None:
-    if courses_repo.get_course(course_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
-
-
 def _require_conversation(course_id: UUID, conversation_id: UUID) -> Conversation:
-    _require_course(course_id)
+    require_course(course_id)
     conversation = conversations_repo.get_conversation(course_id, conversation_id)
     if conversation is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
@@ -153,7 +157,7 @@ def _require_conversation(course_id: UUID, conversation_id: UUID) -> Conversatio
 
 @router.get("", response_model=list[ConversationSummaryView])
 def list_conversations(course_id: UUID) -> list[ConversationSummaryView]:
-    _require_course(course_id)
+    require_course(course_id)
     return [_summary_view(c) for c in conversations_repo.list_conversations(course_id)]
 
 
@@ -163,7 +167,7 @@ def list_conversations(course_id: UUID) -> list[ConversationSummaryView]:
 def create_conversation(
     course_id: UUID, payload: ConversationCreate
 ) -> ConversationSummaryView:
-    _require_course(course_id)
+    require_course(course_id)
     return _summary_view(conversations_repo.create(course_id, payload.title))
 
 
@@ -222,7 +226,7 @@ def update_conversation(
 
 @router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_conversation(course_id: UUID, conversation_id: UUID) -> None:
-    _require_course(course_id)
+    require_course(course_id)
     if not conversations_repo.delete(course_id, conversation_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "conversation not found")
 
@@ -239,6 +243,7 @@ def send_message(
         history = conversations_repo.messages(conn, conversation_id)
     context = chat.context_for(conversation, history)
     search = chat.retrieval_query(payload.question, context)
+    overview = chat.wants_overview(payload.question, context)
     choice = (
         providers.ProviderChoice.model_validate(conversation.model_choice)
         if conversation.model_choice
@@ -246,7 +251,10 @@ def send_message(
     )
     try:
         # Embed before opening the connection: no database needed for it.
-        query_embedding = provider.embed_query(search)
+        # Small talk and whole-course requests search for nothing, so they
+        # skip the embedding model (a slow first load) altogether.
+        searches = not overview and classify_intent(payload.question) is not Intent.CHAT
+        query_embedding = tutor_answer.embed_search(search) if searches else None
         with connection() as conn:
             try:
                 result = tutor_answer.answer_question(
@@ -261,6 +269,7 @@ def send_message(
                     conversation=context.render(),
                     source_ids=conversation.source_ids,
                     search_query=search,
+                    overview=overview,
                 )
             except tutor_answer.NothingRelevantFoundError as err:
                 asked, replied = conversations_repo.add_turn(
@@ -290,8 +299,18 @@ def send_message(
         raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(err)) from err
     assert updated is not None
     pending = chat.pending_summary(updated, history)
+    if replied.trace_id is not None:
+        background.add_task(
+            research.inspect_exchange,
+            course_id,
+            asked.message_id,
+            payload.question,
+            replied.text,
+            tuple(UUID(cid) for cid in replied.payload.get("chunk_ids", [])),
+            choice,
+        )
     if pending is not None:
-        background.add_task(chat.summarize, course_id, conversation_id, pending)
+        background.add_task(chat.summarize, course_id, conversation_id, pending, choice)
     return TurnView(
         conversation=_summary_view(updated),
         question=_message_view(asked),

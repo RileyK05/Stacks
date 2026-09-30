@@ -128,3 +128,13 @@ def test_serve_announces_its_port_and_stops_when_stdin_closes() -> None:
     finally:
         if process.poll() is None:
             process.kill()
+
+
+def test_the_webview_can_read_the_pdf_page_count_header() -> None:
+    """Custom response headers are invisible to a cross-origin page unless
+    exposed; the source viewer reads X-Page-Count to page through a PDF."""
+    from src.backend.main import create_app
+
+    client = TestClient(create_app())
+    response = client.get("/api/health", headers={"Origin": "http://tauri.localhost"})
+    assert response.headers["access-control-expose-headers"] == "X-Page-Count"

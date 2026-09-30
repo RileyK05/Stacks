@@ -13,7 +13,9 @@
   let content = $state('');
   let pageImage = $state('');
   let pageNumber = $state(1);
-  let pageCount = $state(1);
+  /** null when the server's page count header is unreadable (a cross-origin
+   * webview hides it): Next then stays on until the end is hit. */
+  let pageCount = $state<number | null>(1);
   let pageLoading = $state(false);
   let passage = $state<{ text: string; label: string; description: string | null } | null>(null);
   let markedLine = $state(0);
@@ -37,6 +39,11 @@
       const response = await authorizedGet(
         `/courses/${courseId}/sources/${sourceId}/pages/${number}`
       );
+      if (response.status === 404 && pageImage && number > pageNumber) {
+        // Walked past the last page of a document whose length we could not read.
+        pageCount = pageNumber;
+        return;
+      }
       if (!response.ok) throw new Error(`Could not render page ${number} (${response.status}).`);
       const bytes = await response.blob();
       if (!alive) return;
@@ -44,7 +51,9 @@
       objectUrl = URL.createObjectURL(bytes);
       pageImage = objectUrl;
       pageNumber = number;
-      pageCount = Number(response.headers.get('X-Page-Count') ?? '1');
+      error = null;
+      const count = Number(response.headers.get('X-Page-Count'));
+      pageCount = count > 0 ? count : null;
     } catch (caught) {
       if (alive) error = caught;
     } finally {
@@ -128,8 +137,8 @@
   {#if pageImage}
     <div class="flex items-center justify-center gap-4 text-sm text-muted">
       <button type="button" onclick={() => showPage(pageNumber - 1)} disabled={pageNumber <= 1 || pageLoading} class="rounded-lg border border-line px-3 py-1.5 disabled:opacity-40">Previous</button>
-      <span>Page {pageNumber} of {pageCount}</span>
-      <button type="button" onclick={() => showPage(pageNumber + 1)} disabled={pageNumber >= pageCount || pageLoading} class="rounded-lg border border-line px-3 py-1.5 disabled:opacity-40">Next</button>
+      <span>{pageCount === null ? `Page ${pageNumber}` : `Page ${pageNumber} of ${pageCount}`}</span>
+      <button type="button" onclick={() => showPage(pageNumber + 1)} disabled={(pageCount !== null && pageNumber >= pageCount) || pageLoading} class="rounded-lg border border-line px-3 py-1.5 disabled:opacity-40">Next</button>
     </div>
     <img src={pageImage} alt={`Page ${pageNumber} of ${filename}`} class="mx-auto max-h-[75vh] max-w-full rounded-xl border border-line bg-white object-contain shadow-card" />
   {:else if content}

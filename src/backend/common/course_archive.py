@@ -336,5 +336,7 @@ def import_course(archive_path: Path) -> ImportResult:
                 raise InvalidArchiveError(
                     "the notebook has conflicting records"
                 ) from err
+            if isinstance(err, ValueError):
+                raise InvalidArchiveError(f"the notebook is invalid: {err}") from err
             raise
     return ImportResult(course=course, imported=imported, duplicates_skipped=duplicates)

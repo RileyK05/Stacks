@@ -13,7 +13,7 @@ from src.backend.common.schemas.base import KNOWN_GENERATION_TASKS
 # usage, but each has its own text (tutor/compose.py).
 WORKSPACE_PROMPTS = frozenset(
     f"workspace_{kind}" for kind in ("quiz", "document", "sheet", "slides", "code")
-)
+) | {"workspace_quiz_repair", "workspace_repair"}
 # The Office add-in actions share the `tutor_answer` task for routing and
 # usage; each has its own text (src/backend/tutor/office.py).
 OFFICE_PROMPTS = frozenset(
@@ -21,8 +21,13 @@ OFFICE_PROMPTS = frozenset(
 )
 KNOWN_PROMPTS = KNOWN_GENERATION_TASKS | WORKSPACE_PROMPTS | OFFICE_PROMPTS | {
     "tutor_steer",
+    "tutor_chat",
     "tutor_answer_quotes",
     "artifact_edit",
+    "learning_adaptation",
+    "companion_work",
+    "companion_review",
+    "companion_revision",
 }
 
 DEFAULT_PROMPTS_PATH = PROJECT_ROOT / "configs" / "prompts.toml"

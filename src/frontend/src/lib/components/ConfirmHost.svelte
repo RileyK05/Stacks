@@ -5,6 +5,12 @@
   import { activePrompt, settle } from '$lib/stores/confirm.svelte';
 
   let prompt = $derived(activePrompt());
+
+  // Focus lands on the dialog, so Enter cannot re-press the button that
+  // opened it, and Tab stays inside.
+  function focusDialog(node: HTMLElement) {
+    node.focus();
+  }
 </script>
 
 <svelte:window onkeydown={(e) => prompt && e.key === 'Escape' && settle(false)} />
@@ -17,10 +23,12 @@
     onclick={(e) => e.target === e.currentTarget && settle(false)}
   >
     <div
-      class="w-full max-w-md rounded-2xl border border-line bg-surface p-6 shadow-pop"
+      class="w-full max-w-md rounded-2xl outline-none border border-line bg-surface p-6 shadow-pop"
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="confirm-title"
+      tabindex="-1"
+      use:focusDialog
       transition:scale={{ start: 0.96, duration: 160 }}
     >
       <div class="flex gap-4">

@@ -46,21 +46,35 @@ function kindForStatus(status: number, _message: string): ApiErrorKind {
   return 'unknown';
 }
 
+function detailText(detail: unknown): string | null {
+  if (typeof detail === 'string') return detail.trim() || null;
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) => detailText(item))
+      .filter((part): part is string => part !== null);
+    return parts.length > 0 ? parts.join('; ') : null;
+  }
+  if (typeof detail === 'object' && detail !== null) {
+    const record = detail as Record<string, unknown>;
+    for (const key of ['msg', 'message', 'detail', 'error']) {
+      const text = detailText(record[key]);
+      if (text) return text;
+    }
+  }
+  return null;
+}
+
 async function parseDetail(response: Response): Promise<string> {
   try {
-    const body: unknown = await response.json();
-    if (typeof body === 'object' && body !== null && 'detail' in body) {
-      const detail = (body as { detail: unknown }).detail;
-      if (typeof detail === 'string') return detail;
-      if (Array.isArray(detail)) {
-        return detail
-          .map((item) =>
-            typeof item === 'object' && item !== null && 'msg' in item
-              ? String((item as { msg: unknown }).msg)
-              : String(item)
-          )
-          .join('; ');
-      }
+    const raw = await response.text();
+    try {
+      const body: unknown = JSON.parse(raw);
+      const text = detailText(body);
+      if (text) return text;
+    } catch {
+      // Not JSON: a proxy or crash page. Show a short plain-text body.
+      const plain = raw.trim();
+      if (plain && plain.length <= 300 && !plain.startsWith('<')) return plain;
     }
   } catch {
     // fall through to the generic message

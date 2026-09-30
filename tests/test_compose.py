@@ -36,6 +36,8 @@ def _candidates(count: int = 2) -> tuple[Candidate, ...]:
     [
         ("What does linearity mean?", Intent.ANSWER),
         ("Quiz me on chapter 2", Intent.QUIZ),
+        ("Make a practice test", Intent.QUIZ),
+        ("Prepare a full practice test suite on chapter 2", Intent.QUIZ),
         ("Turn this into flashcards", Intent.QUIZ),
         ("Make slides about eigenvalues", Intent.SLIDES),
         ("Give me a table of the key dates", Intent.SHEET),
@@ -45,6 +47,12 @@ def _candidates(count: int = 2) -> tuple[Candidate, ...]:
         # Course vocabulary must not trigger a shape.
         ("What notation does the textbook use?", Intent.ANSWER),
         ("Explain the codomain", Intent.ANSWER),
+        ("Explain the code in my notes", Intent.ANSWER),
+        ("What do the slides say about linearity?", Intent.ANSWER),
+        ("Can you explain the table on page 2?", Intent.ANSWER),
+        ("When is the quiz due?", Intent.ANSWER),
+        ("Summarize my lecture notes", Intent.ANSWER),
+        ("Could you please create a table of dates?", Intent.SHEET),
         # Graded work never gets a workspace item, whatever shape it names.
         ("Give me the filled-in answer sheet to submit", Intent.GRADED),
         ("Take this quiz for me", Intent.GRADED),
@@ -113,8 +121,11 @@ def test_workspace_request_becomes_a_gated_block() -> None:
                     "title": "Check",
                     "questions": [
                         {
-                            "prompt": "Q?",
-                            "options": ["A", "B"],
+                            "prompt": "Which property is being checked?",
+                            "options": [
+                                "The distributive property",
+                                "The identity property",
+                            ],
                             "answer": 1,
                             "explanation": "Because [2].",
                             "sources": [2],
@@ -132,14 +143,219 @@ def test_workspace_request_becomes_a_gated_block() -> None:
     assert extracted.withheld == ()
 
 
-def test_unusable_structured_output_falls_back_to_prose_safely() -> None:
+def test_unusable_structured_quiz_fails_closed() -> None:
     def generate(task: str, prompt: str, *, response_schema=None) -> str:
         return "I can make a quiz if you ask."
 
     composed = compose_answer("Quiz me", _candidates(), generate)
     assert not composed.structured
+    assert "couldn't create a trustworthy quiz" in composed.text
     extracted = extract_workspace_items(composed.text, material_count=2)
     assert extracted.items == ()
+
+
+def test_placeholder_quiz_is_retried_and_never_returned_as_workspace() -> None:
+    calls = 0
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            item = {
+                "type": "quiz",
+                "title": "Quiz",
+                "questions": [
+                    {
+                        "prompt": "Question about the topic?",
+                        "options": ["option1", "option2", "option3"],
+                        "answer": 0,
+                        "explanation": "",
+                        "sources": [1],
+                    }
+                ],
+            }
+        else:
+            assert "previous quiz was unusable" in prompt
+            item = {
+                "type": "quiz",
+                "title": "César Chávez",
+                "questions": [
+                    {
+                        "prompt": "What did Chávez organize?",
+                        "options": ["Farm workers", "Railroad workers"],
+                        "answer": 0,
+                        "explanation": "The material describes his organizing work.",
+                        "sources": [1],
+                    }
+                ],
+            }
+        return json.dumps({"reply": "Try this quiz.", "item": item})
+
+    composed = compose_answer("Create a quiz on César Chávez", _candidates(), generate)
+    assert calls == 3
+    assert composed.structured
+    assert "option1" not in composed.text
+    assert extract_workspace_items(composed.text, material_count=2).items
+
+
+def test_persistently_placeholder_quiz_fails_closed() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Try this.",
+                "item": {
+                    "type": "quiz",
+                    "title": "Quiz",
+                    "questions": [
+                        {
+                            "prompt": "Question about the topic?",
+                            "options": ["option1", "option2"],
+                            "answer": 0,
+                            "explanation": "",
+                            "sources": [1],
+                        }
+                    ],
+                },
+            }
+        )
+
+    composed = compose_answer("Create a quiz", _candidates(), generate)
+    assert not composed.structured
+    assert "couldn't create a trustworthy quiz" in composed.text
+    assert "option1" not in composed.text
+
+
+def test_quiz_keeps_verified_questions_from_separate_attempts() -> None:
+    calls = 0
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        nonlocal calls
+        calls += 1
+        question = (
+            {
+                "prompt": "Which group was organized?",
+                "options": ["Farm workers", "Railroad workers"],
+                "answer": 0,
+                "explanation": "Farm workers were organized.",
+                "sources": [1],
+            }
+            if calls == 1
+            else {
+                "prompt": "Which method drew support?",
+                "options": ["A boycott", "A court appeal"],
+                "answer": 0,
+                "explanation": "A boycott drew support.",
+                "sources": [2],
+            }
+        )
+        questions = [question]
+        if calls == 1:
+            questions.append(
+                {
+                    "prompt": "Question about the topic?",
+                    "options": ["option1", "option2"],
+                    "answer": 0,
+                    "explanation": "",
+                    "sources": [1],
+                }
+            )
+        else:
+            questions.append(
+                {
+                    "prompt": "Who benefited from organizing?",
+                    "options": ["Farm workers.", "Railroad workers."],
+                    "answer": 0,
+                    "explanation": "Farm workers benefited.",
+                    "sources": [1],
+                }
+            )
+        return json.dumps(
+            {
+                "reply": "Try this quiz.",
+                "item": {"type": "quiz", "title": "Quiz", "questions": questions},
+            }
+        )
+
+    composed = compose_answer("Quiz me", _candidates(), generate)
+    extracted = extract_workspace_items(composed.text, material_count=2)
+    assert calls == 2
+    assert composed.structured
+    assert len(extracted.items[0].questions) == 2
+
+
+def test_quiz_answer_must_match_the_option_named_in_its_explanation() -> None:
+    calls = 0
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        nonlocal calls
+        calls += 1
+        return json.dumps(
+            {
+                "reply": "Try this quiz.",
+                "item": {
+                    "type": "quiz",
+                    "title": "Farm workers",
+                    "questions": [
+                        {
+                            "prompt": "Who led the Delano grape strike?",
+                            "options": ["Larry Itliong", "César Chávez"],
+                            "answer": 1,
+                            "explanation": "Larry Itliong led the strike.",
+                            "sources": [1],
+                        }
+                    ],
+                },
+            }
+        )
+
+    composed = compose_answer("Quiz me on César Chávez", _candidates(), generate)
+    assert calls == 3
+    assert not composed.structured
+    assert "couldn't create a trustworthy quiz" in composed.text
+
+
+def test_quiz_date_must_support_the_event_the_question_asks_about() -> None:
+    source = Candidate(
+        chunk_id=uuid4(),
+        source_id=uuid4(),
+        locator_id=uuid4(),
+        chunk_index=0,
+        text=(
+            "César Chávez co-founded the National Farm Workers Association in "
+            "1962. It later became part of the United Farm Workers."
+        ),
+        layers=frozenset({"keyword"}),
+        rank=1.0,
+    )
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Try this quiz.",
+                "item": {
+                    "type": "quiz",
+                    "title": "Farm workers",
+                    "questions": [
+                        {
+                            "prompt": (
+                                "When did the association become part of the "
+                                "United Farm Workers?"
+                            ),
+                            "options": ["1962", "1965"],
+                            "answer": 0,
+                            "explanation": (
+                                "It was co-founded in 1962, then joined later."
+                            ),
+                            "sources": [1],
+                        }
+                    ],
+                },
+            }
+        )
+
+    composed = compose_answer("Quiz me on César Chávez", (source,), generate)
+    assert not composed.structured
+    assert "couldn't create a trustworthy quiz" in composed.text
 
 
 def test_rejected_schema_retries_without_it() -> None:
@@ -174,3 +390,189 @@ def test_parse_json_object_handles_fences_and_noise() -> None:
     assert parse_json_object('prefix {"a": 3} suffix') == {"a": 3}
     assert parse_json_object("no json here") is None
     assert parse_json_object("[1, 2]") is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        '{"reply":"Done", "item":',
+        '{"reply":"Done", "item":{"type":"document","content":"Hi","sources":[99]}}',
+        '{"reply":"Done", "item":{"type":"sheet","columns":["A"],'
+        '"rows":[["1"]],"sources":[1]}}',
+    ],
+)
+def test_invalid_document_response_does_not_leak_json_or_claim_success(
+    raw: str,
+) -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return raw
+
+    composed = compose_answer("Create a study guide", _candidates(), generate)
+    assert not composed.structured
+    assert "couldn't create a usable workspace item" in composed.text
+    assert "Done" not in composed.text
+    assert '"item"' not in composed.text
+
+
+def test_workspace_document_can_contain_markdown_code_fences() -> None:
+    content = "Example [1]:\n```python\nprint('hello')\n```"
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Example",
+                "item": {
+                    "type": "document",
+                    "content": content,
+                    "sources": [1],
+                },
+            }
+        )
+
+    composed = compose_answer("Make notes", _candidates(), generate)
+    extracted = extract_workspace_items(composed.text, 2)
+    assert len(extracted.items) == 1
+    assert extracted.items[0].content == content
+
+
+def test_placeholder_slide_gets_one_repair_using_the_real_material() -> None:
+    calls = []
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        calls.append(prompt)
+        deck = "deck" if len(calls) == 1 else "# Linearity\nPreserves addition [1]."
+        return json.dumps(
+            {
+                "reply": "A slide",
+                "item": {
+                    "type": "slides",
+                    "deck": deck,
+                    "sources": [1],
+                },
+            }
+        )
+
+    composed = compose_answer("Make slides", _candidates(), generate)
+    assert len(calls) == 2
+    assert "Previous output to replace" in calls[1]
+    assert "Course material:" in calls[1]
+    assert composed.structured
+    assert "Preserves addition" in composed.text
+
+
+def test_persistent_placeholder_slide_is_not_presented_as_a_deck() -> None:
+    calls = 0
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        nonlocal calls
+        calls += 1
+        return json.dumps(
+            {
+                "reply": "Done",
+                "item": {
+                    "type": "slides",
+                    "deck": "deck",
+                    "sources": [1],
+                },
+            }
+        )
+
+    composed = compose_answer("Make slides", _candidates(), generate)
+    assert calls == 2
+    assert not composed.structured
+    assert "couldn't create a usable" in composed.text
+
+
+def test_generated_python_syntax_is_checked_before_showing_the_artifact() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Done",
+                "item": {
+                    "type": "code",
+                    "language": "python",
+                    "sources": [1],
+                    "code": "def is_linear(transform, (*samples*,):\n    return True",
+                },
+            }
+        )
+
+    composed = compose_answer("Write a Python function", _candidates(), generate)
+    assert not composed.structured
+    assert "couldn't create a usable" in composed.text
+
+
+def test_python_validation_does_not_execute_generated_code() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Example",
+                "item": {
+                    "type": "code",
+                    "language": "python",
+                    "sources": [1],
+                    "code": "raise RuntimeError('must not execute')",
+                },
+            }
+        )
+
+    composed = compose_answer("Write Python code", _candidates(), generate)
+    assert composed.structured
+
+
+def test_truncated_workspace_block_is_withheld_instead_of_leaking_answer_key() -> None:
+    extracted = extract_workspace_items(
+        'Try this.\n```workspace\n{"type":"quiz","answer":0', 1
+    )
+    assert extracted.body == "Try this."
+    assert extracted.withheld
+    assert not extracted.items
+
+
+@pytest.mark.parametrize("topic,key", [("Linearity", 1), ("recognition", 0)])
+def test_live_quiz_failure_does_not_grade_an_inconsistent_key_or_capability_as_topic(
+    topic, key
+):
+    def generate(task, prompt, *, response_schema=None):
+        return json.dumps(
+            {
+                "reply": "Practice",
+                "item": {
+                    "type": "quiz",
+                    "title": "Linearity",
+                    "questions": [
+                        {
+                            "prompt": (
+                                "Which statement correctly describes "
+                                "the linearity of f(x)=2x?"
+                            ),
+                            "topic": topic,
+                            "capability": "recognition",
+                            "options": [
+                                (
+                                    "The function f(x)=2x is linear because "
+                                    "it preserves "
+                                    "addition and scalar multiplication."
+                                ),
+                                (
+                                    "The function f(x)=2x is not linear because it "
+                                    "does not preserve addition."
+                                ),
+                            ],
+                            "answer": key,
+                            "explanation": (
+                                "The correct option states that f(x)=2x "
+                                "is linear because it preserves addition "
+                                "and scalar multiplication."
+                            ),
+                            "sources": [1],
+                        }
+                    ],
+                },
+            }
+        )
+
+    candidates = _candidates(1)
+    composed = compose_answer("Make a practice test on Linearity", candidates, generate)
+    assert not composed.structured
+    assert "trustworthy quiz" in composed.text

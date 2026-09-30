@@ -151,6 +151,39 @@ def test_embedding_seam_dormant_and_active(course) -> None:
     assert str(chunk_id) == str(next(iter(active)))
 
 
+def test_embedding_seam_ignores_non_finite_query(course) -> None:
+    add_chunk(course.course_id, "linearity of transformations", embedding=[1.0, 0.0])
+    with connection() as conn:
+        candidates = funnel.embedding_seam(
+            conn,
+            course.course_id,
+            [float("nan"), 0.0],
+            "test-embed",
+            10,
+        )
+    assert candidates == {}
+
+
+def test_source_filter_is_applied_before_candidate_limit(course) -> None:
+    for _ in range(90):
+        source_id = insert_source(course.course_id)
+        insert_chunks(source_id, 1, "linearity linearity linearity linearity")
+    selected_source = insert_source(course.course_id)
+    from tests.factories import insert_chunk
+
+    selected_chunk = insert_chunk(selected_source, "linearity")
+    policy = _policy()
+    with connection() as conn:
+        result = funnel.retrieve(
+            conn,
+            course.course_id,
+            "linearity",
+            policy,
+            source_ids=[selected_source],
+        )
+    assert [candidate.chunk_id for candidate in result.candidates] == [selected_chunk]
+
+
 # --- fusion ---------------------------------------------------------------
 
 
@@ -183,6 +216,29 @@ def test_fuse_single_source_is_never_starved(course) -> None:
         keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
     fused = funnel.fuse(keyword, {}, {}, {}, policy=policy)
     assert len(fused) == 5
+
+
+@pytest.mark.parametrize("ranks", [(2.0, 4.0), (2.0, 2.0)])
+def test_fuse_preserves_candidates_for_reuse(ranks) -> None:
+    source_id = uuid4()
+    candidates = [
+        funnel.Candidate(
+            chunk_id=uuid4(),
+            source_id=source_id,
+            locator_id=uuid4(),
+            chunk_index=index,
+            text="linearity",
+            layers=frozenset({funnel.KEYWORD}),
+            rank=rank,
+        )
+        for index, rank in enumerate(ranks)
+    ]
+    keyword = {candidate.chunk_id: candidate for candidate in candidates}
+    first = funnel.fuse(keyword, {}, {}, {}, policy=_policy())
+    second = funnel.fuse(keyword, {}, {}, {}, policy=_policy())
+    assert tuple(candidate.rank for candidate in candidates) == ranks
+    assert first == second
+    assert {candidate.chunk_id for candidate in first} == set(keyword)
 
 
 def test_fuse_equal_relevance_splits_evenly(course) -> None:
@@ -509,6 +565,37 @@ def test_eval_exact_label_no_substring_pass(course, tmp_path) -> None:
         summary = evals_module.run_eval(conn, policy, cases_path=cases_file)
     assert summary.fused_recall == 0.0
     assert not summary.cases[0].hit
+
+
+def test_eval_counts_a_chunks_full_locator_span(course, tmp_path) -> None:
+    from src.backend.retrieval import evals as evals_module
+
+    chunk_id = add_chunk(course.course_id, "linearity", label="page 1")
+    source_id, _ = chunk_source_locator(chunk_id)
+    second_locator = uuid4()
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO locators (locator_id, source_id, locator_type, start,"
+            " end_value, label) VALUES (?, ?, 'page', '100', '200', 'page 2')",
+            (second_locator, source_id),
+        )
+        conn.execute(
+            "INSERT INTO chunk_locators (chunk_id, locator_id) VALUES (?, ?)",
+            (chunk_id, second_locator),
+        )
+        conn.commit()
+
+    cases_file = tmp_path / "cases.json"
+    cases_file.write_text(
+        '{"cases": [{"question": "linearity", "course_tag": "Retrieval Course",'
+        ' "expected_labels": ["page 1", "page 2"]}]}',
+        encoding="utf-8",
+    )
+    with connection() as conn:
+        summary = evals_module.run_eval(conn, _policy(), cases_path=cases_file)
+    assert summary.fused_recall == 1.0
+    assert summary.seam_recall["keyword"] == 1.0
+    assert summary.cases[0].retrieved_labels == ("page 1", "page 2")
 
 
 def test_fuse_allocates_slots_by_relevance(course) -> None:

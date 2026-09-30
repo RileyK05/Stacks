@@ -352,12 +352,21 @@ def run_ingestion(conn: Connection, source_id: UUID) -> UUID:
         runs.clear_pending_source(conn, source_id)
         conn.commit()
     except IngestionPipelineError as err:
-        message = str(err)[:500]
+        message = _failure_message(err)
         _commit_failure_audit(
             conn, run.run_id, source_id, source.course_id, message, failed_stage=err
         )
         raise
     return run.run_id
+
+
+def _failure_message(err: IngestionPipelineError) -> str:
+    """What the file browser shows under a failed source. The pipeline's
+    own summary ("stage X failed after 2 attempts") says nothing the user
+    can act on; the underlying cause (an unreadable PDF, an unavailable
+    model) does, so it rides along."""
+    cause = str(err.__cause__).strip() if err.__cause__ is not None else ""
+    return (f"{err}: {cause}" if cause else str(err))[:500]
 
 
 def _commit_failure_audit(

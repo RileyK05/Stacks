@@ -1,3 +1,4 @@
+import { PracticeSession, type SuiteFromSaved } from '$lib/stores/practice.svelte';
 import type { components } from '$lib/api/schema';
 
 export type WorkspaceQuiz = components['schemas']['WorkspaceQuiz'];
@@ -8,57 +9,24 @@ export type WorkspaceSheet = components['schemas']['WorkspaceSheet'];
 export type WorkspaceSlides = components['schemas']['WorkspaceSlides'];
 export type WorkspaceItem = WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml | WorkspaceCode | WorkspaceSheet | WorkspaceSlides;
 
-/**
- * Live state for one quiz in the workspace. The item itself is the
- * backend-validated payload (every question cites material — decision 009
- * gate runs server-side); this class only holds what the student does
- * with it, so switching between answers keeps their progress.
- */
-export class QuizSession {
+export class QuizSession extends PracticeSession {
   readonly kind = 'quiz';
   readonly quiz: WorkspaceQuiz;
-  responses = $state<(number | null)[]>([]);
-  submitted = $state(false);
 
-  constructor(quiz: WorkspaceQuiz) {
+  constructor(quiz: WorkspaceQuiz, savedOrigin: SuiteFromSaved | null = null) {
+    super(quiz.questions.map((q) => ({ ...q, explanation: q.explanation ?? '', topic: q.topic ?? '', capability: q.capability ?? 'recognition' })), quiz.practice_id ?? null, savedOrigin);
     this.quiz = quiz;
-    this.responses = quiz.questions.map(() => null);
   }
 
-  get answeredAll(): boolean {
-    return this.responses.every((response) => response !== null);
-  }
-
-  get score(): number {
-    return this.quiz.questions.filter((question, index) => this.responses[index] === question.answer)
-      .length;
-  }
-
-  choose(questionIndex: number, optionIndex: number): void {
-    if (!this.submitted) this.responses[questionIndex] = optionIndex;
-  }
-
-  submit(): void {
-    if (this.answeredAll) this.submitted = true;
-  }
-
-  reset(): void {
-    this.responses = this.quiz.questions.map(() => null);
-    this.submitted = false;
-  }
-
-  /** A follow-up question for the chat about every missed question. */
   missedFollowUp(): string | null {
-    const missed = this.quiz.questions.flatMap((question, index) => {
+    const missed = this.questions.flatMap((question, index) => {
+      if (this.run?.results[index] !== false) return [];
       const picked = this.responses[index];
-      if (picked === null || picked === question.answer) return [];
-      return [
-        `"${question.prompt}" — I picked "${question.options[picked]}" but the answer is "${question.options[question.answer]}".`
-      ];
+      const key = this.correctAnswer(index);
+      if (picked === null || key === null) return [];
+      return [`"${question.prompt}" — I picked "${question.options[picked]}"; the current key says "${question.options[key]}". Check the key against the source and help me reason through it.`];
     });
-    if (missed.length === 0) return null;
-    // One line: the chat input is single-line and would drop newlines.
-    return `I got these quiz questions wrong. Help me understand why: ${missed.join(' ')}`;
+    return missed.length ? missed.join(' ') : null;
   }
 }
 
@@ -116,7 +84,13 @@ export class SheetSession {
   }
 
   get edited(): boolean {
-    return this.draft.some((row, index) => row.join('') !== this.item.rows[index]?.join(''));
+    return (
+      this.draft.length !== this.item.rows.length ||
+      this.draft.some((row, index) => {
+        const original = this.item.rows[index];
+        return !original || row.length !== original.length || row.some((cell, column) => cell !== original[column]);
+      })
+    );
   }
 
   revert(): void {
@@ -161,10 +135,22 @@ export type WorkspaceSession =
   | SheetSession
   | SlidesSession;
 
-export function openSession(item: WorkspaceItem): WorkspaceSession {
+export function draftForSaving(session: WorkspaceSession): string | string[][] | null {
+  switch (session.kind) {
+    case 'document':
+    case 'slides':
+      return session.draft;
+    case 'sheet':
+      return $state.snapshot(session.draft);
+    default:
+      return null;
+  }
+}
+
+export function openSession(item: WorkspaceItem, savedOrigin: SuiteFromSaved | null = null): WorkspaceSession {
   switch (item.type) {
     case 'quiz':
-      return new QuizSession(item);
+      return new QuizSession(item, savedOrigin);
     case 'document':
       return new DocumentSession(item);
     case 'html':

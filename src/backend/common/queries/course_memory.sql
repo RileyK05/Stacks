@@ -60,9 +60,3 @@ SELECT memory_id, course_id, course_ref, name, summary, key_concepts,
        token_budget, summary_version, created_at, updated_at
 FROM course_memories
 ORDER BY updated_at DESC;
-
--- name: get_memory
-SELECT memory_id, course_id, course_ref, name, summary, key_concepts,
-       token_budget, summary_version, created_at, updated_at
-FROM course_memories
-WHERE course_id = :course_id;

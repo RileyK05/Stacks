@@ -3454,3 +3454,114 @@ native runners and uploaded `stacks-0.3.1-macos-arm64` (82,351,725 bytes) and
 `stacks-0.3.1-linux-x64` (309,789,035 bytes) workflow artifacts. Attachment to
 the existing GitHub release was disabled; installed UI smoke testing remains a
 separate gate.
+
+## Usability review and live-model evidence (2026-09-29)
+
+Reviewed generation, retrieval, tutor framing, workspace parsing, chat and
+Office state, and evaluation reliability with three Luna agents. Source filters
+now run before retrieval limits; Office uses the common reranker. Explicit
+explanation requests are no longer overridden by assignment text being read.
+Unavailable saved providers do not silently fall through to another endpoint.
+Malformed/truncated/empty model output and stale UI responses are handled at
+their boundaries, and informational questions do not request artifacts merely
+because they mention notes or slides.
+
+The first live MiniCPM5-2B run scored 9/10 mechanically while producing a false
+quiz answer and incorrect code. Mechanical evaluation is now labeled as a
+contract check, its command fails on unsuccessful cases, and it supports narrow
+content assertions. It is not a semantic correctness gate. See
+`docs/usability-review.md` for verified fixes, real-model evidence, and the
+remaining acceptance work; no arbitrary relevance threshold was introduced.
+
+## Code cleanup and unresolved lifecycle decisions (2026-09-29)
+
+Consolidated repeated course existence checks, made retrieval normalization
+preserve frozen candidate objects, and fixed retrieval evaluation to include
+all locators spanned by a chunk. Removed verified unused helpers and a duplicate
+compression path; storage tests now exercise production compression and restore
+their temporary-directory state. Office token comparisons use UTF-8 bytes.
+
+The existing dirty working tree was the baseline and its feature work was
+preserved. No migrations or model/prompt changes were introduced. Draft recovery
+versus blocking navigation, single-server scheduling versus concurrent local
+models, and native versus backend file authority remain explicit decisions;
+evidence, costs, and recommendations are in `docs/code-health.md`. The older
+candidate ledger was cross-checked against current code rather than treated as
+proof; retired migration-number guards and used PDF extraction parameters
+remain intact.
+
+## Behavior review: saving the visible workspace draft (2026-09-29)
+
+Following the generate → edit → save → reopen journey found that workspace
+edits were local while Save to artifacts copied the original stored model
+response. The app could report a successful save and then reopen different
+content. The save request now includes the editable draft; the backend preserves
+kind, title, evidence numbering, and origin from the stored answer, validates
+the revised content, and attributes actual edits to the student. The original
+chat remains unchanged.
+
+Saved notes, slides, and table rows are checked after reopening through the API.
+An actual browser interaction also edited notes, saved them, reloaded, and
+reopened the persisted edits in a disposable course. No live model was called
+for that persistence check. `docs/flow-review.md` records the higher-level
+contracts and remaining questions about source scope across chat history,
+generated drafts versus adopted artifacts, and source support versus synthesis.
+
+
+## Adaptive learning and background memory (2026-09-29)
+
+The user explicitly chose background adaptation with optional inspection. COURSE
+memory records topic-specific understanding; CORE memory records presentation
+preferences and method observations across courses. Neither authorizes factual
+claims from excluded material. Ordinary conversation creates tentative checks
+with quoted evidence, rather than capability judgments.
+
+Migration 008 implements complete multiple-choice suites/sessions, immutable
+questions and answers, separate key corrections, durable distilled observations,
+a bounded experiment docket, and CORE method observations. Numbers 006/007 remain
+reserved. `course_memory.refresh` is still the course-memory write seam. The
+versioned baseline uses conservative evidence caps, explicit unknown capabilities,
+reveal-aware repetition, assisted evidence weighting, and practice cooldowns.
+These are inspectable estimates, not validated learning measurements.
+
+Raw session deletion retains observations. Forgetting is a separate explicit
+memory control. Key correction updates COURSE and existing CORE outcomes and
+reopens dependent experiments. Source snapshots support inspection after source
+changes and deletion. Course export/import includes practice history and remaps
+source/suite/run links, without exporting or duplicating global CORE state.
+
+Background research uses the conversation's chosen provider through the existing
+model seam, requires an exact quote and valid citations, and fails open without
+losing the saved answer. The app controls quotas, expiry, and experiment checks;
+the model cannot directly write capability scores or arbitrary root instructions.
+The library and saved artifact practice UI share the same persistence path.
+Verification and material limits are recorded in `docs/learning-memory.md`.
+
+
+## 2026-09-29 — Companion work sessions and memory isolation
+
+The companion assists with an external document, with Stacks supplying course
+references and existing presentation preferences. Migration 009 stores separate
+work sessions, immutable document snapshots, and version-bound conversation
+turns. Papers, slides, reference material, and practice worksheets are raw
+working context. No document or generated review automatically updates course
+knowledge, learning experiments, CORE observations, preferences, or test scores.
+Formal practice remains an explicit separate assessment path.
+
+Files, paste, a Windows accessibility/window-render reader, and an Office
+whole-document publication action feed the same session contract. Capture scope
+is exposed; pixels cannot establish whole-document coverage. Edits are proposed
+for review and copying; arbitrary external writes and continuous monitoring are
+outside this baseline. See `docs/companion-work.md` for behavior and open limits.
+
+Live checks exposed critique-only revisions and a review that attributed course
+evidence to the student. Review findings now require exact draft passages;
+revisions require an exact original, nonempty changed replacement, and reason.
+Both remain proposed advice, with source markers validated, not proof of factual
+entailment. The final local model still misdescribed an original claim in an
+otherwise useful edit explanation; semantic quality remains open.
+
+Archive imports never retain original IDs for missing work citation mappings.
+They keep the saved quote, clear the unavailable source/trace link, assign new
+snapshot IDs, and label disconnected sources in the interface. Imported replies
+must agree with their saved document revision.

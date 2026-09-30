@@ -1,7 +1,9 @@
 <script lang="ts">
   import Button from '$lib/components/Button.svelte';
   import Icon from '$lib/components/Icon.svelte';
-  import RichText from '$lib/components/RichText.svelte';
+  import Quiz from '$lib/components/Quiz.svelte';
+  import { QuizSession } from '$lib/stores/workspace.svelte';
+  import type { PracticeContext } from '$lib/stores/practice.svelte';
   import type { QuizContent } from '$lib/stores/artifact.svelte';
 
   interface Props {
@@ -9,27 +11,15 @@
     editable?: boolean;
     onchange: () => void;
     oncite?: (n: number) => void;
+    practice?: PracticeContext;
   }
 
-  let { quiz, editable = true, onchange, oncite }: Props = $props();
+  let { quiz, editable = true, onchange, practice }: Props = $props();
 
   let mode = $state<'take' | 'edit'>('take');
-  let picks = $state<(number | null)[]>([]);
-  let checked = $state(false);
-
-  $effect(() => {
-    if (picks.length !== quiz.questions.length) picks = quiz.questions.map(() => null);
-  });
-
-  const score = $derived(
-    quiz.questions.filter((q, i) => picks[i] === q.answer).length
-  );
-  const answeredAll = $derived(picks.length > 0 && picks.every((p) => p !== null));
-
-  function restart() {
-    picks = quiz.questions.map(() => null);
-    checked = false;
-  }
+  const session = $derived(new QuizSession({
+    type: 'quiz', title: 'Practice test', questions: quiz.questions.map((q) => ({ ...q, topic: q.topic ?? '', capability: q.capability ?? 'recognition' })),
+  }, practice ? { artifact_id: practice.artifactId, artifact_version: practice.version, item_index: 0 } : null));
 
   function addQuestion() {
     quiz.questions.push({ prompt: 'New question', options: ['Option A', 'Option B'], answer: 0, explanation: '', sources: [] });
@@ -52,7 +42,8 @@
     const q = quiz.questions[index];
     if (q.options.length <= 2) return;
     q.options.splice(option, 1);
-    if (q.answer >= q.options.length) q.answer = 0;
+    if (q.answer === option) q.answer = 0;
+    else if (q.answer > option) q.answer -= 1;
     onchange();
   }
 </script>
@@ -80,63 +71,12 @@
   {/if}
 
   {#if mode === 'take'}
-    {#each quiz.questions as question, index (index)}
-      <section class="rounded-2xl border border-line bg-surface p-5 shadow-card">
-        <div class="flex items-start gap-3">
-          <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent-soft text-[13px] font-semibold text-accent-text">{index + 1}</span>
-          <div class="min-w-0 flex-1">
-            <RichText text={question.prompt} class="text-[15px] font-medium text-fg" />
-            <div class="mt-3 flex flex-col gap-2">
-              {#each question.options as option, optionIndex (optionIndex)}
-                {@const picked = picks[index] === optionIndex}
-                {@const correct = checked && optionIndex === question.answer}
-                {@const wrong = checked && picked && optionIndex !== question.answer}
-                <button
-                  type="button"
-                  disabled={checked}
-                  onclick={() => (picks[index] = optionIndex)}
-                  class={`flex items-center gap-3 rounded-xl border px-3.5 py-2.5 text-left text-[14px] transition-all ${
-                    correct
-                      ? 'border-success/50 bg-success-soft text-success-text'
-                      : wrong
-                        ? 'border-danger/40 bg-danger-soft text-danger-text'
-                        : picked
-                          ? 'border-accent bg-accent-soft text-fg'
-                          : 'border-line bg-bg/40 text-fg-soft hover:border-line-strong'
-                  }`}
-                >
-                  <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-current text-[11px] font-semibold">{'ABCDEFGH'[optionIndex]}</span>
-                  <span class="min-w-0 flex-1">{option}</span>
-                  {#if correct}<Icon name="check" class="h-4 w-4" />{/if}
-                </button>
-              {/each}
-            </div>
-            {#if checked && question.explanation}
-              <div class="mt-3 rounded-xl bg-surface-2 px-3.5 py-2.5 text-[13px] text-muted">
-                <RichText text={question.explanation} />
-              </div>
-            {/if}
-            {#if question.sources.length > 0}
-              <div class="mt-2 flex gap-1">
-                {#each question.sources as n (n)}
-                  <button type="button" onclick={() => oncite?.(n)} class="rounded-md bg-accent-soft px-1.5 font-mono text-[11px] font-semibold text-accent-text hover:underline">[{n}]</button>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        </div>
-      </section>
-    {/each}
-    {#if quiz.questions.length > 0}
-      <div class="flex items-center gap-3">
-        {#if checked}
-          <p class="font-display text-xl text-fg">{score} / {quiz.questions.length}</p>
-          <Button variant="secondary" onclick={restart}><Icon name="rotate-ccw" class="h-4 w-4" /> Try again</Button>
-        {:else}
-          <Button onclick={() => (checked = true)} disabled={!answeredAll}>Check answers</Button>
-          {#if !answeredAll}<span class="text-xs text-subtle">Answer every question first.</span>{/if}
-        {/if}
-      </div>
+    {#if practice?.ready && quiz.questions.length}
+      {#key practice.version}
+        <Quiz {session} sources={[]} courseId={practice.courseId} />
+      {/key}
+    {:else}
+      <p class="text-sm text-muted">{practice ? 'Save your changes before taking this test.' : 'Open the saved quiz to take a recorded practice test.'}</p>
     {/if}
   {:else}
     {#each quiz.questions as question, index (index)}

@@ -14,11 +14,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    TypeAdapter,
+    ValidationError,
+)
+from src.backend.api.deps import require_course
 from src.backend.api.tutor import CitationView
 from src.backend.artifacts import content as artifact_content
 from src.backend.artifacts import edit as artifact_edit
@@ -27,7 +35,6 @@ from src.backend.artifacts.content import KINDS, ArtifactKind, UnknownCitationEr
 from src.backend.common import (
     artifacts_repo,
     conversations_repo,
-    courses_repo,
     provider,
     providers,
     usage_repo,
@@ -42,10 +49,19 @@ from src.backend.common.db import connection, json_ids
 from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.common.queries import get
 from src.backend.retrieval.config import load_retrieval_policy
+from src.backend.tutor import answer as tutor_answer
 from src.backend.tutor.workspace import WorkspaceItem
 
 router = APIRouter(prefix="/courses/{course_id}/artifacts", tags=["artifacts"])
 _WORKSPACE_ITEM: TypeAdapter[WorkspaceItem] = TypeAdapter(WorkspaceItem)
+# A saved title is trimmed before the length check: "  " passed min_length=1
+# and was stored as an empty title (an unclickable row in the list).
+SavedTitle = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True, min_length=1, max_length=artifacts_repo.TITLE_MAX_LENGTH
+    ),
+]
 
 
 class ArtifactSummaryView(BaseModel):
@@ -77,13 +93,14 @@ class FromMessage(BaseModel):
 
     message_id: UUID
     item_index: int = Field(default=0, ge=0)
+    draft: str | list[list[str]] | None = None
 
 
 class ArtifactSave(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_version: int = Field(ge=1)
-    title: str = Field(min_length=1, max_length=artifacts_repo.TITLE_MAX_LENGTH)
+    title: SavedTitle
     content: dict[str, Any]
     # None keeps the artifact's sources (an ordinary edit); a list replaces
     # them (accepting a model edit that cited new material).
@@ -115,7 +132,7 @@ class RenameRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     base_version: int = Field(ge=1)
-    title: str = Field(min_length=1, max_length=artifacts_repo.TITLE_MAX_LENGTH)
+    title: SavedTitle
 
 
 class ArtifactCitationView(BaseModel):
@@ -183,13 +200,8 @@ def _view(artifact: Artifact) -> ArtifactView:
     )
 
 
-def _require_course(course_id: UUID) -> None:
-    if courses_repo.get_course(course_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "course not found")
-
-
 def _require_artifact(course_id: UUID, artifact_id: UUID) -> Artifact:
-    _require_course(course_id)
+    require_course(course_id)
     artifact = artifacts_repo.get_artifact(course_id, artifact_id)
     if artifact is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "artifact not found")
@@ -231,7 +243,7 @@ def _checked(
 
 @router.get("", response_model=list[ArtifactSummaryView])
 def list_artifacts(course_id: UUID) -> list[ArtifactSummaryView]:
-    _require_course(course_id)
+    require_course(course_id)
     # A database from the retired Office-editor builds can still hold
     # `word`/`excel`/`powerpoint` rows; they are skipped, not a 500.
     return [
@@ -243,7 +255,7 @@ def list_artifacts(course_id: UUID) -> list[ArtifactSummaryView]:
 
 @router.post("", response_model=ArtifactView, status_code=status.HTTP_201_CREATED)
 def create_artifact(course_id: UUID, payload: ArtifactCreate) -> ArtifactView:
-    _require_course(course_id)
+    require_course(course_id)
     raw = payload.content if payload.content is not None else {}
     content = _checked(course_id, payload.kind, raw, ())
     created = artifacts_repo.create(
@@ -260,10 +272,12 @@ def create_artifact(course_id: UUID, payload: ArtifactCreate) -> ArtifactView:
     "/from-message", response_model=ArtifactView, status_code=status.HTTP_201_CREATED
 )
 def save_from_message(course_id: UUID, payload: FromMessage) -> ArtifactView:
-    """Save a workspace item from a chat answer as an artifact. The item is
-    read from the stored message, not from the client, and its citations
-    are pinned to the chunks that answer read."""
-    _require_course(course_id)
+    """Save the visible workspace draft with the stored answer's provenance.
+
+    Kind, title, and citation numbering come from the stored message. Only
+    an editable item's content may be replaced by the student's draft.
+    """
+    require_course(course_id)
     message = conversations_repo.message_in_course(course_id, payload.message_id)
     if message is None or message.role != "assistant":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found")
@@ -272,7 +286,9 @@ def save_from_message(course_id: UUID, payload: FromMessage) -> ArtifactView:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "that answer has no such item")
     try:
         item = _WORKSPACE_ITEM.validate_python(items[payload.item_index])
-        kind, title, raw, item_sources = artifact_content.from_workspace_item(item)
+        kind, title, original, item_sources = artifact_content.from_workspace_item(item)
+        _, _, raw, _ = artifact_content.from_workspace_item(item, draft=payload.draft)
+        edited = raw != original
         numbered = [UUID(str(value)) for value in message.payload.get("chunk_ids", [])]
         compacted, sources = artifact_content.compact(raw, numbered, also=item_sources)
     except (ValidationError, UnknownCitationError, ValueError) as err:
@@ -290,8 +306,8 @@ def save_from_message(course_id: UUID, payload: FromMessage) -> ArtifactView:
             "message_id": str(message.message_id),
             "model": str(message.payload.get("model", "")),
         },
-        author="model",
-        note="Saved from a chat",
+        author="you" if edited else "model",
+        note="Edited and saved from a chat" if edited else "Saved from a chat",
     )
     return _view(created)
 
@@ -328,7 +344,7 @@ def save_artifact(
 
 @router.delete("/{artifact_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_artifact(course_id: UUID, artifact_id: UUID) -> None:
-    _require_course(course_id)
+    require_course(course_id)
     if not artifacts_repo.delete(course_id, artifact_id):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "artifact not found")
 
@@ -464,7 +480,7 @@ def propose_edit(
         else None
     )
     try:
-        query_embedding = provider.embed_query(payload.request)
+        query_embedding = tutor_answer.embed_search(payload.request)
         with connection() as conn:
             proposal = artifact_edit.propose_edit(
                 conn,
@@ -528,5 +544,14 @@ def export_artifact(
     data = artifact_export.render(
         artifact.kind, fmt, artifact.title, artifact.content, labels
     )
-    target.write_bytes(data)
+    try:
+        target.write_bytes(data)
+    except OSError as err:
+        # Overwriting a file that is open in Word or Excel is a
+        # PermissionError on Windows; without this the user got a bare 500.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"couldn't write {target.name}: {err.strerror or err}. "
+            "Close it in any other program, or pick another name.",
+        ) from err
     return ExportView(path=str(target), filename=target.name)

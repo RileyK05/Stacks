@@ -40,8 +40,12 @@
 
   onMount(async () => {
     await open.load();
-    const course = await api.GET('/courses/{course_id}', { params: { path: { course_id: courseId } } });
-    courseName = course.data?.name ?? '';
+    try {
+      const course = await api.GET('/courses/{course_id}', { params: { path: { course_id: courseId } } });
+      courseName = course.data?.name ?? '';
+    } catch {
+      // The back link just says "Course".
+    }
   });
 
   onDestroy(() => {
@@ -113,16 +117,21 @@
       exported = await open.exportTo(format, path);
       toast(`Saved ${exported.filename}`);
     } catch (caught) {
-      open.saveError = caught;
+      // The artifact itself is saved; only the export failed.
+      toast(caught instanceof Error ? caught.message : 'Could not export.', 'error');
     }
   }
 
   async function reveal(path: string) {
-    if (isTauri()) {
-      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
-      await revealItemInDir(path);
-    } else {
-      await api.POST('/settings/reveal', { body: { path } });
+    try {
+      if (isTauri()) {
+        const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+        await revealItemInDir(path);
+      } else {
+        await api.POST('/settings/reveal', { body: { path } });
+      }
+    } catch {
+      toast('Could not open the folder.', 'error');
     }
   }
 
@@ -144,7 +153,12 @@
       danger: true
     });
     if (!ok) return;
-    await open.remove();
+    try {
+      await open.remove();
+    } catch (caught) {
+      toast(caught instanceof Error ? caught.message : 'Could not delete it.', 'error');
+      return;
+    }
     toast('Deleted.');
     await goto(`/courses/${courseId}?tab=artifacts`);
   }
@@ -285,6 +299,7 @@
             {kind}
             title={open.title}
             content={open.content}
+            practice={{ courseId, artifactId: open.artifactId, version: open.artifact?.version ?? 1, ready: !open.dirty && !open.saving && !open.conflict }}
             onchange={() => open.touch()}
             oncite={showCitation}
             onsection={(index) => (section = index)}
