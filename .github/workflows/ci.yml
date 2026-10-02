@@ -103,10 +103,10 @@ jobs:
         run: |
           python -m scripts.dump_openapi runs/openapi.json
           cd src/frontend && OPENAPI_FILE=../../runs/openapi.json npm run gen:api
-        - name: svelte-check
-          run: npm run check --prefix src/frontend
-        - name: Editor recovery behavior
-          run: npm test --prefix src/frontend
+      - name: svelte-check
+        run: npm run check --prefix src/frontend
+      - name: Editor recovery behavior
+        run: npm test --prefix src/frontend
       # The pane is plain JS: type-check it against Microsoft's Office.js
       # types (an Office API that doesn't exist fails here, not in Word)
       # and run its logic tests.
