@@ -1,241 +1,190 @@
-# Plan: central library and cross-platform desktop
+# Current handoff and release plan
 
-Updated 2026-09-29. This is the current implementation and release handoff.
-History belongs in `docs/notes.md`; candidate bugs belong in `docs/docket.md`.
+Updated 2026-09-30. Current implementation belongs in `system.md`, unresolved
+engineering/product work in `docket.md`, and consequential history in `notes.md`.
+Replace this handoff as work advances; delete completed temporary plans/reviews.
 
-## Product direction
+## Current handoff
 
-1. The full library is the primary Stacks experience. It is the central place
-   for courses, source-grounded knowledge, course memory, saved work, model
-   setup, and data controls.
-2. The companion is optional. The app does not create or position it at launch;
-   the user presses **Open companion** when a separate focused window is useful.
-3. The companion behaves like a normal desktop window: movable, resizable,
-   minimizable, maximizable, closable, and optionally kept on top.
-4. The core app targets Windows x64, Apple Silicon macOS, and Linux x64. The
-   Office bridge remains an optional Windows integration.
+The library is the primary Stacks window; the companion is created explicitly
+and behaves as a normal movable/resizable window with an opt-in keep-on-top
+toggle. Opening Office from a course focuses its companion on that course.
+The application targets Windows x64, Apple Silicon macOS, and Linux x64.
 
-## Current implementation
+Implemented baselines:
+- Full multiple-choice suites/sessions, COURSE capability evidence, cautious
+  chat experiments, CORE presentation preferences, memory inspection/correction,
+  source-scoped practice quotas, revealed-retake restrictions, source-backed
+  Hint/Explain, and separate editable content feedback (system §12).
+- Saved companion document snapshots, revision-bound turns, exact course
+  references, anchored reviews/edits, portable history, and strict separation
+  from learning writes (system §13).
+- Direct Word body, Excel worksheet/cell/formula, and PowerPoint slide-text
+  readers; composing-triggered refresh, unchanged-snapshot deduplication,
+  reconnect, and explicit offline snapshot fallback. Windows/Mac setup plus
+  screenshot upload are implemented; native checks remain open (system §14).
+- Generated drafts adopt one saved material; later edits create versions and
+  explicit copies are separate. Saves serialize and flush reports failure.
+  WebView-local drafts preserve unfinished workspace and material edits,
+  reconcile versions, and retain model acceptance metadata (system §7).
+- Interactive source-backed mind maps share workspace/material storage, versioned
+  edits, Markdown export, and archives. Colored branches expand/focus separately
+  from comparison links; Explain and Quiz connect to the existing practice flow.
+  Map exploration alone writes no learning memory (system §7).
+- Optional local library backups with full/partial/heavy retention and lossless
+  compression strengths, schedule/rotation, verified separate-folder recovery,
+  and offline restore CLI (system §3). Desktop activation remains B-14.
 
-- Tauri starts the visible `main` library window and one authenticated Python
-  backend child process.
-- The persistent library navigation contains **Open companion**. In Tauri it
-  invokes `show_companion`; in a browser preview it opens `/companion/` in a
-  resizable popup. The control is near the top of navigation, and course pages
-  also show a labeled **Companion** button.
-- `show_companion` creates the webview only on first request. Later requests
-  bring the same window forward. Creation is serialized across rapid requests.
-  Closing it frees that window without quitting the library. The static build
-  includes `companion/index.html` for the native secondary window.
-- Opening Office from a course also opens or focuses the companion on that
-  course. An already open companion switches courses and clears prior turns.
-- Quiz generation checks options, answer keys, cited names/dates, and dated
-  events. It can make two repair attempts and retain individually verified
-  questions across them. If none survive, it declines to propose a quiz.
-- The companion uses native decorations and has minimum dimensions, normal
-  resize behavior, and an opt-in always-on-top toggle.
-- A second app launch focuses the library. Closing the library exits Stacks and
-  shuts down the backend and supervised local model.
-- Release packaging is native per OS: NSIS on Windows, DMG on Apple Silicon,
-  and AppImage plus deb on Linux x64.
+Next work: use the remaining B entries at the top of `docket.md`. Ask about genuine
+tradeoffs; handle straightforward confirmed defects without boilerplate questions.
+Keep model-quality failures and native verification gaps visible until resolved.
+Google live access and automatic Mac window capture are not implemented.
 
-## Adaptive learning baseline (2026-09-29)
+## Latest validation evidence
 
-The library now records whole multiple-choice tests, keeps distilled course
-capability evidence after session deletion, and applies cross-course teaching
-preferences. Chat suggests cautious experiments in the background. The optional
-Memory tab exposes evidence and corrections; it is not a step students must
-complete before getting help. Practice selection enforces weak-area cooldowns,
-focus quotas, occasional strong-area checks, and selected-source scope.
+The mind-map pass completed 778 backend tests, then 88 focused map/compose/support/
+archive checks after source/model metadata changes, and 15 map checks after the
+final saved-quiz version/pinned-help regression. Ruff, mypy across 132 source
+files, regenerated API types, frontend diagnostics, 17 frontend behavior tests,
+and production build passed, including the final HTML edge controls.
+Browser acceptance used isolated synthetic sources and simulated model output:
+expand/focus/comparison details, automatic evidence loading, Explain, generated
+saved quiz, complete scored submission, map adoption, reload, restored quiz score,
+and full saved map view. It exposed and fixed lazy citation loading and an
+unreliable SVG edge hit area. Proof: `runs/mind-map/mind-map.png`.
+The real MiniCPM5 2B prompt-35 probe is `runs/mind-map/semantic/report.json`;
+it still omits named examples and produces imperfect explanations/alternatives.
+The latest narrow harness is `runs/bakeoff/20260930T174204Z/`: 1/2 mechanically;
+inspection found a proper refusal missed by the marker scorer. These results do
+not resolve B-06 or certify installed native behavior.
+The fresh acceptance tab, fixture services, and evaluation model processes were
+stopped after acceptance. An earlier stalled IAB tab (8) could not be closed
+through either documented binding; it may remain pointed at the stopped fixture.
 
-`docs/learning-memory.md` is the implementation and behavior handoff. Calibration,
-free-response assessment, proving method effectiveness, and broad factual
-quality evaluation remain open; passing persistence tests does not settle them.
+The quiz support pass completed a 761-test full backend run, followed by focused
+assessment/archive, 11-case support/routing, and 14-case backup checks after the
+last changes. Ruff, mypy across 128 source files, generated API types, frontend
+diagnostics, 14 frontend tests, and production build passed. Browser acceptance
+covered hint → assisted submission → Explain → independent question/help votes
+→ optional reason → reload/reopen with saved results, assistance, feedback, and
+cached help. Proof is `runs/quiz-support/quiz-controls.png`; it uses simulated
+model output. A real MiniCPM5 2B probe exercised a reasoning hint, missed-answer
+explanation, and excluded-question explanation
+(`runs/quiz-support/semantic/report.json`, prompt 31). Basic concept handling
+improved after inspection, but the excluded reply still echoed a feedback-policy
+sentence. The narrow 2/2 grounding/refusal rerun is
+`runs/bakeoff/20260930T140643Z/`; broader quality remains B-06. Temporary browser,
+fixture services, and the evaluation model process were stopped.
 
-## Platform evidence
+The 2026-09-30 saving/backup pass completed 751 backend tests, Ruff, mypy across
+127 source files, generated API types, frontend diagnostics and production build.
+The preceding Office pass completed 55 JavaScript tests and Office.js type checks;
+Office code was unchanged by saving/backup and quiz work. One existing
+Starlette/httpx deprecation warning remains. A subsequent 18-case course-archive/
+settings run covered a new WAL-size race: Settings must stay usable if
+checkpointing removes the WAL during measurement. These checks cover retention
+bytes (not just deleted rows), source hash changes, failed/overlapping backups,
+restore schema/path/hash validation, restored source queues/citations, adoption/
+retry/copy and course-import identity, in-flight edits, failed flush, recovery
+revision/writer isolation, and model-save metadata.
 
-Release `v0.3.1` already produced all four native artifacts in one successful
-GitHub Actions run:
+Isolated browser checks covered edited draft save/reopen, complete quiz results
+and revealed retakes, document refresh/deduplication, latest tail text, offline
+recovery, reload, and course isolation. They used seeded or simulated model/Office
+output. Browser acceptance also exercises backup settings/create/recover and
+unfinished-before-first-save draft reload. A persistent-editor recovery failure
+missed by helper tests was reproduced and corrected. The visible failed save →
+reload → recovered title/body → Retry journey persisted the exact paragraph as
+version 4 of the same artifact; local proof is `runs/save-backup/recovered-draft.png`.
+Actual-store tests include client proxy metadata to catch that serialization edge.
+Folder recovery was also exercised through the offline CLI; backup controls and
+heavy-tier recovery have local proof in `runs/save-backup/backup-settings.png`.
+The disposable fixture services and browser tab were stopped/closed. These
+establish UI/persistence contracts, not real Office behavior or general factual/
+pedagogical quality.
 
-- `Stacks_0.3.1_x64-setup.exe`
-- `Stacks_0.3.1_aarch64.dmg`
-- `Stacks_0.3.1_amd64.AppImage`
-- `Stacks_0.3.1_amd64.deb`
+Generated-advice quality remains mixed (B-06): the broader recorded model check
+passed 7/10; later narrow grounding/refusal probes do not establish general
+quality. Exact stored-passage lookup is deterministic. Syntax, citation, and
+draft-anchor checks cannot establish correct explanations or executable examples.
 
-That proves native packaging for the prior code. The current window lifecycle
-passed all six backend and Tauri/frontend jobs on Windows x64, macOS arm64, and
-Linux x64 in CI run `36490786861`. Release workflow run `36492354123` then
-built and uploaded fresh `stacks-0.3.1-macos-arm64` and
-`stacks-0.3.1-linux-x64` artifacts from the current implementation. Installed
-UI checks remain below.
+## Prior platform evidence
 
-## Release gate
+Release v0.3.1 produced Windows NSIS, Apple Silicon DMG, Linux AppImage, and deb.
+CI run `36490786861` passed all six backend/Tauri/frontend jobs for lifecycle
+commit `8c1bf97`. Release run `36492354123` produced Mac/Linux artifacts from
+that implementation. This evidence does not certify subsequent uncommitted
+learning/companion/Office changes or their installed behavior.
 
-### A. Product hierarchy
+The prior Windows smoke bundle is
+`src/frontend/src-tauri/target/release/bundle/nsis/Stacks_0.3.1_x64-setup.exe`,
+SHA-256 `D248ED09419A8AA6018DFE587AE6E3C3A97CC8A8A28A2898D046E9594A5F9C83`.
+Its bundled backend returned health OK with disposable data; it was not installed
+or published. Rebuild current code before using an installer as release proof.
 
-- [x] Library is the only window created at startup.
-- [x] Library contains a persistent, accessible **Open companion** action.
-- [x] Companion creation is explicit and idempotent.
-- [x] A second launch focuses the library.
-- [x] Closing the library owns application shutdown.
+## Remaining release gates
 
-### B. Window behavior
+### Installed application
 
-- [x] Companion uses native decorations and resizing.
-- [x] Companion no longer forces monitor size, edge position, or collapsed
-      geometry.
-- [x] Always-on-top defaults off and remains user controlled.
-- [ ] Windows installed smoke: open, move, resize, minimize, maximize, pin,
-      close, reopen, and verify one companion window.
-- [ ] From an installed build, confirm the companion renders content instead
-      of a white webview, including after two quick clicks.
-- [ ] Apple Silicon installed smoke for the same lifecycle.
-- [ ] Linux X11 and Wayland installed smoke. Assert normal move/resize under
-      Wayland; do not require compositor-controlled positioning.
+- [ ] Build current Windows, Apple Silicon Mac, and Linux installers.
+- [ ] Fresh launch: library only; create/select a course; add a source; indexing
+      finishes; grounded library question opens valid cited passages.
+- [ ] Companion: open twice rapidly; verify one nonblank window; move/resize,
+      minimize/maximize, pin/unpin, close/reopen. Repeat on Windows and Mac;
+      Linux X11/Wayland should allow normal movement without forced positioning.
+- [ ] Run companion explanation, exact references, quiz, summary, and free
+      questions with a ready real model. Independently inspect supported claims,
+      answer keys, examples, refusals, task shape, and latency.
+- [ ] Switch courses/chats during requests and check isolation; save edited work,
+      reload/reopen/export; fail saves and inspect the agreed recovery behavior.
+- [ ] Native close/crash/relaunch before and after first save, failed IndexedDB
+      writes, conflicting concurrent editors, and source metadata after recovery.
+      Unload cannot await HTTP saves; browser fixtures do not certify Tauri close.
+- [ ] Backup all tiers with real data; disable/change settings; restart between
+      due times; rotate only after success; restore saved citations/search.
+      Implement and exercise desktop recovery activation/rollback (B-14).
+- [ ] Export/import a disposable `.course` including practice and saved work.
+- [ ] Second app launch focuses the library. Closing library stops backend and
+      model children; closing companion leaves library usable.
 
-### C. Quality and build
+### Office and capture
 
-- [x] `.venv/Scripts/python -m pytest -q` (512 passed on 2026-09-28)
-- [x] `python -m ruff check .`
-- [x] `python -m mypy src`
-- [x] regenerate frontend API types from the current backend
-- [x] `npm run check` and `npm run build` in `src/frontend`
-- [x] `npm run check` and `npm test` in `src/office-addin` (12 passed)
-- [x] `cargo clippy --all-targets --locked -- -D warnings`
-- [x] Build the Windows installer from this working tree (83 MB NSIS bundle);
-      its bundled backend returned `/api/health` OK with disposable data.
-- [x] Build Apple Silicon macOS and Linux x64 installers from this
-      implementation (release workflow run `36492354123`).
-- [x] Three-platform CI matrix passed for the current lifecycle implementation
-      (run `36490786861`, commit `8c1bf97`).
+- [ ] Connect from installed Windows build; restart Office; open document,
+      course companion, and pane with correct context.
+- [ ] Repeat on Mac: login-keychain trust prompts, per-app manifest, Home →
+      Add-ins, launch, restart, and exact disconnect cleanup.
+- [ ] For Word/Excel/PowerPoint, type a companion question and verify current
+      unsaved off-screen text, sheet values/formulas, or last-slide text is used.
+      Check unchanged revision, reconnect, and course/document identity changes.
+- [ ] Close/suspend pane, fail a read, or exceed a limit: preserve the message,
+      show coverage/errors, require explicit saved-snapshot use, reject late reads.
+- [ ] Exercise hidden sheets, failed/unsupported objects, large documents, and
+      edits during capture. Compare the snapshot to the actual document.
+- [ ] Existing pane editing: selection/read/cited answer, insert/replace, save,
+      close/reopen in each host. Companion proposed edits remain copy-only.
+- [ ] Check native Windows accessibility/window-render capture and actual
+      screenshot OCR on Windows/Mac; inspect partial/off-screen limitations.
+- [ ] Disconnect Office; registration and exact certificate trust disappear
+      after restart; unrelated manifests/certificates remain intact.
 
-The checks above include local validation of this working tree. In a production
-browser preview with an isolated backend, two disposable courses were created.
-The companion rendered, opening it twice kept one popup, and opening it from
-each course switched the selected course in the existing popup. An empty course
-now explains that a source must be added before asking. Installed UI smoke for
-these latest fixes remains a release gate.
+### Release preparation
 
-The local Windows build produced
-`src/frontend/src-tauri/target/release/bundle/nsis/Stacks_0.3.1_x64-setup.exe`
-with SHA-256 `D248ED09419A8AA6018DFE587AE6E3C3A97CC8A8A28A2898D046E9594A5F9C83`.
-It was built as a smoke artifact at the current `0.3.1` version; it has not
-been installed or published.
-
-A manual MiniCPM5-2B probe used two synthetic César Chávez passages through
-the real model provider and quiz composition path. It exposed wrong answer
-indexes and a question about an event with no date in the cited passage. The
-new gate filtered those outputs; the latest three runs each returned specific,
-cited questions with matching answers. This is evidence for the generation
-path, not a substitute for the indexed-course and installed UI smoke below.
-
-### D. Core product smoke
-
-- [ ] Fresh launch shows the library and no companion.
-- [ ] Create or select a course, add a source, and see indexing finish.
-- [ ] With a ready model, run a grounded library question and verify citations.
-- [ ] Open the companion, run Explain, Find in course, Quiz me, Summarize, and
-      a free question; verify substantive answers cite valid passages.
-- [ ] With a ready local model, request a quiz on a named topic from indexed
-      course material. Confirm specific questions and full answer choices;
-      confirm unusable output is withheld.
-- [ ] Switch companion courses and confirm its visible conversation clears.
-- [ ] Export and re-import a disposable `.course` archive.
-- [ ] Quit and confirm the backend and local model child processes stop.
-
-### E. Office bridge (Windows only)
-
-- [ ] Connect Office from an installed Windows build and restart Office once.
-- [ ] From a course, use **Open in Office** and confirm its document, course
-      companion, and Office task pane all open with the expected context.
-- [ ] Word: selection read, cited answer, insert below, replace selection, save,
-      close, and reopen.
-- [ ] Excel: selected values/formulas, cited answer, comment or notes sheet,
-      replace active cell, save, close, and reopen.
-- [ ] PowerPoint: selected text/slide read, cited answer, text-box insert,
-      replace selected text, save, close, and reopen.
-- [ ] Disconnect Office and verify registration disappears after Office restarts.
-
-### F. Release metadata
-
-- [ ] Choose the next release version and run `scripts.set_version`.
-- [ ] Finish the changelog entry.
-- [ ] Commit the lifecycle, platform CI, tests, and docs together.
-- [ ] Push a matching tag only after installed smoke tests.
-- [ ] Review every platform artifact before publishing.
-
-## Process topology
-
-```text
-launch Stacks
-     |
-     v
-central library  ---- Open companion ----> movable/resizable companion
-courses + memory                              pasted context + cited help
-saved work + setup                            optional always-on-top
-     |                                                 |
-     +---------------- authenticated /api -------------+
-                              |
-                    SQLite + source files
-                              |
-                  local or selected cloud model
-
-Windows Office only:
-Word / Excel / PowerPoint <-> Office.js pane <-> grounded assistant
-```
+- [ ] Resolve or explicitly accept applicable backlog release boundaries,
+      especially integration authority B-05 and observed quality B-06.
+- [ ] Run required backend/frontend/Office checks and locked Rust clippy/build.
+- [ ] Choose next version; run `scripts.set_version`; finish changelog.
+- [ ] Commit only when requested, including required new files. Check a clean
+      checkout; verify platform artifacts; publish/tag only after authorization
+      and installed acceptance.
 
 ## Platform matrix
 
-| Target | Package | Local model runtime | Office bridge |
+| Target | Package | Local runtime | Office |
 | --- | --- | --- | --- |
-| Windows x64 | NSIS `.exe` | Vulkan, then CPU fallback | Supported |
-| macOS arm64 (M-series) | `.dmg` | Metal | Not yet supported |
-| Linux x64 | `.AppImage`, `.deb` | Vulkan, then CPU fallback | Not applicable |
+| Windows x64 | NSIS | Vulkan / CPU | Implemented; current native checks pending |
+| macOS arm64 | DMG | Metal | Implemented; native setup/read checks pending |
+| Linux x64 | AppImage / deb | Vulkan / CPU | Not applicable |
 
-Intel macOS and Linux arm64 are outside the current matrix because there are no
-pinned llama.cpp runtime assets for them. Add those targets only with native
-PyInstaller builds, checksummed runtime archives, hardware mapping, and tests.
-
-## Code map
-
-| Piece | Location |
-| --- | --- |
-| Primary library shell and opener | `src/frontend/src/routes/(app)/+layout.svelte` |
-| Companion route | `src/frontend/src/routes/companion/+page.svelte` |
-| Dynamic companion window | `src/frontend/src-tauri/src/companion.rs` |
-| Window and process lifecycle | `src/frontend/src-tauri/src/lib.rs`, `backend.rs` |
-| Main window and platform-neutral bundle config | `src/frontend/src-tauri/tauri.conf.json` |
-| Native installer selection | `scripts/build_desktop.py` |
-| Platform CI | `.github/workflows/ci.yml` |
-| macOS/Linux release builds | `.github/workflows/release-macos-linux.yml` |
-| Companion API | `src/backend/api/companion.py` |
-| Full library | `src/frontend/src/routes/(app)/` |
-| Office host and setup | `src/backend/office_addin/` |
-
-## Product rules
-
-- Every substantive academic answer stays grounded in the selected course.
-- The library remains useful without the companion or Office.
-- Office owns Office files; document edits go through Office.js.
-- Local data stays local unless the user explicitly selects a cloud provider or
-  exports a course.
-- Do not silently solve graded work.
-
-
-## Companion work-session baseline (2026-09-29)
-
-The companion route now opens saved work sessions beside external applications.
-File/paste, Windows window capture, and Office publication share document
-snapshots with the main database. Course evidence remains separate from draft
-text; paper review and worksheet discussion cannot write learning memory or
-scores. Revision checks prevent responses attaching to a refreshed document.
-See `docs/companion-work.md` for the implemented flow, model-quality findings,
-and the remaining native capture, Office-host, and direct-edit verification.
-
-The baseline passed 685 backend tests, backend lint/types, frontend check/build,
-and Office bridge tests/types. Structured reviews and proposed edits validate
-exact draft passages; archived references clear missing source links. Live model
-quality is still mixed: a usable selected-passage edit had an incorrect
-explanation. Keep model judgments inspectable and do not describe semantic
-acceptance as passed. Native Windows capture and real Office hosts still need
-verification. Test-only services were shut down after browser verification.
+Intel Mac/Linux arm64 need pinned runtime assets and native packaging before
+joining the matrix. Mac native window capture and live Google access need
+separate implementations; exported files remain available.

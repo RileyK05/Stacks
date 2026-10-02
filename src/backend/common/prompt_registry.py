@@ -12,23 +12,34 @@ from src.backend.common.schemas.base import KNOWN_GENERATION_TASKS
 # workspace prompts share the `artifact_generation` task for routing and
 # usage, but each has its own text (tutor/compose.py).
 WORKSPACE_PROMPTS = frozenset(
-    f"workspace_{kind}" for kind in ("quiz", "document", "sheet", "slides", "code")
+    f"workspace_{kind}"
+    for kind in ("quiz", "document", "sheet", "slides", "code", "mind_map")
 ) | {"workspace_quiz_repair", "workspace_repair"}
 # The Office add-in actions share the `tutor_answer` task for routing and
 # usage; each has its own text (src/backend/tutor/office.py).
 OFFICE_PROMPTS = frozenset(
     f"office_{action}" for action in ("explain", "find", "quiz", "summarize")
 )
-KNOWN_PROMPTS = KNOWN_GENERATION_TASKS | WORKSPACE_PROMPTS | OFFICE_PROMPTS | {
-    "tutor_steer",
-    "tutor_chat",
-    "tutor_answer_quotes",
-    "artifact_edit",
-    "learning_adaptation",
-    "companion_work",
-    "companion_review",
-    "companion_revision",
-}
+KNOWN_PROMPTS = (
+    KNOWN_GENERATION_TASKS
+    | WORKSPACE_PROMPTS
+    | OFFICE_PROMPTS
+    | {
+        "tutor_steer",
+        "tutor_chat",
+        "tutor_answer_quotes",
+        "artifact_edit",
+        "learning_adaptation",
+        "companion_work",
+        "companion_review",
+        "companion_revision",
+        "practice_hint",
+        "practice_explain",
+        "practice_explain_flagged",
+    "map_explain",
+    "map_quiz",
+    }
+)
 
 DEFAULT_PROMPTS_PATH = PROJECT_ROOT / "configs" / "prompts.toml"
 
@@ -107,9 +118,7 @@ def load_prompt_policy(
 ) -> PromptPolicy:
     with path.open("rb") as config_file:
         raw = tomllib.load(config_file)
-    prompts = {
-        name: section["text"] for name, section in raw["prompt"].items()
-    }
+    prompts = {name: section["text"] for name, section in raw["prompt"].items()}
     return PromptPolicy(
         prompts_config_version=raw["version"]["prompts_config_version"],
         prompts=prompts,

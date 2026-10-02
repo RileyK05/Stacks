@@ -49,6 +49,15 @@ from src.backend.common import (
 from src.backend.common.config import get_settings
 from src.backend.common.db import connection
 from src.backend.common.embeddings_config import load_embedding_policy
+from src.backend.common.schemas.office_live import (
+    LiveConnection,
+    LivePolicyView,
+    LivePoll,
+    LivePollResult,
+    LiveRegistration,
+    RefreshCompletion,
+    RefreshStatus,
+)
 from src.backend.common.schemas.work import (
     DocumentUpdate,
     WorkCreate,
@@ -56,6 +65,7 @@ from src.backend.common.schemas.work import (
     WorkPublish,
     WorkSession,
 )
+from src.backend.office_addin import live
 from src.backend.office_addin import service as office_service
 from src.backend.office_reader.work_files import read_work_file
 from src.backend.retrieval.config import load_retrieval_policy
@@ -412,6 +422,7 @@ def publish_work(request: WorkPublish) -> WorkSession:
                 DocumentUpdate(
                     **document.model_dump(), expected_revision=request.expected_revision
                 ),
+                skip_unchanged=True,
             )
             conn.commit()
             return work
@@ -421,6 +432,21 @@ def publish_work(request: WorkPublish) -> WorkSession:
         raise HTTPException(409, str(err)) from err
     except ValueError as err:
         raise HTTPException(422, str(err)) from err
+
+
+@router.get(
+    "/work/{session_id}",
+    response_model=WorkSession,
+    dependencies=[Depends(require_office_token)],
+)
+def get_work(session_id: UUID, course_id: UUID) -> WorkSession:
+    if courses_repo.get_course(course_id) is None:
+        raise HTTPException(404, "course not found")
+    try:
+        with connection() as conn:
+            return work_repo.session(conn, course_id, session_id)
+    except work_repo.WorkNotFoundError as err:
+        raise HTTPException(404, str(err)) from err
 
 
 @router.post(
@@ -448,3 +474,59 @@ def publish_package(request: WorkPackage) -> WorkSession:
             document=document,
         )
     )
+
+
+@router.get(
+    "/live-policy",
+    response_model=LivePolicyView,
+    dependencies=[Depends(require_office_token)],
+)
+def live_policy() -> LivePolicyView:
+    return live.policy_view()
+
+
+@router.post(
+    "/live", response_model=LiveConnection, dependencies=[Depends(require_office_token)]
+)
+def register_live(request: LiveRegistration) -> LiveConnection:
+    if courses_repo.get_course(request.course_id) is None:
+        raise HTTPException(404, "course not found")
+    try:
+        return live.BROKER.register(request)
+    except work_repo.WorkNotFoundError as err:
+        raise HTTPException(404, str(err)) from err
+    except live.LiveUnavailableError as err:
+        raise HTTPException(409, str(err)) from err
+
+
+@router.post(
+    "/live/{connection_id}/poll",
+    response_model=LivePollResult,
+    dependencies=[Depends(require_office_token)],
+)
+def poll_live(connection_id: UUID, request: LivePoll) -> LivePollResult:
+    try:
+        return live.BROKER.poll(connection_id, request.external_id)
+    except live.LiveUnavailableError as err:
+        raise HTTPException(409, str(err)) from err
+
+
+@router.post(
+    "/live/{connection_id}/complete",
+    response_model=RefreshStatus,
+    dependencies=[Depends(require_office_token)],
+)
+def complete_live(connection_id: UUID, request: RefreshCompletion) -> RefreshStatus:
+    try:
+        return live.BROKER.complete(connection_id, request)
+    except live.LiveUnavailableError as err:
+        raise HTTPException(409, str(err)) from err
+
+
+@router.delete(
+    "/live/{connection_id}",
+    status_code=204,
+    dependencies=[Depends(require_office_token)],
+)
+def disconnect_live(connection_id: UUID) -> None:
+    live.BROKER.disconnect(connection_id)

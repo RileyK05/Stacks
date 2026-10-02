@@ -67,6 +67,13 @@ def _tree_bytes(root: Path) -> int:
     return total
 
 
+def _file_bytes(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
 @router.post("/courses/{course_id}/export", response_model=ExportView)
 def export_course(course_id: UUID) -> ExportView:
     try:
@@ -133,9 +140,8 @@ def data_folder() -> DataFolderView:
     data_dir = Path(settings.data_dir)
     database = Path(settings.database_path)
     database_bytes = sum(
-        path.stat().st_size
+        _file_bytes(path)
         for path in (database, database.with_name(database.name + "-wal"))
-        if path.exists()
     )
     return DataFolderView(
         data_dir=str(data_dir),

@@ -94,6 +94,7 @@ class FromMessage(BaseModel):
     message_id: UUID
     item_index: int = Field(default=0, ge=0)
     draft: str | list[list[str]] | None = None
+    as_copy: bool = False
 
 
 class ArtifactSave(BaseModel):
@@ -294,27 +295,57 @@ def save_from_message(course_id: UUID, payload: FromMessage) -> ArtifactView:
     except (ValidationError, UnknownCitationError, ValueError) as err:
         raise _unprocessable(f"that item can't be saved: {err}") from err
     content = _checked(course_id, kind, compacted, sources)
-    created = artifacts_repo.create(
-        course_id,
-        kind=kind,
-        title=title,
-        content=content,
-        sources=sources,
-        origin={
-            "by": "chat",
-            "conversation_id": str(message.conversation_id),
-            "message_id": str(message.message_id),
-            "model": str(message.payload.get("model", "")),
-        },
-        author="you" if edited else "model",
-        note="Edited and saved from a chat" if edited else "Saved from a chat",
-    )
+    try:
+        created = artifacts_repo.adopt_message_item(
+            course_id,
+            kind=kind,
+            title=title,
+            content=content,
+            sources=sources,
+            origin={
+                "by": "chat",
+                "conversation_id": str(message.conversation_id),
+                "message_id": str(message.message_id),
+                "item_index": payload.item_index,
+                "model": str(message.payload.get("model", "")),
+            },
+            author="you" if edited else "model",
+            note="Edited and saved from a chat" if edited else "Saved from a chat",
+            as_copy=payload.as_copy,
+        )
+    except StaleVersionError as err:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(err)) from err
+    except LookupError as err:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(err)) from err
     return _view(created)
 
 
 @router.get("/{artifact_id}", response_model=ArtifactView)
 def get_artifact(course_id: UUID, artifact_id: UUID) -> ArtifactView:
     return _view(_require_artifact(course_id, artifact_id))
+
+
+@router.post("/{artifact_id}/copy", response_model=ArtifactView, status_code=201)
+def copy_artifact(
+    course_id: UUID, artifact_id: UUID, payload: RestoreRequest
+) -> ArtifactView:
+    current = _require_artifact(course_id, artifact_id)
+    if current.version != payload.base_version:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "this artifact changed; reload before making a copy",
+        )
+    copied = artifacts_repo.create(
+        course_id,
+        kind=current.kind,
+        title=f"{current.title} (copy)"[: artifacts_repo.TITLE_MAX_LENGTH],
+        content=current.content,
+        sources=current.sources,
+        origin={**current.origin, "adopted": False, "copied_from": str(artifact_id)},
+        author="you",
+        note=f"Copied version {current.version}",
+    )
+    return _view(copied)
 
 
 @router.put("/{artifact_id}", response_model=ArtifactView)

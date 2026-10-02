@@ -85,6 +85,31 @@ export async function publishPackage(fetchImpl, base, request, token) {
   return postJson(fetchImpl, `${base}/office/work-package`, request, token);
 }
 
+export async function livePolicy(fetchImpl, base, token) {
+  return getJson(fetchImpl, `${base}/office/live-policy`, token);
+}
+
+export async function getWork(fetchImpl, base, courseId, sessionId, token) {
+  return getJson(fetchImpl, `${base}/office/work/${sessionId}?course_id=${encodeURIComponent(courseId)}`, token);
+}
+
+export async function registerLive(fetchImpl, base, request, token) {
+  return postJson(fetchImpl, `${base}/office/live`, request, token);
+}
+
+export async function pollLive(fetchImpl, base, connectionId, externalId, token) {
+  return postJson(fetchImpl, `${base}/office/live/${connectionId}/poll`, { external_id: externalId }, token);
+}
+
+export async function completeLive(fetchImpl, base, connectionId, request, token) {
+  return postJson(fetchImpl, `${base}/office/live/${connectionId}/complete`, request, token);
+}
+
+export async function disconnectLive(fetchImpl, base, connectionId, token) {
+  const response = await fetchImpl(`${base}/office/live/${connectionId}`, { method: 'DELETE', headers: headers(token) });
+  if (!response.ok) throw await failure(response);
+}
+
 /** Read the current full Office package; release Office's temporary file on every path. */
 export async function wholePackage(document, maximumBytes = 20000000) {
   const file = await new Promise((resolve, reject) => {

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { goto, replaceState } from '$app/navigation';
+  import { beforeNavigate, goto, replaceState } from '$app/navigation';
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
   import type { components, paths } from '$lib/api/schema';
@@ -26,6 +26,7 @@
   import { PanelState } from '$lib/stores/panel.svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import { draftForSaving, WorkspaceCanvas } from '$lib/stores/workspace.svelte';
+  import { WorkspaceDraftRecovery } from '$lib/stores/workspaceRecovery.svelte';
   import { formatBytes } from '$lib/utils/format';
   import { showCompanion } from '$lib/utils/companion';
   import { plural } from '$lib/utils/labels';
@@ -58,6 +59,45 @@
   const chats = new CourseChats(courseId);
   const canvas = new WorkspaceCanvas();
   const panel = new PanelState(courseId, `stacks-panel:${courseId}`);
+  let workspaceRecovery = $state<Record<string, WorkspaceDraftRecovery>>({});
+  let leaving = false;
+
+  $effect(() => {
+    for (const turn of chats.turns) {
+      if (!turn.messageId) continue;
+      turn.workspace.forEach((session, itemIndex) => {
+        const draft = draftForSaving(session);
+        if (draft === null) return;
+        const key = `${turn.messageId}:${itemIndex}`;
+        if (workspaceRecovery[key]?.session !== session) {
+          workspaceRecovery[key] = new WorkspaceDraftRecovery(courseId, turn.messageId!, itemIndex, session);
+        }
+        workspaceRecovery[key].observe(draft);
+      });
+    }
+  });
+
+  async function flushWorkspace(): Promise<boolean> {
+    const results = await Promise.all(Object.values(workspaceRecovery).map((draft) => draft.flush()));
+    return results.every(Boolean);
+  }
+
+  beforeNavigate((navigation) => {
+    if (leaving) return;
+    if (!panel.tabs.some((tab) => tab.open.dirty || tab.open.saving) && Object.values(workspaceRecovery).length === 0) return;
+    if (navigation.willUnload) return;
+    navigation.cancel();
+    void Promise.all([panel.flushAll(), flushWorkspace()]).then(async (results) => {
+      if (!results.every(Boolean)) {
+        actionError = new Error('Your edits could not be saved. Keep this page open and retry, or copy them before leaving.');
+        return;
+      }
+      if (navigation.to) {
+        leaving = true;
+        await goto(navigation.to.url);
+      }
+    }).catch((caught) => { actionError = caught; });
+  });
   // One flag controls the whole right pane: the toggle must be able to open
   // it even when there is nothing in it yet.
   let rightOpen = $derived(panel.visible);
@@ -105,6 +145,7 @@
     });
     return () => {
       destroyed = true;
+      panel.dispose();
     };
   });
 
@@ -182,19 +223,31 @@
     }
   }
 
-  async function saveToArtifacts(turnIndex: number, itemIndex: number) {
+  const savingItems = new Set<string>();
+
+  async function saveToArtifacts(turnIndex: number, itemIndex: number, asCopy = false) {
     const turn = chats.turns[turnIndex];
     const messageId = turn?.messageId;
     const session = turn?.workspace[itemIndex];
     if (!messageId || !session) return;
+    const key = `${messageId}:${itemIndex}`;
+    if (savingItems.has(key)) return;
+    savingItems.add(key);
     const draft = draftForSaving(session);
     try {
-      const saved = await saveFromMessage(courseId, messageId, itemIndex, draft);
-      artifacts = [saved, ...artifacts];
+      const saved = await saveFromMessage(courseId, messageId, itemIndex, draft, asCopy);
+      artifacts = [saved, ...artifacts.filter((artifact) => artifact.artifact_id !== saved.artifact_id)];
       void refreshCourse();
-      toast(`Saved "${saved.title}" to this course's artifacts.`);
+      await panel.openArtifact(saved);
+      await workspaceRecovery[key]?.discardSaved(draft);
+      if (!panel.active?.open.error && JSON.stringify(draftForSaving(session)) === JSON.stringify(draft)) {
+        canvas.close(`Q${turnIndex + 1}:${itemIndex}`);
+      }
+      toast(asCopy ? `Saved a copy of "${saved.title}".` : `Saved "${saved.title}". Continue editing in this artifact.`);
     } catch (caught) {
       actionError = caught;
+    } finally {
+      savingItems.delete(key);
     }
   }
 
@@ -256,6 +309,11 @@
   });
 
   async function selectChat(id: string | null) {
+    if (!(await flushWorkspace())) {
+      actionError = new Error('Could not preserve your unfinished material. Retry or copy it before switching chats.');
+      return;
+    }
+    workspaceRecovery = {};
     chatsOpen = false;
     canvas.clear();
     activeTab = 'chat';
@@ -264,7 +322,22 @@
   }
 
   async function openWorkspace(turnIndex: number) {
-    canvas.openFromTurn(turnIndex, chats.turns[turnIndex].workspace);
+    const turn = chats.turns[turnIndex];
+    if (!turn) return;
+    const activeChat = chats.activeId;
+    await chats.loadCitations(turn);
+    if (destroyed || chats.activeId !== activeChat || chats.turns[turnIndex] !== turn) return;
+    const savedItems = new Set<number>();
+    for (let itemIndex = 0; itemIndex < turn.workspace.length; itemIndex++) {
+      const saved = artifacts.find((artifact) => artifact.origin.adopted === true &&
+        artifact.origin.message_id === turn.messageId && artifact.origin.item_index === itemIndex);
+      if (saved) {
+        savedItems.add(itemIndex);
+        await panel.openArtifact(saved);
+      }
+    }
+    canvas.openFromTurn(turnIndex, turn.workspace, savedItems);
+    if (savedItems.size < turn.workspace.length) panel.activeId = null;
     panel.show();
     await tick();
     // Side by side on wide screens; stacked below on narrow ones.
@@ -378,6 +451,13 @@
   ];
 </script>
 
+<svelte:window onbeforeunload={(event) => {
+  if (Object.values(workspaceRecovery).some((draft) => draft.error || draft.pendingWrites > 0)) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+}} />
+
 {#if error}
   <ErrorBanner {error} />
 {:else if loading || !course}
@@ -441,6 +521,9 @@
     </header>
 
     {#if actionError}<ErrorBanner error={actionError} />{/if}
+    {#each Object.values(workspaceRecovery).filter((draft) => draft.error) as draft (draft.key)}
+      <ErrorBanner error={new Error('Unfinished material could not be preserved on this computer. Copy your edits before closing Stacks.')} />
+    {/each}
     {#if exported}
       <div class="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-sm text-muted">
         <Icon name="check" class="h-4 w-4 text-success-text" />
@@ -561,9 +644,16 @@
               {panel}
               {canvas}
               sourcesFor={(turnIndex) => chats.turns[turnIndex]?.citations ?? []}
+              mapSourcesFor={(index) => {
+                const turn = chats.turns[index];
+                return turn?.chunkIds.map(id => turn.citations.find(c => c.chunk_id === id) ?? null) ?? [];
+              }}
               onclose={() => panel.hide()}
               onfollowup={(text) => thread?.prefill(text)}
+              {courseId}
+              messageFor={(index) => chats.turns[index]?.messageId ?? null}
               onsave={saveToArtifacts}
+              onartifactsaved={artifactsChanged}
             />
           </div>
         {/snippet}

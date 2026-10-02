@@ -3565,3 +3565,124 @@ Archive imports never retain original IDs for missing work citation mappings.
 They keep the saved quote, clear the unavailable source/trace link, assign new
 snapshot IDs, and label disconnected sources in the interface. Imported replies
 must agree with their saved document revision.
+
+## 2026-09-30 — Office readers and typing-triggered refresh
+
+Use host Office.js APIs to read the pane's own document. Word body, all Excel
+worksheets with formulas/display values, and all supported PowerPoint slide text
+feed saved work sessions with explicit partial coverage. A bounded, ephemeral
+broker serves refresh commands when companion composition starts; it never polls
+document contents continuously or writes learning memory. Exact identity/revision
+checks and idempotent completion prevent wrong-course and late-read replacement.
+Unchanged snapshots retain their revision and timestamps. Offline reads preserve
+draft questions and require an explicit saved-snapshot choice before answering.
+
+Office reconnection looks up the latest session revision and rejects a different
+document identity. Mac setup uses user container manifests and the login keychain;
+its commands and service flow are mocked, with native Office testing pending.
+Explicit screenshot upload reuses OCR and keeps partial scope on either platform.
+Google files use exports; live Google authentication and native Mac window capture
+are outside this pass. See `docs/office-live.md` and the prior scoped plans.
+
+## 2026-09-30 — Keep one backlog and retire completed task documents
+
+Consolidated eight temporary reports/handoffs/plans into the six working docs:
+`review.md`, `code-health.md`, `flow-review.md`, `usability-review.md`,
+`learning-memory.md`, `companion-work.md`, `office-live.md`, `office-live-plan.md`.
+The files were removed after retaining behavior contracts in system sections
+12–14, acceptance/quality gaps and review candidates in docket, and current
+validation/release gates in plan-notebook. Earlier mentions of those paths here
+are historical; tracked originals remain in Git history. No archive directory
+or replacement per-task reports were created.
+
+Cleared original docket IDs (completed, superseded, or disproven as written):
+C-01, C-25, C-28, C-29, C-68, C-78, C-99, D-01, D-02, D-03, D-04, D-05, D-07, D-10, D-16, D-18, D-21, D-24, P-08, P-13, R-01, R-03, R-07, R-08, R-10, R-11, R-12, S-02, S-03, S-05, S-06, T-01, T-02, T-05, T-06, T-07, T-17, T-18, T-19, T-24, T-32, X-33, X-34.
+Partial findings remain narrowed. MODEL_TASKS and raw_pdf_bytes are used;
+retired migration numbers have a safeguard test; companion files are tracked;
+student learning/companion paths now have substantial tests. The second review's
+correct-behavior entries L5/L7/L19/L20 were cleared; remaining IDs are mapped or
+qualified under REV in docket. Clearing a report is not claiming its open
+quality/native checks passed. Durable drafts, source-scope history, draft
+adoption, model scheduling, authority, generated quality, learning calibration,
+and native/live-host verification remain explicit B-01 through B-13 work.
+
+Current product documentation now reflects the existing one-vector-per-chunk
+embedding replacement contract. Applied migrations were not edited. This was
+documentation-only work; all pre-existing implementation changes were preserved.
+Future task closure deletes its temporary file after transferring only lasting
+facts and remaining work; current handoffs are replaced, not appended forever.
+
+Disposition clarification: D-16 is cleared only as originally worded. Its unused
+UPDATE_TOC/EXTRACT_KNOWLEDGE mapping entries remain a narrowed candidate; the used
+OCR mapping and PDF argument must stay. D-20 no longer asks to remove the already
+deleted marker, and D-22 requires credential migration rather than a branding rename.
+
+## 2026-09-30 — Saving identity, draft recovery, and local backup tiers
+
+User chose optional local backups: full keeps saved academic data; partial keeps
+sources/materials/memory and omits chats; heavy keeps sources/materials and omits
+learning memory/results/preferences. Retention tier and compression strength are
+independent. Initial retained-content compression is lossless; lossy visual
+transformations remain B-14. Disabled scheduling preserves existing copies.
+Permanent live deletion does not remove historical backups.
+
+Generated message items adopt one versioned material on first save, with explicit
+copies separate. Migration 010 adds identity without guessing legacy provenance;
+portable chat export/import retains and remaps message IDs. Saves serialize and
+guard dependent actions; model acceptance retains its version and citation intent.
+IndexedDB draft recovery is always available independently of optional backups,
+but belongs to the WebView/browser and is not included in backend archives.
+
+Backups use an online SQLite snapshot plus verified raw sources. Reduced copies
+must VACUUM after deleting rows: removed chat text otherwise survives in free
+database pages. Restore validates before publishing a new folder, clears machine
+settings/claims, preserves saved citation passages, and queues omitted vectors
+for rebuilding. Live database replacement is deliberately separate; desktop
+activation/rollback and native crash/close acceptance remain B-14/B-10.
+
+The save/recovery implementation closes B-01/B-03; X-31 is addressed by disposal.
+F-09's suggestion to close despite a failed save was rejected: preserving the tab
+and draft is the chosen behavior. F-06/F-27 remain independent candidates.
+Browser acceptance exposed reactive metadata that could not be cloned for draft
+storage despite helper tests passing; verification must exercise the actual
+client store and visible failed-save/reload journey.
+
+
+## 2026-09-30 — Quiz help and content opinions
+
+Hint delivery persists assistance by question fingerprint; a reloaded client
+cannot claim independent success by changing its attempt ID or help checkbox.
+Inference holds no writer transaction, and submission/late delivery/changed-key
+races are guarded. Explain uses completed answers and the current source-backed
+assessment; excluded keys are withheld. Generation and content opinions do not
+create capability or CORE evidence. Editable ratings refer to the question or
+specific generated output and enter future library quiz prompts only as bounded,
+source-scoped weak opinions. Rating content and disputing an assessment are
+separate actions. Ready help/feedback travel in course archives and full/partial
+backups; heavy retention omits them. Live originating chat model choices are
+honored without saving provider configuration into academic archives.
+
+Real local probes exposed answer-revealing hints, citation-format omissions, and
+assessment/policy instruction echoes. Prompt 31 narrows hint generation and splits
+ordinary/excluded explanations. Source numbers are validated and rendered rather
+than assuming the model formats them reliably. Remaining semantic quality is
+B-06; successful persistence and mechanical checks do not establish pedagogy.
+
+## 2026-09-30 — Interactive maps use the existing course and practice paths
+
+Maps are versioned study artifacts with colored branch forests and separate
+comparison edges. Branch membership controls focus and quiz scope; comparison
+neighbors never become children merely because they are related. HTML controls
+over SVG paths give keyboard/mouse access, and layout distance remains a visual
+heuristic. Explain is transient; generated quizzes save through normal artifacts
+and deliberate suite submissions are the only learning-write path. Request IDs,
+origin versions, source exclusions, live chat model choices, and archive remapping
+keep these actions connected to their course and evidence.
+
+Actual MiniCPM5 2B output invented umbrella topics and classified student/labor
+events as figures. Prompt 35 and application-selected literal excerpts replace
+model-written descriptions and relationship captions with inspectable evidence
+and neutral labels. This prevents invented descriptions, not incorrect inferred
+structure: exact co-occurrence does not establish entailment. The latest map
+under-covers named examples, and Explain/quiz semantics remain B-06. Map generation
+must not turn its own output into student preferences, hypotheses, or capability.

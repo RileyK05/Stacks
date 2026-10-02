@@ -235,24 +235,38 @@ def _stored_workspace_reply(client: TestClient, item: dict[str, Any]):
             {"markdown": ""},
         ),
         (
-            {"type": "sheet", "columns": ["Topic", "Definition"],
-             "rows": [["Original", "Definition [2]"]], "sources": [2]},
+            {
+                "type": "sheet",
+                "columns": ["Topic", "Definition"],
+                "rows": [["Original", "Definition [2]"]],
+                "sources": [2],
+            },
             [["Corrected", "My definition [2]"], ["Added", "My new row [2]"]],
-            {"columns": ["Topic", "Definition"],
-             "rows": [["Corrected", "My definition [1]"], ["Added", "My new row [1]"]]},
+            {
+                "columns": ["Topic", "Definition"],
+                "rows": [
+                    ["Corrected", "My definition [1]"],
+                    ["Added", "My new row [1]"],
+                ],
+            },
         ),
         (
             {"type": "slides", "deck": "# Original\nOld detail [2]", "sources": [2]},
             "# Corrected\nMy detail [2]\n\n---\n\n# Added\nMy new slide [2]",
-            {"slides": [
-                {"title": "Corrected", "body": "My detail [1]", "notes": ""},
-                {"title": "Added", "body": "My new slide [1]", "notes": ""},
-            ]},
+            {
+                "slides": [
+                    {"title": "Corrected", "body": "My detail [1]", "notes": ""},
+                    {"title": "Added", "body": "My new slide [1]", "notes": ""},
+                ]
+            },
         ),
     ],
 )
 def test_saving_and_reopening_a_workspace_keeps_the_students_edits(
-    client: TestClient, item, draft, expected,
+    client: TestClient,
+    item,
+    draft,
+    expected,
 ) -> None:
     course_id, chunks, chat_id, message_id = _stored_workspace_reply(client, item)
     saved = client.post(
@@ -275,7 +289,8 @@ def test_saving_and_reopening_a_workspace_keeps_the_students_edits(
 
 @pytest.mark.parametrize("draft", ["Unsupported citation [3]", [["wrong shape"]]])
 def test_a_workspace_draft_cannot_change_its_evidence_or_kind(
-    client: TestClient, draft,
+    client: TestClient,
+    draft,
 ) -> None:
     item = {"type": "document", "content": "Original notes [2]", "sources": [2]}
     course_id, _, _, message_id = _stored_workspace_reply(client, item)
@@ -594,6 +609,106 @@ def test_formats_are_checked_and_charts_lose_scripts(client: TestClient) -> None
     assert "<script" not in html and "onload" not in html and "javascript:" not in html
     assert "<iframe sandbox" in html
     assert "Content-Security-Policy" in html
+
+
+def test_generated_item_adopts_once_then_updates_as_versioned_artifact(
+    client: TestClient,
+) -> None:
+    item = {"type": "document", "content": "Original [2]", "sources": [2]}
+    course_id, _, _, message_id = _stored_workspace_reply(client, item)
+    url = f"/courses/{course_id}/artifacts/from-message"
+    body = {"message_id": str(message_id), "draft": "My notes [2]"}
+    first = client.post(url, json=body).json()
+    retried = client.post(url, json=body)
+    assert retried.status_code == 201
+    assert retried.json()["artifact_id"] == first["artifact_id"]
+    assert len(client.get(f"/courses/{course_id}/artifacts").json()) == 1
+    updated = _save(client, course_id, first, content={"markdown": "Next edit [1]"})
+    assert updated.status_code == 200
+    assert updated.json()["version"] == 2
+    assert client.post(url, json=body).status_code == 409
+    copy = client.post(url, json=body | {"as_copy": True})
+    assert copy.status_code == 201
+    assert copy.json()["artifact_id"] != first["artifact_id"]
+    assert copy.json()["content"] == first["content"]
+    assert copy.json()["origin"]["adopted"] is False
+    assert len(client.get(f"/courses/{course_id}/artifacts").json()) == 2
+    copied = client.post(
+        f"/courses/{course_id}/artifacts/{first['artifact_id']}/copy",
+        json={"base_version": updated.json()["version"]},
+    )
+    assert copied.status_code == 201, copied.text
+    assert copied.json()["content"] == updated.json()["content"]
+    assert copied.json()["origin"]["adopted"] is False
+    stale_copy = client.post(
+        f"/courses/{course_id}/artifacts/{first['artifact_id']}/copy",
+        json={"base_version": first["version"]},
+    )
+    assert stale_copy.status_code == 409
+
+
+def test_concurrent_generated_item_saves_create_one_artifact(
+    client: TestClient,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from src.backend.common import artifacts_repo
+
+    item = {"type": "document", "content": "Original [2]", "sources": [2]}
+    course_id, chunks, _, message_id = _stored_workspace_reply(client, item)
+
+    def save():
+        return artifacts_repo.adopt_message_item(
+            UUID(course_id),
+            kind="doc",
+            title="Notes",
+            content={"markdown": "Same [1]"},
+            sources=[chunks[1]],
+            origin={"by": "chat", "message_id": str(message_id), "item_index": 0},
+            author="you",
+            note="Saved from chat",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        saved = list(pool.map(lambda _: save(), range(2)))
+    assert saved[0].artifact_id == saved[1].artifact_id
+    assert len(artifacts_repo.list_artifacts(UUID(course_id))) == 1
+
+
+def test_imported_generated_item_keeps_its_saved_identity(client: TestClient) -> None:
+    from src.backend.common import archive_notebook
+    from src.backend.common.db import connection
+
+    item = {"type": "document", "content": "Original [2]", "sources": [2]}
+    course_id, chunks, _, message_id = _stored_workspace_reply(client, item)
+    first = client.post(
+        f"/courses/{course_id}/artifacts/from-message",
+        json={"message_id": str(message_id)},
+    ).json()
+    notebook = archive_notebook.export_notebook(UUID(course_id))
+    imported = client.post("/courses", json={"name": "Imported"}).json()["course_id"]
+    mapped_chunks = [add_chunk(UUID(imported), text) for text in (LINEARITY, BASIS)]
+    source_map = {}
+    for old, new in zip(chunks, mapped_chunks, strict=True):
+        source_map[chunk_source_locator(old)[0]] = chunk_source_locator(new)[0]
+    with connection() as conn:
+        archive_notebook.import_notebook(conn, UUID(imported), notebook, source_map)
+        conn.commit()
+    chats = client.get(f"/courses/{imported}/conversations").json()
+    history = client.get(
+        f"/courses/{imported}/conversations/{chats[0]['conversation_id']}"
+    ).json()
+    new_message_id = history["messages"][1]["message_id"]
+    saved = client.post(
+        f"/courses/{imported}/artifacts/from-message",
+        json={"message_id": new_message_id},
+    )
+    assert saved.status_code == 201, saved.text
+    artifacts = client.get(f"/courses/{imported}/artifacts").json()
+    assert len(artifacts) == 1
+    assert saved.json()["artifact_id"] == artifacts[0]["artifact_id"]
+    assert saved.json()["origin"]["message_id"] == new_message_id
+    assert new_message_id != first["origin"]["message_id"]
 
 
 def test_deleting_the_course_removes_its_artifacts(client: TestClient) -> None:

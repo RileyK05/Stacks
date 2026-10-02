@@ -206,3 +206,12 @@ test('Office publishes working material through its authenticated bridge, not so
   assert.equal(fake.calls[0].init.headers['X-Office-Token'], 'office-token');
   assert.deepEqual(JSON.parse(fake.calls[0].init.body), request);
 });
+
+test('Office can read the latest session revision through its own authenticated bridge', async () => {
+  const { getWork } = await import('./public/bridge.js');
+  const fake = fakeFetch(jsonResponse({ session_id: 'work-1', revision: 2 }));
+  const result = await getWork(fake.impl, ORIGIN, 'course-1', 'work-1', 'office-token');
+  assert.equal(result.revision, 2);
+  assert.equal(fake.calls[0].url, `${ORIGIN}/office/work/work-1?course_id=course-1`);
+  assert.equal(fake.calls[0].init.headers['X-Office-Token'], 'office-token');
+});

@@ -69,7 +69,7 @@
       class="w-full resize-y rounded-xl border border-line-strong bg-surface p-4 font-mono text-[13px] leading-relaxed text-fg transition-[border-color,box-shadow] focus:border-accent focus:outline-none focus:ring-3 focus:ring-accent/15"
     ></textarea>
     <p class="text-xs text-subtle">
-      Edits stay in this browser session until you choose Save to artifacts.
+      Unfinished edits recover on this computer. Save to artifacts to keep editing a versioned material.
     </p>
   {:else}
     <div class="rounded-xl border border-line bg-bg/40 px-5 py-4">

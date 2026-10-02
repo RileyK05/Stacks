@@ -14,7 +14,7 @@ export default defineConfig({
   // to a lazily loaded route (the companion window, Settings) can discover a
   // new dependency, re-bundle, and answer the pages already open with 504
   // "Outdated Optimize Dep": a window stuck on the splash until restarted.
-  optimizeDeps: { entries: ['src/**/*.svelte', 'src/**/*.ts'] },
+  optimizeDeps: { entries: ['src/**/*.svelte', 'src/**/*.ts', '!src/**/*.test.*'] },
   server: {
     port: 5173,
     strictPort: true,

@@ -10,7 +10,9 @@ from src.backend.common.db import Connection
 from src.backend.common.queries import get
 from src.backend.common.schemas.learning import (
     Capability,
+    ContentFeedback,
     LearningExperiment,
+    PracticeHelp,
     PracticeRun,
     PracticeSuite,
     TeachingMethod,
@@ -44,6 +46,13 @@ class Assessment(BaseModel):
     updated_at: datetime
 
 
+class ArchivedHelp(PracticeHelp):
+    suite_id: UUID
+    run_ref: UUID
+    context_key: str = ""
+    updated_at: datetime
+
+
 class LearningArchive(BaseModel):
     model_config = ConfigDict(extra="forbid")
     suites: list[PracticeSuite] = Field(default_factory=list, max_length=10000)
@@ -53,6 +62,8 @@ class LearningArchive(BaseModel):
         default_factory=list, max_length=10000
     )
     assessments: list[Assessment] = Field(default_factory=list, max_length=10000)
+    help: list[ArchivedHelp] = Field(default_factory=list, max_length=100000)
+    feedback: list[ContentFeedback] = Field(default_factory=list, max_length=100000)
 
 
 def export_learning(conn: Connection, course_id: UUID) -> LearningArchive:
@@ -62,6 +73,18 @@ def export_learning(conn: Connection, course_id: UUID) -> LearningArchive:
     ]
     return LearningArchive(
         suites=suites,
+        help=[
+            ArchivedHelp.model_validate(r)
+            for r in conn.execute(
+                get("practice_support", "exported_help"), {"course_id": course_id}
+            )
+        ],
+        feedback=[
+            ContentFeedback.model_validate(r)
+            for r in conn.execute(
+                get("practice_support", "exported_feedback"), {"course_id": course_id}
+            )
+        ],
         runs=[
             learning.run_view(conn, r)
             for r in learning.rows(conn, "runs", course_id=course_id)
@@ -87,9 +110,11 @@ def import_learning(
     chunk_map: dict[UUID, UUID],
 ) -> dict[UUID, UUID]:
     suite_map = {s.suite_id: uuid4() for s in archive.suites}
-    run_ids = {r.run_id for r in archive.runs} | {
-        o.run_ref for o in archive.observations
-    }
+    run_ids = (
+        {r.run_id for r in archive.runs}
+        | {o.run_ref for o in archive.observations}
+        | {h.run_ref for h in archive.help}
+    )
     run_map = {old: uuid4() for old in run_ids}
 
     def evidence(value: Any) -> Any:
@@ -186,5 +211,51 @@ def import_learning(
             raise ValueError("an archived answer key is invalid")
         insert(
             "correct_assessment", assessment, suite_id=suite_map[assessment.suite_id]
+        )
+    help_map = {h.help_id: uuid4() for h in archive.help}
+    for help_record in archive.help:
+        if help_record.suite_id not in suite_map:
+            raise ValueError("archived help has no test suite")
+        test = next(s for s in archive.suites if s.suite_id == help_record.suite_id)
+        if not 0 <= help_record.question_index < len(test.questions) or any(
+            n not in test.questions[help_record.question_index].sources
+            for n in help_record.content.sources
+        ):
+            raise ValueError("archived help has invalid question or sources")
+        values = help_record.model_dump() | {
+            "help_id": help_map[help_record.help_id],
+            "suite_id": suite_map[help_record.suite_id],
+            "run_ref": run_map[help_record.run_ref],
+            "claim": uuid4(),
+            "content": help_record.content.model_dump_json(),
+        }
+        conn.execute(get("practice_support", "import_help"), values)
+    for rating in archive.feedback:
+        if rating.suite_id not in suite_map:
+            raise ValueError("archived feedback has no test suite")
+        test = next(s for s in archive.suites if s.suite_id == rating.suite_id)
+        linked = next((h for h in archive.help if h.help_id == rating.help_id), None)
+        if (
+            not 0 <= rating.question_index < len(test.questions)
+            or (
+                rating.target != "question"
+                and (
+                    linked is None
+                    or linked.suite_id != rating.suite_id
+                    or linked.question_index != rating.question_index
+                    or linked.kind != rating.target
+                )
+            )
+            or (rating.target == "question" and rating.help_id is not None)
+            or rating.rating is None
+        ):
+            raise ValueError("archived feedback has invalid content target")
+        conn.execute(
+            get("practice_support", "import_feedback"),
+            rating.model_dump()
+            | {
+                "suite_id": suite_map[rating.suite_id],
+                "help_id": help_map.get(rating.help_id) if rating.help_id else None,
+            },
         )
     return suite_map

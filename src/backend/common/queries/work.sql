@@ -22,6 +22,8 @@ INSERT INTO work_turns(request_id, session_id, action, instruction, selection, d
 VALUES(:request_id, :session_id, :action, :instruction, :selection, :document_revision, :reply);
 -- name: touch
 UPDATE work_sessions SET updated_at = now_utc() WHERE session_id = :session_id;
+-- name: lock_document
+UPDATE work_sessions SET revision = revision WHERE session_id = :session_id AND course_id = :course_id;
 -- name: delete
 DELETE FROM work_sessions WHERE session_id = :session_id AND course_id = :course_id;
 -- name: import_session

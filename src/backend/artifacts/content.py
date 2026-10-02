@@ -17,11 +17,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 from src.backend.common.schemas.learning import Capability
+from src.backend.common.schemas.mind_map import MindMapContent
 from src.backend.tutor.workspace import (
     WorkspaceCode,
     WorkspaceDocument,
     WorkspaceHtml,
     WorkspaceItem,
+    WorkspaceMindMap,
     WorkspaceQuiz,
     WorkspaceSheet,
     WorkspaceSlides,
@@ -35,6 +37,7 @@ ArtifactKind = Literal[
     "flashcards",
     "code",
     "chart",
+    "mind_map",
 ]
 KINDS: tuple[ArtifactKind, ...] = (
     "doc",
@@ -44,6 +47,7 @@ KINDS: tuple[ArtifactKind, ...] = (
     "flashcards",
     "code",
     "chart",
+    "mind_map",
 )
 MAX_TEXT = 200_000
 MAX_CELL = 5_000
@@ -142,6 +146,7 @@ CONTENT_MODELS: dict[str, type[BaseModel]] = {
     "flashcards": FlashcardsContent,
     "code": CodeContent,
     "chart": ChartContent,
+    "mind_map": MindMapContent,
 }
 
 DEFAULT_TITLES: dict[str, str] = {
@@ -152,6 +157,7 @@ DEFAULT_TITLES: dict[str, str] = {
     "flashcards": "Untitled flashcards",
     "code": "Untitled code",
     "chart": "Untitled chart",
+    "mind_map": "Untitled mind map",
 }
 
 
@@ -349,6 +355,11 @@ def from_workspace_item(
                 ]
             },
             [],
+        )
+    if isinstance(item, WorkspaceMindMap):
+        return (
+            "mind_map", title or "Mind map",
+            item.model_dump(include={"nodes", "edges"}), [],
         )
     if isinstance(item, WorkspaceCode):
         return (

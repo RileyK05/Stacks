@@ -65,11 +65,32 @@ def create(conn: Connection, course_id: UUID, request: WorkCreate) -> WorkSessio
 
 
 def update_document(
-    conn: Connection, course_id: UUID, session_id: UUID, request: DocumentUpdate
+    conn: Connection,
+    course_id: UUID,
+    session_id: UUID,
+    request: DocumentUpdate,
+    *,
+    skip_unchanged: bool = False,
 ) -> WorkSession:
-    session(conn, course_id, session_id)
+    if skip_unchanged:
+        conn.execute(
+            get("work", "lock_document"),
+            {"course_id": course_id, "session_id": session_id},
+        )
+    current = session(conn, course_id, session_id)
+    if skip_unchanged and current.revision != request.expected_revision:
+        raise WorkConflictError(
+            "This work session changed elsewhere. Reload before refreshing."
+        )
     if not request.text.strip():
         raise ValueError("The document contains no readable text.")
+    if (
+        skip_unchanged
+        and current.document
+        and current.document.model_dump(exclude={"revision", "captured_at"})
+        == request.model_dump(exclude={"expected_revision"})
+    ):
+        return current
     changed = conn.execute(
         get("work", "advance"),
         {

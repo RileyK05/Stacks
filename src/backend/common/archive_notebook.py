@@ -47,6 +47,7 @@ class Trace(ArchiveModel):
 
 
 class Message(ArchiveModel):
+    message_id: UUID | None = None
     seq: int = Field(ge=1)
     role: Literal["user", "assistant"]
     text: str
@@ -79,7 +80,9 @@ class Version(ArchiveModel):
 
 class Artifact(ArchiveModel):
     artifact_id: UUID
-    kind: Literal["doc", "sheet", "slides", "quiz", "flashcards", "code", "chart"]
+    kind: Literal[
+        "doc", "sheet", "slides", "quiz", "flashcards", "code", "chart", "mind_map"
+    ]
     title: str
     content: dict[str, Any]
     sources: list[UUID]
@@ -307,8 +310,11 @@ def import_notebook(
         if notebook.learning
         else {}
     )
+    conversation_map: dict[str, str] = {}
+    message_map: dict[str, str] = {}
     for conversation in notebook.conversations:
         conversation_id = uuid4()
+        conversation_map[str(conversation.conversation_id)] = str(conversation_id)
         selected = (
             [str(source_map[s]) for s in conversation.source_ids if s in source_map]
             if conversation.source_ids is not None
@@ -333,10 +339,13 @@ def import_notebook(
             },
         )
         for message in conversation.messages:
+            message_id = uuid4()
+            if message.message_id is not None:
+                message_map[str(message.message_id)] = str(message_id)
             conn.execute(
                 get("archive_notebook", "insert_message"),
                 {
-                    "message_id": uuid4(),
+                    "message_id": message_id,
                     "conversation_id": conversation_id,
                     "seq": message.seq,
                     "role": message.role,
@@ -350,9 +359,38 @@ def import_notebook(
                     "created_at": message.created_at,
                 },
             )
+    artifact_map = {str(a.artifact_id): str(uuid4()) for a in notebook.artifacts}
     for artifact in notebook.artifacts:
-        artifact_id = uuid4()
+        artifact_id = UUID(artifact_map[str(artifact.artifact_id)])
         mapped = [str(chunk_map[chunk]) for chunk in artifact.sources]
+        origin = dict(artifact.origin)
+        if isinstance(origin.get("map_origin"), dict):
+            map_origin = dict(origin["map_origin"])
+            if map_origin.get("artifact_id"):
+                mapped_id = artifact_map.get(str(map_origin["artifact_id"]))
+                if mapped_id:
+                    map_origin["artifact_id"] = mapped_id
+                else:
+                    map_origin = {}
+            elif map_origin.get("message_id"):
+                mapped_id = message_map.get(str(map_origin["message_id"]))
+                if mapped_id:
+                    map_origin["message_id"] = mapped_id
+                else:
+                    map_origin = {}
+            origin["map_origin"] = map_origin
+            origin["map_request_id"] = str(uuid4())
+            if origin.get("message_id"):
+                origin["message_id"] = message_map.get(str(origin["message_id"]))
+        if origin.get("by") == "chat":
+            prior_message = str(origin.get("message_id", ""))
+            if prior_message in message_map:
+                origin["message_id"] = message_map[prior_message]
+                origin["conversation_id"] = conversation_map.get(
+                    str(origin.get("conversation_id", "")), ""
+                )
+            else:
+                origin["adopted"] = False
         conn.execute(
             get("archive_notebook", "insert_artifact"),
             {
@@ -362,7 +400,7 @@ def import_notebook(
                 "title": artifact.title,
                 "content": json.dumps(artifact.content),
                 "sources": json.dumps(mapped),
-                "origin": json.dumps(artifact.origin),
+                "origin": json.dumps(origin),
                 "version": artifact.version,
                 "created_at": artifact.created_at,
                 "updated_at": artifact.updated_at,

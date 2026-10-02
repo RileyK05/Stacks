@@ -1,4 +1,4 @@
-version = 1
+version = 2
 max_document_chars = 300000
 max_upload_bytes = 20000000
 document_context_chars = 8000
@@ -6,3 +6,17 @@ history_context_chars = 2000
 source_context_chars = 5000
 section_chars = 1800
 capture_timeout_seconds = 20
+max_screenshot_pixels = 20000000
+
+[office_live]
+poll_interval_ms = 1000
+lease_seconds = 15
+refresh_timeout_seconds = 25
+result_retention_seconds = 60
+max_connections = 100
+max_cells = 20000
+max_sheets = 100
+max_slides = 500
+max_shapes = 5000
+chunk_rows = 100
+chunk_columns = 20

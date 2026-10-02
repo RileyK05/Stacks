@@ -71,7 +71,7 @@
       {/each}
       <p class="border-t border-line px-3 pt-2 text-xs text-subtle">
         The Stacks companion opens on this course. In Office, click <span class="font-medium text-muted">Stacks</span> on the Home tab to open its document pane.
-        The first time, Windows asks you to trust Stacks' local certificate — choose Yes.
+        Approve the local certificate trust request the first time. On Mac, select Stacks under Home → Add-ins.
       </p>
     </div>
   {/snippet}

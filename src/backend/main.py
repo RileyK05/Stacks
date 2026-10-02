@@ -22,11 +22,13 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.backend.api import (
     artifacts,
+    backups,
     companion,
     conversations,
     courses,
     data,
     learning,
+    mind_maps,
     office_setup,
     runtime,
     settings,
@@ -34,6 +36,7 @@ from src.backend.api import (
     tutor,
 )
 from src.backend.api.deps import require_app_token
+from src.backend.common import backups as backup_service
 from src.backend.common import maintenance
 from src.backend.common.config import get_settings
 from src.backend.common.migrate import migrate
@@ -74,7 +77,9 @@ def create_api() -> FastAPI:
     api.include_router(settings.router)
     api.include_router(runtime.router)
     api.include_router(data.router)
+    api.include_router(backups.router)
     api.include_router(learning.router)
+    api.include_router(mind_maps.router)
     api.include_router(office_setup.router)
 
     @api.get("/health")
@@ -97,6 +102,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     stop = asyncio.Event()
     tasks = [
         asyncio.create_task(maintenance.run_forever(stop)),
+        asyncio.create_task(backup_service.run_forever(stop)),
         asyncio.create_task(ingestion_worker.run_forever(stop)),
         asyncio.create_task(supervisor.run_forever(stop)),
     ]

@@ -299,7 +299,10 @@ def send_message(
         raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(err)) from err
     assert updated is not None
     pending = chat.pending_summary(updated, history)
-    if replied.trace_id is not None:
+    if (
+        replied.trace_id is not None
+        and classify_intent(payload.question) is not Intent.MIND_MAP
+    ):
         background.add_task(
             research.inspect_exchange,
             course_id,

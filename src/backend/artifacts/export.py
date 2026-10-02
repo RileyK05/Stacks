@@ -28,6 +28,7 @@ FORMATS: dict[str, tuple[str, ...]] = {
     "flashcards": ("csv", "md"),
     "code": ("txt",),
     "chart": ("html",),
+    "mind_map": ("md",),
 }
 _CODE_EXTENSIONS = {
     "python": "py",
@@ -143,6 +144,23 @@ def to_markdown(
         body = _quiz_markdown(title, content)
     elif kind == "flashcards":
         body = _cards_markdown(title, content)
+    elif kind == "mind_map":
+        nodes = {node["id"]: node for node in content["nodes"]}
+        lines = [f"# {title}", "", "## Topics", ""]
+        for node in nodes.values():
+            cites = " ".join(f"[{n}]" for n in node["sources"])
+            lines.extend([f"### {node['label']}", "", f"{node['summary']} {cites}", ""])
+        lines.extend(["## Connections", ""])
+        for edge in content["edges"]:
+            cites = " ".join(f"[{n}]" for n in edge["sources"])
+            lines.extend(
+                [
+                    f"- **{nodes[edge['source']]['label']} → "
+                    f"{nodes[edge['target']]['label']}** "
+                    f"({edge['kind']}: {edge['label']}): {edge['explanation']} {cites}",
+                ]
+            )
+        body = "\n".join(lines)
     else:
         raise ValueError(f"no Markdown export for {kind}")
     if sources:

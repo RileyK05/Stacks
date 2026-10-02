@@ -45,6 +45,7 @@ from src.backend.tutor.compose import build_prompt as build_prompt
 from src.backend.tutor.workspace import (
     QuizQuestion,
     WorkspaceItem,
+    WorkspaceMindMap,
     WorkspaceQuiz,
     extract_workspace_items,
 )
@@ -150,6 +151,15 @@ def answer_question(
         teaching += "\nPresentation preference: " + behavior
     if focus:
         conversation = "\n\n".join(part for part in (conversation, focus) if part)
+    if classify_intent(question) is Intent.QUIZ:
+        from src.backend.student_model.practice_support import feedback_context
+
+        content_opinions = feedback_context(
+            conn, course_id, list(source_ids) if source_ids is not None else None
+        )
+        conversation = "\n\n".join(
+            part for part in (conversation, content_opinions) if part
+        )
 
     def generate(
         task: str, prompt: str, *, response_schema: dict[str, Any] | None = None
@@ -331,7 +341,9 @@ def answer_question(
             item = item.model_copy(update={"practice_id": suite_id})
         items.append(item)
     answer.workspace_items = tuple(items)
-    if method and not any(isinstance(item, WorkspaceQuiz) for item in items):
+    if method and not any(
+        isinstance(item, (WorkspaceQuiz, WorkspaceMindMap)) for item in items
+    ):
         conn.execute(
             get("learning", "teach"),
             {

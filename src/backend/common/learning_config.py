@@ -30,11 +30,19 @@ class PracticePolicy(BaseModel):
     method_exploration_interval: int = Field(ge=2)
 
 
+class SupportPolicy(BaseModel):
+    claim_seconds: int = Field(ge=30)
+    feedback_items: int = Field(ge=1, le=20)
+    feedback_chars: int = Field(ge=200)
+    passage_chars: int = Field(ge=1000)
+
+
 class LearningPolicy(BaseModel):
     version: str
     scoring: ScoringPolicy
     practice: PracticePolicy
     methods: dict[str, str]
+    support: SupportPolicy
 
 
 def load_learning_policy() -> LearningPolicy:
@@ -45,4 +53,5 @@ def load_learning_policy() -> LearningPolicy:
         scoring=raw["scoring"],
         practice=raw["practice"],
         methods=raw["methods"],
+        support=raw["support"],
     )

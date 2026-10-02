@@ -7,7 +7,8 @@ export type WorkspaceHtml = components['schemas']['WorkspaceHtml'];
 export type WorkspaceCode = components['schemas']['WorkspaceCode'];
 export type WorkspaceSheet = components['schemas']['WorkspaceSheet'];
 export type WorkspaceSlides = components['schemas']['WorkspaceSlides'];
-export type WorkspaceItem = WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml | WorkspaceCode | WorkspaceSheet | WorkspaceSlides;
+export type WorkspaceMindMap = components['schemas']['WorkspaceMindMap'];
+export type WorkspaceItem = WorkspaceQuiz | WorkspaceDocument | WorkspaceHtml | WorkspaceCode | WorkspaceSheet | WorkspaceSlides | WorkspaceMindMap;
 
 export class QuizSession extends PracticeSession {
   readonly kind = 'quiz';
@@ -127,13 +128,19 @@ export class SlidesSession {
   }
 }
 
+export class MindMapSession {
+  readonly kind = 'mind_map';
+  constructor(readonly item: WorkspaceMindMap) {}
+}
+
 export type WorkspaceSession =
   | QuizSession
   | DocumentSession
   | HtmlSession
   | CodeSession
   | SheetSession
-  | SlidesSession;
+  | SlidesSession
+  | MindMapSession;
 
 export function draftForSaving(session: WorkspaceSession): string | string[][] | null {
   switch (session.kind) {
@@ -161,6 +168,8 @@ export function openSession(item: WorkspaceItem, savedOrigin: SuiteFromSaved | n
       return new SheetSession(item);
     case 'slides':
       return new SlidesSession(item);
+    case 'mind_map':
+      return new MindMapSession(item);
   }
 }
 
@@ -170,7 +179,8 @@ const FALLBACK_TITLES: Record<WorkspaceSession['kind'], string> = {
   html: 'Visualization',
   code: 'Code',
   sheet: 'Spreadsheet',
-  slides: 'Slides'
+  slides: 'Slides',
+  mind_map: 'Mind map'
 };
 
 export function itemTitle(session: WorkspaceSession): string {
@@ -212,11 +222,12 @@ export class WorkspaceCanvas {
     return this.tabs.some((tab) => tab.turnIndex === turnIndex);
   }
 
-  openFromTurn(turnIndex: number, sessions: WorkspaceSession[]): void {
+  openFromTurn(turnIndex: number, sessions: WorkspaceSession[], savedItems = new Set<number>()): void {
     if (sessions.length === 0) return;
     const origin = `Q${turnIndex + 1}`;
     let firstNew: string | null = null;
     sessions.forEach((session, itemIndex) => {
+      if (savedItems.has(itemIndex)) return;
       const id = `${origin}:${itemIndex}`;
       if (this.tabs.some((tab) => tab.id === id)) return;
       this.tabs.push({ id, origin, title: itemTitle(session), turnIndex, session });

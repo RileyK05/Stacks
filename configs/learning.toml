@@ -23,6 +23,12 @@ max_open_experiments = 12
 context_chars = 2200
 method_exploration_interval = 4
 
+[support]
+claim_seconds = 300
+feedback_items = 6
+feedback_chars = 1800
+passage_chars = 12000
+
 [methods]
 step_by_step = "Explain one connection at a time, then invite an independent attempt."
 worked_example = "Use a small source-supported worked example, then a different independent example."

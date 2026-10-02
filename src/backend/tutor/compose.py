@@ -34,6 +34,7 @@ from src.backend.common.prompt_registry import (
     load_prompt_policy,
     strip_fence_echo,
 )
+from src.backend.common.schemas.mind_map import MindMapContent, anchor_map_evidence
 from src.backend.retrieval.funnel import Candidate
 from src.backend.tutor import quotes as quote_anchors
 from src.backend.tutor.workspace import extract_workspace_items
@@ -51,6 +52,7 @@ class Intent(StrEnum):
     SHEET = "sheet"
     SLIDES = "slides"
     CODE = "code"
+    MIND_MAP = "mind_map"
 
 
 # Requests to complete graded work never get a workspace item, whatever
@@ -81,6 +83,7 @@ _INTENT_RULES: tuple[tuple[Intent, re.Pattern[str]], ...] = (
             re.IGNORECASE,
         ),
     ),
+    (Intent.MIND_MAP, re.compile(r"\b(?:mind|concept|topic)[ -]?map\b", re.IGNORECASE)),
     (
         Intent.SLIDES,
         re.compile(r"\bslides?\b|\bslide deck\b|\bpresentation\b", re.IGNORECASE),
@@ -121,7 +124,8 @@ _ARTIFACT_REQUEST = re.compile(
     r"i (?:want|need|would like))\b"
     r"|" + _LEAD + r"(?:please\s+)?(?:quiz|test) me\b"
     r"|" + _LEAD + r"(?:a |an |some )?(?:quiz|flash ?cards?|slides?|slide deck|"
-    r"study guide|notes|outline|table|spreadsheet|cheat sheet|review sheet)\b",
+    r"study guide|notes|outline|table|spreadsheet|cheat sheet|review sheet|"
+    r"mind[ -]?map|concept[ -]?map|topic[ -]?map)\b",
     re.IGNORECASE,
 )
 
@@ -237,6 +241,11 @@ _REQUEST_WORDS = frozenset(
         "notes",
         "outline",
         "document",
+        "mind",
+        "concept",
+        "topic",
+        "map",
+        "mindmap",
         "summary",
         "code",
         "function",
@@ -396,6 +405,43 @@ def _object(properties: dict[str, Any]) -> dict[str, Any]:
 def workspace_schema(intent: Intent, material_count: int) -> dict[str, Any]:
     sources = _sources_schema(material_count)
     items: dict[Intent, dict[str, Any]] = {
+        Intent.MIND_MAP: _object(
+            {
+                "type": {"const": "mind_map"},
+                "title": _string(120),
+                "nodes": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 12,
+                    "items": _object(
+                        {
+                            "id": _string(40),
+                            "label": _string(100),
+                            "summary": _string(300),
+                            "sources": sources,
+                        }
+                    ),
+                },
+                "edges": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 18,
+                    "items": _object(
+                        {
+                            "source": _string(40),
+                            "target": _string(40),
+                            "kind": {
+                                "type": "string",
+                                "enum": ["branch", "similarity"],
+                            },
+                            "label": _string(100),
+                            "explanation": _string(300),
+                            "sources": sources,
+                        }
+                    ),
+                },
+            }
+        ),
         Intent.QUIZ: _object(
             {
                 "type": {"const": "quiz"},
@@ -570,6 +616,17 @@ def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> boo
         ]
         if len(set(normalized)) != len(normalized):
             return False
+        list_keys = []
+        for option in normalized:
+            parts = re.split(r"\s*(?:[,;]|\band\b)\s*", option)
+            key = tuple(sorted(re.sub(r"^the\s+", "", p.strip()) for p in parts))
+            if len(parts) > 1:
+                list_keys.append(key)
+        if len(set(list_keys)) != len(list_keys):
+            return False
+        selected_phrase = re.sub(r"^(?:the|a|an)\s+", "", normalized[answer])
+        if len(selected_phrase) >= 8 and selected_phrase in prompt.casefold():
+            return False
         if any(_PLACEHOLDER_OPTION.fullmatch(option) for option in normalized):
             return False
         topic = question.get("topic", "")
@@ -668,10 +725,25 @@ def _workspace_response(
     parsed: dict[str, Any] | None,
     intent: Intent,
     material_count: int,
+    passages: list[str],
 ) -> str | None:
     item = parsed.get("item") if parsed else None
     if not isinstance(item, dict) or item.get("type") != intent.value:
         return None
+    if intent is Intent.MIND_MAP:
+        try:
+            original = extract_workspace_items(
+                "```workspace\n" + json.dumps(item) + "\n```", material_count
+            )
+            if original.withheld:
+                return None
+            mapped = MindMapContent.model_validate(
+                {k: v for k, v in item.items() if k in {"nodes", "edges"}}
+            )
+            anchored = anchor_map_evidence(mapped, passages)
+            item = {**item, **anchored.model_dump()}
+        except ValueError:
+            return None
     content_key = {
         Intent.DOCUMENT: "content",
         Intent.SLIDES: "deck",
@@ -802,7 +874,8 @@ def compose_answer(
             )
         item = {"type": "quiz", "title": title, "questions": accepted[:3]}
         parsed = {"reply": reply, "item": item}
-    workspace_text = _workspace_response(parsed, intent, len(candidates))
+    passages = [c.text for c in candidates]
+    workspace_text = _workspace_response(parsed, intent, len(candidates), passages)
     if workspace_text is None and intent is not Intent.QUIZ:
         repair_prompt = grounded_prompt(
             load_prompt(f"workspace_{intent.value}")
@@ -820,7 +893,7 @@ def compose_answer(
                 raise
             repaired = generate("artifact_generation", repair_prompt + _SCHEMA_REMINDER)
         workspace_text = _workspace_response(
-            parse_json_object(repaired), intent, len(candidates)
+            parse_json_object(repaired), intent, len(candidates), passages
         )
     if workspace_text is None:
         return Composed(

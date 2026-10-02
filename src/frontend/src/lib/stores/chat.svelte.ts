@@ -20,6 +20,7 @@ export interface Turn {
   workspace: WorkspaceSession[];
   withheld: string[];
   traceId: string | null;
+  chunkIds: string[];
   fellBackToLocal: boolean;
   bigger: boolean;
   model: string;
@@ -41,6 +42,7 @@ function emptyTurn(question: string, bigger: boolean): Turn {
     workspace: [],
     withheld: [],
     traceId: null,
+    chunkIds: [],
     fellBackToLocal: false,
     bigger,
     model: '',
@@ -66,6 +68,7 @@ function applyReply(turn: Turn, reply: MessageView): void {
   turn.workspace = (answer.workspace ?? []).map((item, index) => openSession(item, { message_id: reply.message_id, item_index: index }));
   turn.withheld = answer.withheld ?? [];
   turn.traceId = answer.trace_id;
+  turn.chunkIds = answer.chunk_ids;
   turn.fellBackToLocal = answer.fell_back_to_local ?? false;
   turn.bigger = answer.bigger ?? false;
   turn.model = answer.model ?? '';

@@ -16,6 +16,14 @@ This is **not** just "chat with PDFs." The useful output is an inspectable, evol
 3. what the student appears to understand, misunderstand, and need to practice;
 4. what new content (practice tests, study artifacts) is worth generating.
 
+Interactive mind maps provide another way into the same course material: colored
+topic branches, expandable examples, inspectable source passages, and optional
+comparison links between distinct subjects. A selected branch can open an
+explanation or generate a saved practice quiz. Comparisons do not imply membership,
+and map positions do not measure semantic similarity. The initial generator maps
+retrieved passages; it does not claim exhaustive coverage of an entire course.
+Exploration alone supplies no evidence of student proficiency or preferences.
+
 ## Problem
 
 A course creates fragmented information:
@@ -45,7 +53,10 @@ that can be evaluated on real courses. The target is an ordinary laptop
 - **The user owns their data:** course material and study history stay in
   the user's data folder. The default model runs locally; a cloud provider
   is used only if the user picks one, after a one-time notice of what it
-  receives. A whole course can be exported as one `.course` file.
+  receives. A whole course can be exported as one `.course` file. Optional local
+  library backups offer full, partial (no chats), and heavy (no learning memory)
+  retention, independently of compression strength. Unfinished editor recovery
+  stays available even when automatic backups are off.
 - **Course-specific:** preserve a professor's notation, definitions, rubrics, and examples rather than replacing them with generic explanations.
 - **Small models, strong harness:** the harness frames each task (prompt,
   output schema, bounded citations) so a ~2B local model does narrow,
@@ -122,14 +133,18 @@ eval set, and fusion must beat the best single seam, or it is dropped.
 ### 4. Student model
 
 Complete multiple-choice practice suites retain every answer, help flag, source
-snapshot, and reviewed answer key. COURSE memory estimates each topic separately
+snapshot, and reviewed answer key. Hints track assistance; completed questions
+offer source-backed explanations. Editable content ratings guide future course
+quizzes cautiously without changing mastery or CORE preferences.
+COURSE memory estimates each topic separately
 for recognition, explanation, application, counterexample, and transfer on a
 0–100 scale; untested capabilities remain unknown. Evidence strength and freshness
 accompany each estimate. Repeating a revealed question cannot establish
 proficiency. CORE memory holds teaching preferences and observations across
 courses. Chat supplies tentative experiments, never capability scores. Adaptation
 runs quietly; the Memory tab exposes evidence, corrections, and forgetting.
-See `docs/learning-memory.md` for the baseline policy and its limits.
+See `docs/system.md` section 12 for the baseline policy; `docs/docket.md` B-08
+tracks assessment and effectiveness limits.
 
 ### 5. Chat history
 
@@ -195,8 +210,9 @@ The MVP is useful if, for one real course:
   OpenAI, or any OpenAI-compatible endpoint. Keys live in the OS keychain.
 - **Encoders:** embeddings (IBM granite-embedding-english-r2) and the
   reranker run in-process on ONNX Runtime, pinned and checksummed. Model
-  choice is a pencil mark: `chunk_embeddings` rows are keyed by model name,
-  so a swap is re-ingest, not a rewrite.
+  choice is a pencil mark: each chunk stores one embedding and its model
+  identity. Switching models requires re-ingestion and replaces that vector;
+  vectors from different model spaces are not mixed during retrieval.
 - **Frontend:** separate codebase (`src/frontend/`), talks to the backend only via its API.
 - **Config:** tunables versioned in `configs/` (`ingestion.toml`,
   `retrieval.toml`, `embeddings.toml`, `models.toml`, `runtime.toml`,

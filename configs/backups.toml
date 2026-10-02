@@ -1,0 +1,13 @@
+[version]
+backup_config_version = "1"
+
+[defaults]
+enabled = false
+tier = "full"
+compression = "balanced"
+interval_hours = 24
+keep_count = 10
+
+[limits]
+max_archive_bytes = 10737418240
+max_members = 100000

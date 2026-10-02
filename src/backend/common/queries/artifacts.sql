@@ -16,6 +16,19 @@ WHERE artifact_id = :artifact_id AND course_id = :course_id;
 INSERT INTO artifacts (artifact_id, course_id, kind, title, content, sources, origin)
 VALUES (:artifact_id, :course_id, :kind, :title, :content, :sources, :origin);
 
+-- name: lock_course
+UPDATE courses SET name = name
+WHERE course_id = :course_id AND deleted_at IS NULL;
+
+-- name: from_message
+SELECT artifact_id, course_id, kind, title, content, sources, origin, version,
+       created_at, updated_at
+FROM artifacts
+WHERE course_id = :course_id
+  AND json_extract(origin, '$.adopted') = 1
+  AND json_extract(origin, '$.message_id') = :message_id
+  AND json_extract(origin, '$.item_index') = :item_index;
+
 -- name: save
 -- A new version on top of `expected_version`; no row changes when the
 -- artifact moved on meanwhile (the caller reports a conflict).

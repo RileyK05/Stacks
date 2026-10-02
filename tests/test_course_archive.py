@@ -334,6 +334,27 @@ def test_data_folder_and_reveal_are_scoped(client: TestClient, tmp_path: Path) -
     assert response.status_code == 404
 
 
+def test_data_settings_survive_a_wal_removed_during_size_check(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_exists = Path.exists
+    original_stat = Path.stat
+
+    def existed(path: Path) -> bool:
+        return True if path.name.endswith("-wal") else original_exists(path)
+
+    def disappeared(path: Path, *args: object, **kwargs: object):
+        if path.name.endswith("-wal"):
+            raise FileNotFoundError(path)
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "exists", existed)
+    monkeypatch.setattr(Path, "stat", disappeared)
+    response = client.get("/settings/data")
+    assert response.status_code == 200
+    assert response.json()["database_bytes"] > 0
+
+
 def test_export_to_an_unwritable_folder_is_a_readable_error(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

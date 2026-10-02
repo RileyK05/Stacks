@@ -10,9 +10,9 @@ admin rights (``service.connect``):
 
 1. issue a certificate for ``localhost`` (``certs``) — a throwaway local CA
    signs it and the CA's key is discarded, so nothing can mint more;
-2. ask Windows to trust that CA (one system prompt, ``windows.trust``);
+2. ask the platform to trust that CA (per-user Windows roots or Mac keychain);
 3. write the manifest with this machine's port and register it with Office
-   (``manifest``, ``windows.register``);
+   (``manifest`` and the Windows or macOS registration adapter);
 4. serve the pane and the ``/office`` bridge from the backend itself over
    HTTPS on a fixed port (``host``), same-origin, so there is no second
    server, no CORS, and nothing extra to launch.

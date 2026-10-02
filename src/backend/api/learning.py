@@ -7,18 +7,23 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.backend.api.deps import require_course
 from src.backend.common import artifacts_repo, conversations_repo, settings_repo
 from src.backend.common.db import connection
+from src.backend.common.provider import ProviderUnavailableError
 from src.backend.common.queries import get
 from src.backend.common.schemas.learning import (
     Capability,
+    ContentFeedback,
+    ContentFeedbackRequest,
     CoreMemory,
     LearningView,
+    PracticeHelp,
+    PracticeHelpRequest,
     PracticeQuestion,
     PracticeRun,
     PracticeSubmission,
     SuiteState,
     TeachingMethod,
 )
-from src.backend.student_model import learning
+from src.backend.student_model import learning, practice_support
 
 router = APIRouter(tags=["learning"])
 
@@ -63,7 +68,9 @@ def _state(course_id: UUID, suite_id: UUID) -> SuiteState:
             None,
         )
         return SuiteState(
-            suite=test, latest_run=learning.run_view(conn, latest) if latest else None
+            suite=test,
+            latest_run=learning.run_view(conn, latest) if latest else None,
+            feedback=practice_support.feedback(conn, course_id, suite_id),
         )
 
 
@@ -187,8 +194,47 @@ def inspect_run(course_id: UUID, run_id: UUID) -> SuiteState:
             raise HTTPException(404, "test session not found")
         run = learning.run_view(conn, records[0])
         return SuiteState(
-            suite=learning.suite(conn, course_id, run.suite_id), latest_run=run
+            suite=learning.suite(conn, course_id, run.suite_id),
+            latest_run=run,
+            feedback=practice_support.feedback(conn, course_id, run.suite_id),
         )
+
+
+@router.post(
+    "/courses/{course_id}/practice/{suite_id}/questions/{index}/help",
+    response_model=PracticeHelp,
+)
+def get_question_help(
+    course_id: UUID, suite_id: UUID, index: int, payload: PracticeHelpRequest
+) -> PracticeHelp:
+    require_course(course_id)
+    try:
+        return practice_support.help_with(course_id, suite_id, index, payload)
+    except LookupError as err:
+        raise HTTPException(404, str(err)) from err
+    except ProviderUnavailableError as err:
+        raise HTTPException(503, str(err)) from err
+    except ValueError as err:
+        raise HTTPException(422, str(err)) from err
+
+
+@router.put(
+    "/courses/{course_id}/practice/{suite_id}/questions/{index}/feedback",
+    response_model=list[ContentFeedback],
+)
+def rate_question_content(
+    course_id: UUID, suite_id: UUID, index: int, payload: ContentFeedbackRequest
+) -> list[ContentFeedback]:
+    require_course(course_id)
+    with connection() as conn:
+        try:
+            result = practice_support.rate(conn, course_id, suite_id, index, payload)
+        except LookupError as err:
+            raise HTTPException(404, str(err)) from err
+        except ValueError as err:
+            raise HTTPException(422, str(err)) from err
+        conn.commit()
+        return result
 
 
 @router.delete("/courses/{course_id}/practice/runs/{run_id}", status_code=204)

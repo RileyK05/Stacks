@@ -13,6 +13,45 @@ TeachingMethod = Literal[
     "step_by_step", "worked_example", "analogy", "visual_structure"
 ]
 
+HelpKind = Literal["hint", "explain"]
+FeedbackTarget = Literal["question", "hint", "explain"]
+
+
+class PracticeHelpRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: UUID
+    kind: HelpKind
+
+
+class HelpContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=6000)
+    sources: list[int] = Field(min_length=1, max_length=8)
+
+
+class PracticeHelp(BaseModel):
+    help_id: UUID
+    question_index: int
+    kind: HelpKind
+    content: HelpContent
+    model: str = ""
+    prompt_version: str = ""
+    fell_back_to_local: bool = False
+
+
+class ContentFeedbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target: FeedbackTarget = "question"
+    help_id: UUID | None = None
+    rating: Literal["good", "bad"] | None
+    reason: str = Field(default="", max_length=500)
+
+
+class ContentFeedback(ContentFeedbackRequest):
+    suite_id: UUID
+    question_index: int
+    updated_at: datetime
+
 
 class PracticeQuestion(BaseModel):
     prompt: str = Field(min_length=1, max_length=5000)
@@ -63,6 +102,7 @@ class PracticeRun(BaseModel):
 class SuiteState(BaseModel):
     suite: PracticeSuite
     latest_run: PracticeRun | None = None
+    feedback: list[ContentFeedback] = Field(default_factory=list)
 
 
 class TargetMemory(BaseModel):

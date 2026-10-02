@@ -40,6 +40,74 @@
   let refreshing = false;
   let conversationEnd = $state<HTMLElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
+  let screenshotInput = $state<HTMLInputElement | null>(null);
+  let documentRefreshing = $state(false);
+  let refreshIssue = $state('');
+  let usingSaved = $state(false);
+  let composeChecked = false;
+  let refreshGeneration = 0;
+  let refreshPromise: Promise<boolean> | null = null;
+
+  function resetLiveRefresh() {
+    refreshGeneration++;
+    refreshPromise = null; documentRefreshing = false; refreshIssue = '';
+    usingSaved = false; composeChecked = false;
+  }
+
+  function composing(value: string) {
+    if (value.trim() && !composeChecked && !pending && !busy) {
+      void refreshDocument();
+    }
+  }
+
+  async function refreshDocument(force = false): Promise<boolean> {
+    if (refreshPromise) return refreshPromise;
+    if (!work?.document || work.document.origin !== 'office' || pending) return true;
+    if (!force && (usingSaved || composeChecked)) return usingSaved || !refreshIssue;
+    const token = epoch, id = work.session_id, course = courseId;
+    const generation = ++refreshGeneration;
+    const valid = () => current(token) && generation === refreshGeneration && work?.session_id === id;
+    composeChecked = true; usingSaved = false; refreshIssue = ''; documentRefreshing = true;
+    const run = async () => {
+      try {
+        const settings = await api.GET('/companion/live-policy');
+        if (!valid() || !settings.data) return false;
+        const timeout = settings.data.refresh_timeout_seconds * 1000;
+        const response = await api.POST('/companion/courses/{course_id}/work/{session_id}/refresh', {
+          params: { path: { course_id: course, session_id: id } }, signal: AbortSignal.timeout(timeout)
+        });
+        if (!valid() || !response.data) return false;
+        let result = response.data;
+        const deadline = performance.now() + timeout;
+        while (result.status === 'pending') {
+          await new Promise(resolve => setTimeout(resolve, settings.data!.poll_interval_ms));
+          if (!valid()) return false;
+          if (performance.now() >= deadline) throw new Error('Document refresh timed out. Retry or use the saved snapshot.');
+          const update = await api.GET('/companion/courses/{course_id}/work/{session_id}/refresh/{request_id}', {
+            params: { path: { course_id: course, session_id: id, request_id: result.request_id } },
+            signal: AbortSignal.timeout(Math.max(1, deadline - performance.now()))
+          });
+          if (!valid() || !update.data) return false;
+          result = update.data;
+        }
+        if (result.status !== 'complete') throw new Error(result.error || 'Could not read the current Office document.');
+        const updated = await api.GET('/companion/courses/{course_id}/work/{session_id}', { params: { path: { course_id: course, session_id: id } } });
+        if (!valid() || !updated.data) return false;
+        work = updated.data;
+        if (selection && !work.document?.text.includes(selection.trim())) {
+          throw new Error('The focused passage changed in the document. Update or clear that passage before asking.');
+        }
+        return true;
+      } catch (caught) {
+        if (valid()) refreshIssue = caught instanceof Error ? caught.message : String(caught);
+        return false;
+      } finally {
+        if (valid()) { documentRefreshing = false; refreshPromise = null; }
+      }
+    };
+    refreshPromise = run();
+    return refreshPromise;
+  }
 
   const actions: { id: Action; label: string }[] = [
     { id: 'review', label: 'Review draft' }, { id: 'find', label: 'Find references' },
@@ -103,6 +171,7 @@
 
   async function changeCourse(id: string) {
     const token = ++epoch;
+    resetLiveRefresh();
     courseId = id; work = null; sessions = []; question = ''; selection = ''; pending = null;
     connecting = false; pastedText = ''; busy = false; error = null;
     if (!id) return;
@@ -119,6 +188,7 @@
 
   async function openSession(id: string) {
     const token = ++epoch;
+    resetLiveRefresh();
     work = null; question = ''; selection = ''; pending = null; error = null; busy = false;
     connecting = false; pastedText = '';
     try {
@@ -129,7 +199,7 @@
   }
 
   async function refreshConnected() {
-    if (busy || loading || refreshing || disposed) return;
+    if (busy || documentRefreshing || loading || refreshing || disposed) return;
     refreshing = true;
     const token = epoch;
     try {
@@ -141,10 +211,10 @@
       if (!current(token)) return;
       sessions = list.data ?? [];
       const latest = sessions.find(s => s.session_id === work?.session_id);
-      if (work && !latest) { work = null; pending = null; }
+      if (work && !latest) { resetLiveRefresh(); work = null; pending = null; }
       else if (work && latest?.updated_at !== work.updated_at) {
         const response = await api.GET('/companion/courses/{course_id}/work/{session_id}', { params: { path: { course_id: courseId, session_id: work.session_id } } });
-        if (current(token) && response.data) { work = response.data; selection = ''; }
+        if (current(token) && response.data && response.data.revision >= (work?.revision ?? 0)) { work = response.data; selection = ''; }
       }
     } catch (caught) { if (current(token)) error = caught; }
     finally { refreshing = false; }
@@ -181,7 +251,7 @@
     busy = true; error = null;
     try {
       const updated = await task();
-      if (current(token) && updated) { work = updated; connecting = false; pastedText = ''; selection = ''; remember(); }
+      if (current(token) && updated) { work = updated; connecting = false; pastedText = ''; selection = ''; resetLiveRefresh(); remember(); }
     } catch (caught) { if (current(token)) error = caught; }
     finally { if (current(token)) busy = false; }
   }
@@ -191,6 +261,18 @@
       if (!work) return;
       const body = new FormData(); body.append('file', file); body.append('expected_revision', String(work.revision));
       const response = await api.POST('/companion/courses/{course_id}/work/{session_id}/file', {
+        params: { path: { course_id: courseId, session_id: work.session_id } },
+        body: body as never, bodySerializer: value => value as unknown as FormData
+      });
+      return response.data;
+    });
+  }
+
+  async function uploadScreenshot(file: File) {
+    await operation(async () => {
+      if (!work) return;
+      const body = new FormData(); body.append('file', file); body.append('expected_revision', String(work.revision));
+      const response = await api.POST('/companion/courses/{course_id}/work/{session_id}/screenshot', {
         params: { path: { course_id: courseId, session_id: work.session_id } },
         body: body as never, bodySerializer: value => value as unknown as FormData
       });
@@ -220,6 +302,9 @@
   async function ask(action: Action = 'review') {
     if (!work?.document || busy) return;
     const token = epoch, id = work.session_id, course = courseId;
+    busy = true; error = null;
+    if (!pending && !(await refreshDocument())) { if (current(token)) busy = false; return; }
+    if (!current(token) || work?.session_id !== id) return;
     const request: Ask = pending ?? { request_id: crypto.randomUUID(), action, instruction: question.trim(), selection: selection.trim(), expected_revision: work.revision };
     pending = request;
     writeSaved(pendingKey(), JSON.stringify(request));
@@ -228,7 +313,7 @@
       await api.POST('/companion/courses/{course_id}/work/{session_id}/ask', { params: { path: { course_id: course, session_id: id } }, body: request });
       removeSaved(`companion-request:${id}`);
       if (!current(token)) return;
-      pending = null; question = '';
+      pending = null; question = ''; resetLiveRefresh();
       const response = await api.GET('/companion/courses/{course_id}/work/{session_id}', { params: { path: { course_id: course, session_id: id } } });
       if (current(token) && response.data) {
         work = response.data;
@@ -245,7 +330,7 @@
     const id = work.session_id, token = epoch;
     try {
       await api.DELETE('/companion/courses/{course_id}/work/{session_id}', { params: { path: { course_id: courseId, session_id: id } } });
-      if (current(token)) { work = null; pending = null; sessions = sessions.filter(s => s.session_id !== id); }
+      if (current(token)) { resetLiveRefresh(); work = null; pending = null; sessions = sessions.filter(s => s.session_id !== id); }
       removeSaved(`companion-request:${id}`);
     } catch (caught) { if (current(token)) error = caught; }
   }
@@ -283,7 +368,7 @@
         </select>
       </label>
       <div class="flex items-center gap-2">
-        <select aria-label="Work session" value={work?.session_id ?? ''} onchange={e => { if (e.currentTarget.value) void openSession(e.currentTarget.value); else { epoch++; work = null; question = ''; selection = ''; pending = null; busy = false; } }} class="min-w-0 flex-1 rounded-lg border border-line bg-surface p-2 text-sm">
+        <select aria-label="Work session" value={work?.session_id ?? ''} onchange={e => { if (e.currentTarget.value) void openSession(e.currentTarget.value); else { epoch++; resetLiveRefresh(); work = null; question = ''; selection = ''; pending = null; busy = false; } }} class="min-w-0 flex-1 rounded-lg border border-line bg-surface p-2 text-sm">
           <option value="">New work session</option>
           {#each sessions as session}<option value={session.session_id}>{session.title} · {session.purpose}</option>{/each}
         </select>
@@ -305,22 +390,26 @@
             <p class="text-xs text-muted">{work.document.text.length.toLocaleString()} characters · {work.document.coverage === 'document' ? 'Document text' : 'Partial or unverified capture'} · {new Date(work.document.captured_at).toLocaleString()}</p>
             {#each work.document.warnings as warning}<p class="text-xs text-warning-text">{warning}</p>{/each}
             <details><summary class="cursor-pointer text-xs text-accent-text">Inspect connected text</summary><pre class="mt-2 max-h-64 overflow-y-auto whitespace-pre-wrap text-xs text-muted">{work.document.text}</pre></details>
+            {#if work.document.origin === 'office'}<button type="button" onclick={() => refreshDocument(true)} disabled={busy || !!pending || documentRefreshing} class="text-xs font-medium text-accent-text">Refresh from Office</button><p class="text-xs text-muted">Keep the connected Office pane open. Starting a message reads the latest document.</p>{/if}
           {/if}
           <button type="button" onclick={() => connecting = !connecting} disabled={busy || !!pending} class="text-xs font-medium text-accent-text">{connecting ? 'Close document connection' : work.document ? 'Refresh or connect another snapshot' : 'Connect your document'}</button>
         </div>
         {#if connecting}
           <div class="space-y-3 rounded-xl border border-line bg-surface p-3">
-            <p class="text-xs text-muted">Connect the whole document. A snapshot stays unchanged until you refresh it.</p>
+            <p class="text-xs text-muted">Connect a document file, pasted text, or an Office pane. Office connections refresh when you start a message.</p>
             <input bind:this={fileInput} type="file" accept=".pdf,.docx,.pptx,.xlsx,.txt,.md,.csv" class="hidden" onchange={e => { const file = e.currentTarget.files?.[0]; if (file) void upload(file); e.currentTarget.value = ''; }} />
             <button type="button" onclick={() => fileInput?.click()} disabled={busy} class="rounded-lg border border-line px-3 py-2 text-sm">Connect file</button>
             <button type="button" onclick={loadWindows} disabled={busy} class="ml-2 rounded-lg border border-line px-3 py-2 text-sm">Choose window</button>
+            <input bind:this={screenshotInput} type="file" accept=".png,.jpg,.jpeg" class="hidden" onchange={e => { const file = e.currentTarget.files?.[0]; if (file) void uploadScreenshot(file); e.currentTarget.value = ''; }} />
+            <button type="button" onclick={() => screenshotInput?.click()} disabled={busy} class="rounded-lg border border-line px-3 py-2 text-sm">Connect screenshot</button>
+            <p class="text-xs text-muted">Screenshot fallback works on Windows and Mac with an image-capable model. Only visible text in the uploaded image is captured.</p>
             {#if windows.length}
               <select aria-label="Window to read" bind:value={windowHandle} class="w-full rounded-lg border border-line bg-bg p-2 text-sm">{#each windows as window}<option value={String(window.handle)}>{window.title}</option>{/each}</select>
               <button type="button" onclick={readWindow} disabled={busy} class="rounded-lg bg-accent px-3 py-2 text-sm text-on-accent">Read selected window</button>
               <p class="text-xs text-muted">Reads application text; falls back to visible-screen OCR when needed. Off-screen pages may require a file or Office connection.</p>
             {/if}
             <details><summary class="cursor-pointer text-xs text-accent-text">Paste whole document</summary><div class="mt-2 space-y-2"><input aria-label="Document title" bind:value={documentTitle} maxlength="300" class="w-full rounded-lg border border-line bg-bg p-2 text-sm" /><textarea aria-label="Whole document text" bind:value={pastedText} rows="6" maxlength="300000" class="w-full rounded-lg border border-line bg-bg p-2 text-sm"></textarea><button type="button" disabled={busy || !pastedText.trim()} onclick={() => operation(() => connectDocument({ title: documentTitle, text: pastedText, origin: 'paste', coverage: 'unknown', warnings: [], external_id: '' }))} class="rounded-lg bg-accent px-3 py-2 text-sm text-on-accent">Connect pasted document</button></div></details>
-            <p class="text-xs text-muted">In the Office task pane, use “Connect whole document to companion” to share a snapshot here.</p>
+            <p class="text-xs text-muted">In the Office task pane, use “Connect whole document to companion” and keep that pane open. For Google Docs, Sheets, and Slides, connect an exported DOCX, XLSX, PPTX, or PDF.</p>
           </div>
         {/if}
         <p class="text-[11px] text-subtle">Saved with this work session. Documents and review feedback do not update learning memory or test scores.</p>
@@ -343,9 +432,12 @@
   </main>
   {#if work?.document}
     <form onsubmit={e => { e.preventDefault(); void ask(); }} class="shrink-0 border-t border-line bg-surface p-3 space-y-2">
+      {#if documentRefreshing}<p class="text-xs text-muted" role="status">Reading the current Office document…</p>{/if}
+      {#if refreshIssue}<p class="text-xs text-warning-text" role="status">{refreshIssue}</p><div class="flex gap-3"><button type="button" onclick={() => refreshDocument(true)} disabled={busy || documentRefreshing || !!pending} class="text-xs text-accent-text">Retry document refresh</button><button type="button" onclick={() => { usingSaved = true; refreshIssue = ''; }} disabled={busy || documentRefreshing || !!pending} class="text-xs text-muted">Use saved snapshot {work.revision}</button></div>{/if}
+      {#if usingSaved}<p class="text-xs text-warning-text">Using saved snapshot {work.revision}; newer Office changes may be missing.</p>{/if}
       {#if pending}<p class="text-xs text-warning-text">{busy ? 'Saving this request and its response…' : 'This request was not confirmed. Retry it, or clear it to ask something else.'}</p><div class="flex gap-3"><button type="button" onclick={() => ask()} disabled={busy} class="text-xs text-accent-text">Retry request</button><button type="button" disabled={busy} onclick={() => { removeSaved(pendingKey()); question = pending?.instruction ?? question; selection = ''; pending = null; }} class="text-xs text-muted">Clear pending request</button></div>{/if}
-      <details><summary class="text-xs text-muted cursor-pointer">Focus on a passage</summary><textarea aria-label="Selected passage from document" maxlength="4000" bind:value={selection} disabled={busy || !!pending} rows="2" placeholder="Paste an exact passage from the connected snapshot" class="mt-2 w-full rounded-lg border border-line bg-bg p-2 text-sm"></textarea></details>
-      <textarea aria-label="Ask about your work" bind:value={question} disabled={busy || !!pending} rows="2" maxlength="2000" placeholder="Find evidence for my argument, review a paragraph, suggest an edit…" class="w-full rounded-xl border border-line bg-bg p-2 text-sm"></textarea>
+      <details><summary class="text-xs text-muted cursor-pointer">Focus on a passage</summary><textarea aria-label="Selected passage from document" maxlength="4000" bind:value={selection} oninput={e => composing(e.currentTarget.value)} disabled={busy || !!pending} rows="2" placeholder="Paste an exact passage from the connected snapshot" class="mt-2 w-full rounded-lg border border-line bg-bg p-2 text-sm"></textarea></details>
+      <textarea aria-label="Ask about your work" bind:value={question} oninput={e => composing(e.currentTarget.value)} disabled={busy || !!pending} rows="2" maxlength="2000" placeholder="Find evidence for my argument, review a paragraph, suggest an edit…" class="w-full rounded-xl border border-line bg-bg p-2 text-sm"></textarea>
       <div class="flex flex-wrap gap-1.5">{#each actions as action}<button type="button" onclick={() => ask(action.id)} disabled={busy || !!pending} class="rounded-lg border border-line px-2 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40">{action.label}</button>{/each}</div>
     </form>
   {/if}

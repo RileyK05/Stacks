@@ -79,7 +79,12 @@ def connect_office() -> OfficeStatusView:
 
 @router.post("/disconnect", response_model=OfficeStatusView)
 def disconnect_office() -> OfficeStatusView:
-    return _view(service.disconnect())
+    try:
+        return _view(service.disconnect())
+    except OSError as err:
+        raise HTTPException(
+            409, f"Could not finish disconnecting Office: {err}"
+        ) from err
 
 
 @router.post("/open", response_model=OpenInOfficeView)

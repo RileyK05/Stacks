@@ -39,6 +39,6 @@ export async function openInOffice(request: OpenRequest): Promise<string> {
   const { data } = await api.POST('/office/open', { body: request });
   const name = appName(data!.app);
   return data!.first_time
-    ? `Opening ${name}. Click Stacks on the Home tab. If ${name} was already open, close it and open it again once so the button appears.`
-    : `Opening ${name}. Click Stacks on the Home tab to open the pane.`;
+    ? `Opening ${name}. Find Stacks on the Home tab or under Home → Add-ins. Restart ${name} once if it was already open.`
+    : `Opening ${name}. Find Stacks on the Home tab or under Home → Add-ins to open the pane.`;
 }

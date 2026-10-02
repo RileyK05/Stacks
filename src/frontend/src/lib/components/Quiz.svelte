@@ -5,6 +5,7 @@
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import SourceChips, { type SourceRef } from './SourceChips.svelte';
+  import QuizFeedback from './QuizFeedback.svelte';
 
   interface Props {
     session: QuizSession;
@@ -61,6 +62,7 @@
     </div>
   {/if}
   {#if session.loading}<p class="text-sm text-muted">Loading practice history…</p>{/if}
+  {#if session.ratingError}<p class="text-sm text-danger-text" role="alert">{session.ratingError}</p>{/if}
   {#if session.submitted}
     <div
       class={`flex items-center gap-4 rounded-xl border p-4 ${
@@ -76,12 +78,16 @@
         </p>
         <p class="text-[13px] text-muted">
           Saved test session. {questions.length - assessed > 0 ? `${questions.length - assessed} flagged question(s) excluded.` : 'Answers are checked against the current key.'}
+          {#if session.run?.helped.some(Boolean)}
+            {session.run.helped.filter(Boolean).length} assisted answer(s); these do not count as independent practice.
+          {/if}
         </p>
       </div>
     </div>
   {/if}
 
   {#each questions as question, questionIndex (questionIndex)}
+    {@const help = session.assistance[questionIndex]}
     <fieldset class="flex flex-col gap-2">
       <legend class="mb-2">
         <span class="block text-[11px] font-semibold uppercase tracking-[0.1em] text-subtle">
@@ -123,16 +129,34 @@
           </p>
         {/if}
         <SourceChips cited={question.sources ?? []} sources={session.evidence.length ? session.evidence : sources} />
-        <button type="button" onclick={() => session.challenge(questionIndex)} disabled={session.saving || session.correctAnswer(questionIndex) === null} class="self-start text-xs text-muted hover:underline disabled:opacity-40">Flag an incorrect or ambiguous question</button>
+        <button type="button" onclick={() => session.challenge(questionIndex)} disabled={session.saving || session.helping || session.correctAnswer(questionIndex) === null} class="self-start text-xs text-muted hover:underline disabled:opacity-40">Flag an incorrect or ambiguous question</button>
       {:else}
         <label class="flex gap-2 text-xs text-muted"><input type="checkbox" bind:checked={session.helped[questionIndex]} disabled={session.saving || session.submissionPending || !session.ready} /> I used help or notes</label>
       {/if}
+      <Button variant="secondary" size="sm" class="self-start" onclick={() => session.requestHelp(questionIndex)} disabled={!session.ready || session.saving || session.submissionPending || session.helping || session.assistance[questionIndex]?.kind === (session.submitted ? 'explain' : 'hint')}>
+        {session.helpIndex === questionIndex ? 'Preparing…' : session.submitted ? 'Explain' : 'Hint'}
+      </Button>
+      {#if session.supportErrors[questionIndex]}<p class="text-sm text-danger-text" role="alert">{session.supportErrors[questionIndex]}</p>{/if}
+      {#if help && help.kind === (session.submitted ? 'explain' : 'hint')}
+        <div class="flex flex-col gap-3 rounded-xl border border-line bg-surface-2 p-3">
+          <p class="whitespace-pre-wrap text-sm leading-relaxed text-fg">{help.content.text}</p>
+          {#if help.model}<p class="text-xs text-subtle">Prepared with {help.model}</p>{/if}
+          {#if help.kind === 'hint'}<p class="text-xs text-muted">This answer will be recorded as assisted.</p>{/if}
+          {#if help.fell_back_to_local}<p class="text-xs text-muted">Your provider was unavailable; the local model supplied this help.</p>{/if}
+          <SourceChips cited={help.content.sources} sources={session.evidence} />
+          {#each help.content.sources as number}
+            <details class="text-xs text-muted"><summary class="cursor-pointer">Read passage [{number}] · {session.evidence[number - 1]?.label}</summary><p class="mt-2 whitespace-pre-wrap">{session.passages[number - 1]}</p></details>
+          {/each}
+          <QuizFeedback {session} index={questionIndex} target={help.kind} />
+        </div>
+      {/if}
+      <QuizFeedback {session} index={questionIndex} />
     </fieldset>
   {/each}
 
   <div class="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
     {#if session.submitted}
-      <Button variant="ghost" onclick={() => session.reset()} disabled={session.saving}>
+      <Button variant="ghost" onclick={() => session.reset()} disabled={session.saving || session.helping || session.ratingBusy}>
         <Icon name="rotate-ccw" class="h-4 w-4" /> Try again
       </Button>
       {#if followUp && onfollowup}
@@ -150,7 +174,8 @@
         </div>
         <p class="whitespace-nowrap text-xs text-subtle">{answered}/{questions.length} answered</p>
       </div>
-      <Button onclick={() => session.submit()} disabled={!session.answeredAll || !session.ready || session.saving}>{session.saving ? 'Saving test…' : 'Submit answers'}</Button>
+      <Button onclick={() => session.submit()} disabled={!session.answeredAll || !session.ready || session.saving || session.helping}>{session.saving ? 'Saving test…' : 'Submit answers'}</Button>
     {/if}
   </div>
+  <p class="text-xs text-muted">Content feedback helps improve future quizzes. It does not change your scores. Flag a wrong or ambiguous question to exclude it from assessment.</p>
 </div>

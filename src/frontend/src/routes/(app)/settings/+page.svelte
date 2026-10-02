@@ -13,6 +13,7 @@
   import ConnectionsCard from '$lib/components/settings/ConnectionsCard.svelte';
   import DefaultModelsCard from '$lib/components/settings/DefaultModelsCard.svelte';
   import OfficeCard from '$lib/components/settings/OfficeCard.svelte';
+  import BackupsCard from '$lib/components/settings/BackupsCard.svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import { formatBytes } from '$lib/utils/format';
 
@@ -177,7 +178,7 @@
     {#if dataFolder}
       <Card
         title="Your data"
-        description="Everything the app keeps lives in one folder on this computer. Back up a single course with Export on its page."
+        description="Your saved library lives on this computer. Export transfers a single course; local backups preserve a copy of your library."
       >
         <div class="flex flex-col gap-4">
           <div class="flex flex-wrap items-center gap-3">
@@ -199,6 +200,7 @@
     {/if}
 
     <OfficeCard />
+    <BackupsCard />
 
     {#if appVersion}
       <p class="text-center text-xs text-subtle">

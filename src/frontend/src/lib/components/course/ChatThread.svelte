@@ -39,7 +39,8 @@
   const starterPrompts: { text: string; icon: IconName }[] = [
     { text: 'Summarize the main ideas so far', icon: 'book' },
     { text: 'Quiz me with a few multiple-choice questions', icon: 'list-checks' },
-    { text: 'Make me an editable study guide', icon: 'file-pen' }
+    { text: 'Make me an editable study guide', icon: 'file-pen' },
+    { text: 'Make a mind map of the course', icon: 'layers' }
   ];
 
   async function scrollToEnd() {

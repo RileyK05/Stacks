@@ -138,6 +138,8 @@ def submit(
     suite_id: UUID,
     payload: PracticeSubmission,
 ) -> PracticeRun:
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
     test = suite(conn, course_id, suite_id)
     requested_help = payload.helped or [False] * len(test.questions)
     existing = rows(conn, "run", course_id=course_id, run_id=payload.run_id)
@@ -159,6 +161,16 @@ def submit(
     ):
         raise ValueError("a selected option does not exist")
     policy = load_learning_policy()
+    if conn.execute(
+        get("practice_support", "pending"),
+        {
+            "course_id": course_id,
+            "suite_id": suite_id,
+            "run_ref": payload.run_id,
+            "expired": utc_now() - timedelta(seconds=policy.support.claim_seconds),
+        },
+    ).fetchone():
+        raise ValueError("wait for the hint to finish before submitting")
     inserted = conn.execute(
         get("learning", "create_run"),
         {
@@ -178,8 +190,16 @@ def submit(
         return submit(conn, course_id, suite_id, payload)
     prior = rows(conn, "observations", course_id=course_id)
     seen = {r["fingerprint"] for r in prior}
+    assisted = {
+        _fingerprint(
+            PracticeQuestion.model_validate(r["questions"][r["question_index"]])
+        )
+        for r in conn.execute(
+            get("practice_support", "course_help"), {"course_id": course_id}
+        )
+    }
     actual_help = [
-        helped or _fingerprint(q) in seen
+        helped or _fingerprint(q) in seen or _fingerprint(q) in assisted
         for q, helped in zip(test.questions, requested_help, strict=True)
     ]
     conn.execute(

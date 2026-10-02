@@ -60,18 +60,31 @@ export class PanelState {
     this.persist();
   }
 
-  async close(id: string): Promise<void> {
+  async close(id: string): Promise<boolean> {
     const tab = this.tabs.find((item) => item.artifactId === id);
-    await tab?.open.flush();
+    if (tab && !(await tab.open.flush())) return false;
+    tab?.open.dispose();
     this.tabs = this.tabs.filter((item) => item.artifactId !== id);
     if (this.activeId === id) {
       this.activeId = this.tabs[this.tabs.length - 1]?.artifactId ?? null;
     }
     this.persist();
+    return true;
+  }
+
+  async flushAll(): Promise<boolean> {
+    const results = await Promise.all(this.tabs.map((tab) => tab.open.flush()));
+    return results.every(Boolean);
+  }
+
+  dispose(): void {
+    for (const tab of this.tabs) tab.open.dispose();
   }
 
   /** Drop tabs whose artifact no longer exists (deleted elsewhere). */
   prune(existing: Set<string>): void {
+    const removed = this.tabs.filter((tab) => !existing.has(tab.artifactId));
+    for (const tab of removed) tab.open.dispose();
     const kept = this.tabs.filter((tab) => existing.has(tab.artifactId));
     if (kept.length === this.tabs.length) return;
     this.tabs = kept;

@@ -38,7 +38,8 @@
     { kind: 'sheet', hint: 'Schedules and trackers for your work' },
     { kind: 'slides', hint: 'A study deck to review and present' },
     { kind: 'quiz', hint: 'Practice questions' },
-    { kind: 'flashcards', hint: 'Terms to memorise' }
+    { kind: 'flashcards', hint: 'Terms to memorise' },
+    { kind: 'mind_map', hint: 'Explore cited topics and their connections' }
   ];
 
   function focusOnMount(node: HTMLInputElement) {
