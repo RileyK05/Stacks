@@ -262,6 +262,113 @@ def test_scanned_pdf_is_ocrd_and_recorded(
     assert (ocr_entry.provider, ocr_entry.course_id) == ("local", course_id)
 
 
+def _text_pdf(contents: list[str]) -> bytes:
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+
+    def font() -> DictionaryObject:
+        return DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+                NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+            }
+        )
+
+    for content in contents:
+        writer.add_blank_page(width=612, height=792)
+        page = writer.pages[-1]
+        stream = DecodedStreamObject()
+        stream.set_data(content.encode("latin-1"))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font()})}
+        )
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def _show_line(text: str) -> str:
+    return f"BT\n/F1 12 Tf\n72 700 Td\n({text}) Tj\nET\n"
+
+
+def test_blank_page_is_ocrd_inside_a_text_pdf(
+    course_id: UUID, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mixed PDF OCRs the blank page only and keeps the pages that already
+    had text. The rescued page is cited as that page."""
+    rescued = "Resendez describes the border after the expedition north."
+    calls = configure_test_provider(monkeypatch, rescued)
+    prose = "The treaty ended the war and paid for the land."
+    source_id = _make_source(
+        course_id,
+        "application/pdf",
+        _text_pdf([_show_line(prose), "", _show_line(prose)]),
+    )
+
+    with connection() as conn:
+        run_ingestion(conn, source_id)
+
+    assert calls[0]["task"] == "ocr"
+    assert len(calls[0]["images"]) == 1
+    with connection() as conn:
+        text = " ".join(
+            row["text"]
+            for row in conn.execute(
+                "SELECT text FROM chunks WHERE source_id = ?", (source_id,)
+            ).fetchall()
+        )
+        coverage = conn.execute(
+            "SELECT pages_total, pages_empty, pages_ocr FROM source_indexes"
+            " WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+    assert rescued in text
+    assert prose in text
+    assert coverage["pages_total"] == 3
+    assert coverage["pages_ocr"] == 1
+    assert coverage["pages_empty"] == 0
+
+
+def test_mixed_pdf_indexes_when_page_ocr_is_unavailable(course_id: UUID) -> None:
+    """No vision model: the text layer is still indexed, and the blank page
+    stays counted so the file can say it was not read."""
+    prose = "The treaty ended the war and paid for the land."
+    source_id = _make_source(
+        course_id,
+        "application/pdf",
+        _text_pdf([_show_line(prose), "", _show_line(prose)]),
+    )
+
+    with connection() as conn:
+        run_id = run_ingestion(conn, source_id)
+
+    assert (
+        _one("SELECT status FROM sources WHERE source_id = ?", source_id)["status"]
+        == "indexed"
+    )
+    statuses = {row["stage"]: row["status"] for row in _stage_rows(run_id)}
+    assert statuses["ocr"] == "succeeded"
+    coverage = _one(
+        "SELECT pages_total, pages_empty, pages_ocr, extraction_version"
+        " FROM source_indexes WHERE source_id = ?",
+        source_id,
+    )
+    assert coverage["pages_total"] == 3
+    assert coverage["pages_empty"] == 1
+    assert coverage["pages_ocr"] == 0
+    assert coverage["extraction_version"] == "structured-v2"
+    text = _one(
+        "SELECT group_concat(text, ' ') AS text FROM chunks WHERE source_id = ?",
+        source_id,
+    )["text"]
+    assert prose in text
+
+
 def test_scanned_pdf_without_a_model_fails_loudly(course_id: UUID) -> None:
     """No model configured: the OCR stage fails with an actionable error
     and the source is 'failed' — never a falsely indexed, empty source."""

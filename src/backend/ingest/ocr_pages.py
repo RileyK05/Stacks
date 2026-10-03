@@ -14,12 +14,11 @@ OCR_PAGE_BOUNDARY = "\n\n---\n\n"
 
 
 def split_ocr_pages(text: str, page_count: int) -> list[str]:
+    if page_count < 1:
+        raise ValueError("OCR requires at least one page")
     parts = text.split(OCR_PAGE_BOUNDARY)
     if len(parts) == page_count:
         return parts
     if len(parts) == 1:
         return [text] + [""] * (page_count - 1)
-    # Model emitted some but not all separators: keep what it gave, pad the
-    # rest, so the count always matches the rendered pages.
-    parts = parts[:page_count]
-    return parts + [""] * (page_count - len(parts))
+    raise ValueError("OCR page boundaries do not match the rendered pages")

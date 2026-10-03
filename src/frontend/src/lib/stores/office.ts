@@ -20,25 +20,29 @@ export function appName(app: OfficeApp): string {
 
 export async function officeStatus(): Promise<OfficeStatus> {
   const { data } = await api.GET('/office/status');
-  return data!;
+  if (!data) throw new Error('Office status returned an empty response.');
+  return data;
 }
 
 export async function connectOffice(): Promise<OfficeStatus> {
   const { data } = await api.POST('/office/connect');
-  return data!;
+  if (!data) throw new Error('Office connection returned an empty response.');
+  return data;
 }
 
 export async function disconnectOffice(): Promise<OfficeStatus> {
   const { data } = await api.POST('/office/disconnect');
-  return data!;
+  if (!data) throw new Error('Office disconnect returned an empty response.');
+  return data;
 }
 
 /** Open Word, Excel or PowerPoint (connecting Office first if needed) and
  * return the message to show: where to find the Stacks button. */
 export async function openInOffice(request: OpenRequest): Promise<string> {
   const { data } = await api.POST('/office/open', { body: request });
-  const name = appName(data!.app);
-  return data!.first_time
+  if (!data) throw new Error('Opening Office returned an empty response.');
+  const name = appName(data.app);
+  return data.first_time
     ? `Opening ${name}. Find Stacks on the Home tab or under Home → Add-ins. Restart ${name} once if it was already open.`
     : `Opening ${name}. Find Stacks on the Home tab or under Home → Add-ins to open the pane.`;
 }

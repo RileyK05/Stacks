@@ -14,6 +14,7 @@ from src.backend.common.db import Connection, json_ids
 from src.backend.common.queries import get
 from src.backend.rag import generated
 from src.backend.rag.config import load_policy as load_passage_policy
+from src.backend.rag.segment import is_thin
 from src.backend.retrieval.config import RetrievalPolicy
 
 _FILE = "retrieval"
@@ -213,6 +214,13 @@ class Candidate:
     partial: bool = False
     generated_materials: tuple[tuple[str, str, int], ...] = ()
     context_for: frozenset[UUID] = frozenset()
+    chunk_char_start: int | None = None
+    chunk_char_end: int | None = None
+    source_filename: str = ""
+    source_type: str = ""
+    container_title: str = ""
+    # Absolute locator spans (start, end, label) for the chunk's pages.
+    locators: tuple[tuple[int, int, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -549,6 +557,17 @@ def fuse(
     return tuple(final)
 
 
+def _keep_substantive(
+    candidates: dict[UUID, Candidate], minimum: int
+) -> dict[UUID, Candidate]:
+    """Drop blanks and heading fragments before they take a final slot."""
+    return {
+        chunk_id: candidate
+        for chunk_id, candidate in candidates.items()
+        if not is_thin(candidate.text, minimum)
+    }
+
+
 def surrounding_context(
     conn: Connection,
     course_id: UUID,
@@ -573,6 +592,8 @@ def surrounding_context(
     result = {c.chunk_id: c for c in anchors}
     for row in rows:
         if row["chunk_id"] in {c.chunk_id for c in anchors}:
+            continue
+        if is_thin(row["text"], policy.min_alnum_chars):
             continue
         a, b = row["anchor_vector"], row["neighbor_vector"]
         if a and b and row["anchor_dimension"] == row["neighbor_dimension"]:
@@ -619,32 +640,47 @@ def retrieve(
     `source_ids` narrows each SQL seam before its candidate limit (a chat's
     source selection); None searches the whole course. This ensures noisy,
     unselected sources cannot consume the selected sources' candidate slots."""
-    keyword = keyword_seam(conn, course_id, query, policy.keyword_limit, source_ids)
-    embeddings = embedding_seam(
-        conn,
-        course_id,
-        query_embedding,
-        embedding_model or "",
-        policy.embedding_limit,
-        source_ids,
+    minimum = load_passage_policy().min_alnum_chars
+    keyword = _keep_substantive(
+        keyword_seam(conn, course_id, query, policy.keyword_limit, source_ids),
+        minimum,
     )
-    graph = graph_seam(
-        conn,
-        course_id,
-        {**keyword, **embeddings},
-        policy.graph_limit,
-        embedding_model or "",
-        source_ids,
+    embeddings = _keep_substantive(
+        embedding_seam(
+            conn,
+            course_id,
+            query_embedding,
+            embedding_model or "",
+            policy.embedding_limit,
+            source_ids,
+        ),
+        minimum,
+    )
+    graph = _keep_substantive(
+        graph_seam(
+            conn,
+            course_id,
+            {**keyword, **embeddings},
+            policy.graph_limit,
+            embedding_model or "",
+            source_ids,
+        ),
+        minimum,
     )
     final = fuse(keyword, embeddings, graph, policy=policy)
     generated_rows = generated.lookup(
         conn, course_id, _keyword_tokens(query), policy.graph_limit, source_ids
     )
     if generated_rows:
-        generated_hits = _rows_to_candidates(generated_rows, GENERATED)
+        generated_hits = _keep_substantive(
+            _rows_to_candidates(generated_rows, GENERATED), minimum
+        )
         for row in generated_rows:
+            hit = generated_hits.get(row["chunk_id"])
+            if hit is None:
+                continue
             generated_hits[row["chunk_id"]] = replace(
-                generated_hits[row["chunk_id"]],
+                hit,
                 generated_materials=(
                     (
                         str(row["generated_artifact_id"]),
@@ -653,9 +689,14 @@ def retrieve(
                     ),
                 ),
             )
-        final = fuse(
-            keyword, embeddings, graph, policy=policy, generated_hits=generated_hits
-        )
+        if generated_hits:
+            final = fuse(
+                keyword,
+                embeddings,
+                graph,
+                policy=policy,
+                generated_hits=generated_hits,
+            )
     final = surrounding_context(
         conn, course_id, final, embedding_model or "", source_ids
     )

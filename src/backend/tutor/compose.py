@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
+from src.backend.common.citations import cited_numbers
 from src.backend.common.prompt_registry import (
     grounded_prompt,
     load_prompt,
@@ -92,7 +93,7 @@ _INTENT_RULES: tuple[tuple[Intent, re.Pattern[str]], ...] = (
         Intent.SHEET,
         re.compile(
             r"\btable\b|\bspreadsheet\b|\bcsv\b|\bcomparison chart\b"
-            r"|(?<!answer )(?<!cheat )(?<!review )(?<!work)\bsheet\b",
+            r"|(?<!answer )(?<!cheat )(?<!review )(?<!study )(?<!work)\bsheet\b",
             re.IGNORECASE,
         ),
     ),
@@ -107,7 +108,7 @@ _INTENT_RULES: tuple[tuple[Intent, re.Pattern[str]], ...] = (
     (
         Intent.DOCUMENT,
         re.compile(
-            r"\bstudy guide\b|\bnotes\b|\boutline\b|\b(?:cheat|review) ?sheet\b"
+            r"\bstudy guide\b|\bnotes\b|\boutline\b|\b(?:cheat|review|study) ?sheet\b"
             r"|\bsummary (?:i|we) can edit\b|\beditable\b",
             re.IGNORECASE,
         ),
@@ -351,18 +352,33 @@ class Composed:
 
 
 def numbered_passages(candidates: tuple[Candidate, ...]) -> str:
-    blocks = [
-        f"[{index + 1}] chunk {candidate.chunk_id}"
-        + (
-            f" (partial passage: characters {candidate.window_start}–"
-            f"{candidate.window_end} of {candidate.text_length}; "
-            "incomplete logical unit)"
-            if candidate.partial
-            else ""
+    from src.backend.retrieval.labels import candidate_label
+
+    blocks = []
+    for index, candidate in enumerate(candidates):
+        source_kind = (
+            candidate.source_type.replace("_", " ") if candidate.source_type else ""
         )
-        + f"\n{candidate.text}"
-        for index, candidate in enumerate(candidates)
-    ]
+        where = [
+            part
+            for part in (
+                candidate.source_filename,
+                source_kind,
+                candidate.container_title,
+                candidate_label(candidate),
+            )
+            if part
+        ]
+        header = f"[{index + 1}] chunk {candidate.chunk_id}"
+        if where:
+            header += " · " + " · ".join(where)
+        if candidate.partial:
+            header += (
+                f" (partial passage: characters {candidate.window_start}–"
+                f"{candidate.window_end} of {candidate.text_length}; "
+                "incomplete logical unit)"
+            )
+        blocks.append(f"{header}\n{candidate.text}")
     return "\n\n".join(blocks)
 
 
@@ -412,7 +428,9 @@ def _object(properties: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def workspace_schema(intent: Intent, material_count: int) -> dict[str, Any]:
+def workspace_schema(
+    intent: Intent, material_count: int, quiz_count: int | None = None
+) -> dict[str, Any]:
     sources = _sources_schema(material_count)
     items: dict[Intent, dict[str, Any]] = {
         Intent.MIND_MAP: _object(
@@ -458,8 +476,8 @@ def workspace_schema(intent: Intent, material_count: int) -> dict[str, Any]:
                 "title": _string(120),
                 "questions": {
                     "type": "array",
-                    "minItems": 1,
-                    "maxItems": 6,
+                    "minItems": quiz_count or 1,
+                    "maxItems": quiz_count or 20,
                     "items": _object(
                         {
                             "prompt": _string(400),
@@ -544,7 +562,7 @@ def workspace_schema(intent: Intent, material_count: int) -> dict[str, Any]:
     return _object({"reply": _string(600), "item": items[intent]})
 
 
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*\})\s*```", re.DOTALL)
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def parse_json_object(text: str) -> dict[str, Any] | None:
@@ -555,12 +573,17 @@ def parse_json_object(text: str) -> dict[str, Any] | None:
     fenced = _JSON_FENCE_RE.search(text)
     if fenced:
         candidates.append(fenced.group(1))
-    start, end = text.find("{"), text.rfind("}")
-    if 0 <= start < end:
-        candidates.append(text[start : end + 1])
     for candidate in candidates:
         try:
             value = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(value, dict):
+            return value
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            value, _ = decoder.raw_decode(text[match.start() :])
         except ValueError:
             continue
         if isinstance(value, dict):
@@ -596,6 +619,41 @@ _QUIZ_UNAVAILABLE = (
 )
 
 
+def requested_quiz_count(question: str) -> int | None:
+    words = [
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+    ]
+    counts = {word: index for index, word in enumerate(words, start=1)}
+    match = re.search(
+        r"\b(\d+|" + "|".join(words) + r")[ -]+(?:questions?|problems?)\b",
+        question,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    count = match.group(1).casefold()
+    return int(count) if count.isdigit() else counts[count]
+
+
 def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> bool:
     """Reject schema-valid but content-free quiz scaffolding from small models."""
     if item.get("type") != "quiz":
@@ -603,6 +661,7 @@ def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> boo
     questions = item.get("questions")
     if not isinstance(questions, list) or not questions:
         return False
+    seen_prompts: set[str] = set()
     for question in questions:
         if not isinstance(question, dict):
             return False
@@ -616,6 +675,10 @@ def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> boo
             or _GENERIC_QUIZ_PROMPT.fullmatch(prompt.strip())
         ):
             return False
+        prompt_key = " ".join(prompt.casefold().split())
+        if prompt_key in seen_prompts:
+            return False
+        seen_prompts.add(prompt_key)
         if not isinstance(options, list) or len(options) < 2:
             return False
         if type(answer) is not int or not 0 <= answer < len(options):
@@ -769,6 +832,18 @@ def _workspace_response(
             "code",
         }:
             return None
+        if intent in (Intent.DOCUMENT, Intent.SLIDES):
+            substantive = [
+                line.strip()
+                for line in content.splitlines()
+                if line.strip()
+                and not re.match(r"^\s*(?:#{1,6}\s|[-*_]{3,}\s*$)", line)
+            ]
+            if not substantive or all(
+                line.strip(" *_`") == str(item.get("title", "")).strip()
+                for line in substantive
+            ):
+                return None
     reply_value = parsed.get("reply") if parsed else None
     reply = reply_value.strip() if isinstance(reply_value, str) else ""
     block = json.dumps(item, ensure_ascii=False)
@@ -787,18 +862,34 @@ def compose_answer(
     answer_mode: AnswerMode = AnswerMode.PLAIN,
     conversation: str = "",
     teaching: str = "",
+    scope_note: str = "",
 ) -> Composed:
     """Frame the task, generate, and return standard answer text.
 
     `on_schema_rejected(err)` decides whether a failed constrained call
     should be retried without the schema (an endpoint that rejects
-    `response_format`); it returns False to re-raise."""
+    `response_format`); it returns False to re-raise. `scope_note` is
+    trusted instruction text (not fenced data) prepended after a
+    source-scope change, so an earlier answer from an excluded source is
+    not treated as a fact (B-02)."""
     if select is not None:
         candidates = select(question, candidates)
     intent = classify_intent(question)
+    quiz_count = requested_quiz_count(question) if intent is Intent.QUIZ else None
+    if quiz_count is not None and not 1 <= quiz_count <= 20:
+        return Composed(
+            "A practice test supports 1–20 questions. Choose a count in that range.",
+            intent,
+            structured=False,
+            candidates=candidates,
+        )
+    if quiz_count is not None:
+        teaching += "\n" + load_prompt("workspace_quiz_count").format(count=quiz_count)
     material = numbered_material(question, candidates, conversation)
     if intent in (Intent.ANSWER, Intent.GRADED):
         teaching += "\n" + load_prompt("background_review")
+    if scope_note:
+        teaching = f"{scope_note}\n\n{teaching}" if teaching else scope_note
     if intent is Intent.ANSWER and answer_mode is AnswerMode.QUOTES:
         return _compose_quoted(
             material, candidates, generate, on_schema_rejected, teaching
@@ -807,6 +898,11 @@ def compose_answer(
         instruction = "tutor_steer" if intent is Intent.GRADED else "tutor_answer"
         prompt = grounded_prompt(load_prompt(instruction) + teaching, material)
         text = generate("tutor_answer", prompt)
+        if any(n < 1 or n > len(candidates) for n in cited_numbers(text)):
+            text = (
+                "The answer referred to source material it was not given. "
+                "Try again; this reply was withheld."
+            )
         return Composed(
             strip_fence_echo(text), intent, structured=False, candidates=candidates
         )
@@ -814,7 +910,7 @@ def compose_answer(
     prompt = grounded_prompt(
         load_prompt(f"workspace_{intent.value}") + teaching, material
     )
-    schema = workspace_schema(intent, len(candidates))
+    schema = workspace_schema(intent, len(candidates), quiz_count)
     try:
         raw = generate("artifact_generation", prompt, response_schema=schema)
     except Exception as err:
@@ -827,7 +923,9 @@ def compose_answer(
     # Keep individually verified questions across attempts, while never
     # putting an untrustworthy answer key in the workspace or chat.
     if intent is Intent.QUIZ and (
-        not isinstance(item, dict) or not _usable_quiz(item, candidates)
+        not isinstance(item, dict)
+        or not _usable_quiz(item, candidates)
+        or (quiz_count is not None and len(item.get("questions", [])) != quiz_count)
     ):
         accepted: list[dict[str, Any]] = []
         seen: set[tuple[tuple[int, ...], str]] = set()
@@ -861,7 +959,7 @@ def compose_answer(
         )
         repair_prompt = grounded_prompt(repair_instruction, material)
         for _ in range(2):
-            if len(accepted) >= 2:
+            if len(accepted) >= (quiz_count or 2):
                 break
             try:
                 repaired = generate(
@@ -884,7 +982,22 @@ def compose_answer(
                 structured=False,
                 candidates=candidates,
             )
-        item = {"type": "quiz", "title": title, "questions": accepted[:3]}
+        if quiz_count is not None and len(accepted) < quiz_count:
+            return Composed(
+                f"I could verify only {len(accepted)} of the {quiz_count} "
+                "requested questions, so I haven't published an incomplete test. "
+                "Try a smaller test or a different source or model.",
+                intent,
+                structured=False,
+                candidates=candidates,
+            )
+        item = {
+            "type": "quiz",
+            "title": title,
+            "questions": accepted[:quiz_count]
+            if quiz_count is not None
+            else accepted[:20],
+        }
         parsed = {"reply": reply, "item": item}
     passages = [c.text for c in candidates]
     workspace_text = _workspace_response(parsed, intent, len(candidates), passages)

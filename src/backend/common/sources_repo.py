@@ -14,6 +14,9 @@ from src.backend.common.queries import get
 from src.backend.common.schemas.base import SourceStatus, SourceType
 from src.backend.common.schemas.source_content import Source
 from src.backend.ingest import runs as _ingest_runs
+from src.backend.ingest.source_kind import sniff_source_type
+from src.backend.rag.config import load_policy
+from src.backend.rag.store import EXTRACTION_VERSION
 
 _FILE = "sources"
 
@@ -62,7 +65,7 @@ def upload_source(
     *,
     filename: str,
     mime_type: str,
-    source_type: SourceType,
+    source_type: SourceType | None,
     stream: BinaryIO,
 ) -> StoredSource:
     """Stream the upload to disk (hashing as it goes), store it, insert
@@ -72,6 +75,8 @@ def upload_source(
     temp_path, file_hash, raw_size = storage.stream_to_temp(
         stream, max_bytes=load_lifecycle_policy().max_raw_upload_bytes
     )
+    if source_type is None:
+        source_type = sniff_source_type(temp_path, filename, mime_type)
     stored_temp: Path = temp_path
     source_id = uuid4()
     final_written = False
@@ -138,7 +143,16 @@ def upload_source(
         raise
 
 
-def _to_source(row: dict[str, Any]) -> Source:
+def _index_stale(row: dict[str, Any], segmentation_version: str) -> bool:
+    if not row.get("has_index"):
+        return False
+    return (
+        row.get("extraction_version") != EXTRACTION_VERSION
+        or row.get("segmentation_version") != segmentation_version
+    )
+
+
+def _to_source(row: dict[str, Any], segmentation_version: str) -> Source:
     return Source(
         source_id=row["source_id"],
         course_id=row["course_id"],
@@ -150,16 +164,24 @@ def _to_source(row: dict[str, Any]) -> Source:
         has_index=bool(row.get("has_index", False)),
         file_hash=row["file_hash"],
         error_message=row["error_message"],
+        pages_total=row.get("pages_total"),
+        pages_empty=row.get("pages_empty"),
+        pages_low_quality=row.get("pages_low_quality"),
+        pages_ocr=row.get("pages_ocr"),
+        chunk_count=int(row.get("chunk_count") or 0),
+        ingestion_stage=row.get("ingestion_stage"),
+        index_stale=_index_stale(row, segmentation_version),
         created_at=row["created_at"],
     )
 
 
 def list_sources(course_id: UUID) -> list[Source]:
+    segmentation_version = load_policy().version
     with connection() as conn:
         rows = conn.execute(
             get(_FILE, "list_sources"), {"course_id": course_id}
         ).fetchall()
-    return [_to_source(row) for row in rows]
+    return [_to_source(row, segmentation_version) for row in rows]
 
 
 def get_source(course_id: UUID, source_id: UUID) -> Source | None:
@@ -168,7 +190,32 @@ def get_source(course_id: UUID, source_id: UUID) -> Source | None:
             get(_FILE, "get_source"),
             {"course_id": course_id, "source_id": source_id},
         ).fetchone()
-    return _to_source(row) if row else None
+    if row is None:
+        return None
+    return _to_source(row, load_policy().version)
+
+
+def set_source_type(
+    course_id: UUID, source_id: UUID, source_type: SourceType
+) -> Source | None:
+    with connection() as conn:
+        changed = conn.execute(
+            get(_FILE, "set_source_type"),
+            {
+                "course_id": course_id,
+                "source_id": source_id,
+                "source_type": source_type.value,
+            },
+        ).fetchone()
+        if changed is None:
+            conn.rollback()
+            return None
+        row = conn.execute(
+            get(_FILE, "get_source"),
+            {"course_id": course_id, "source_id": source_id},
+        ).fetchone()
+        conn.commit()
+    return _to_source(row, load_policy().version) if row else None
 
 
 def reindex_source(course_id: UUID, source_id: UUID) -> bool:

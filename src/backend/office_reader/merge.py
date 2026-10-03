@@ -47,7 +47,7 @@ def _similar(left: str, right: str) -> bool:
     if left == right:
         return True
     shorter, longer = sorted((left, right), key=len)
-    if shorter not in longer:
+    if f" {shorter} " not in f" {longer} ":
         return False
     short_words = len(shorter.split())
     return short_words >= _MIN_MATCH_WORDS and short_words >= _MATCH_RATIO * len(
@@ -71,6 +71,7 @@ def merge_reads(reads: Iterable[DocumentRead]) -> MergedRead:
 
     merged: list[TextUnit] = []
     merged_keys: list[str] = []
+    merged_methods: list[set[str]] = []
     agreement: list[Agreement] = []
     warnings: list[str] = []
     seen_warning: set[str] = set()
@@ -84,15 +85,21 @@ def merge_reads(reads: Iterable[DocumentRead]) -> MergedRead:
                     same = index
                     break
             if same is not None:
-                matched += 1
+                if merged_methods[same] - {read.method}:
+                    matched += 1
+                else:
+                    unique += 1
+                merged_methods[same].add(read.method)
                 # Prefer the fuller reading by word count: OCR may truncate,
                 # but a punctuation-only difference must not flip the text
                 # back and forth between methods.
                 if len(unit.text.split()) > len(merged[same].text.split()):
                     merged[same] = unit
+                    merged_keys[same] = key
             else:
                 merged.append(unit)
                 merged_keys.append(key)
+                merged_methods.append({read.method})
                 unique += 1
         agreement.append(
             Agreement(

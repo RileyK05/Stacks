@@ -105,6 +105,7 @@ RETURNING source_id;
 UPDATE sources
 SET status = 'failed', error_message = :error_message
 WHERE source_id = :source_id
+  AND status IN ('uploaded', 'scanned')
 RETURNING source_id;
 
 -- name: source_row
@@ -145,7 +146,9 @@ ON CONFLICT (source_id) DO NOTHING;
 -- name: requeue_row
 INSERT INTO pending_ingestion (source_id, course_id, reason)
 VALUES (:source_id, :course_id, 'requeue_after_failure')
-ON CONFLICT (source_id) DO NOTHING;
+ON CONFLICT (source_id) DO UPDATE SET
+    claimed_at = NULL, heartbeat_at = NULL, claimed_runs = 0,
+    reason = excluded.reason, created_at = now_utc();
 
 -- name: release_stale_claims
 -- The heartbeat fence: a claim is stale only when its HEARTBEAT is old,

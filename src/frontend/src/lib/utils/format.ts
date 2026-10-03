@@ -14,6 +14,7 @@ export function formatBytes(bytes: number): string {
 /** "just now", "5 min ago", "3 h ago", "yesterday", "12 Mar": short enough for a list. */
 export function timeAgo(iso: string, now: Date = new Date()): string {
   const then = new Date(iso);
+  if (!Number.isFinite(then.getTime()) || !Number.isFinite(now.getTime())) return 'Unknown date';
   const seconds = Math.max(0, (now.getTime() - then.getTime()) / 1000);
   if (seconds < 60) return 'just now';
   if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;

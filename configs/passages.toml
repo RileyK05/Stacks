@@ -1,6 +1,9 @@
-version = "2"
+version = "3"
 semantic_enabled = true
 target_tokens = 512
+# A block shorter than this, and not already a sentence, is merged into a
+# neighbor. Empty headings and running-head fragments were being embedded.
+min_alnum_chars = 40
 boundary_similarity = 0.78
 search_window_tokens = 512
 retrieved_passage_tokens = 2048

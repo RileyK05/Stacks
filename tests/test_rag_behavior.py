@@ -44,6 +44,71 @@ def test_table_list_and_equation_keep_their_explanatory_text():
         assert text[result.passages[0].start : result.passages[0].end] == text
 
 
+def test_single_newline_text_is_split_to_the_token_target():
+    """A PDF page break is one newline, so blank-line cuts never fire."""
+    line = "The Hart-Celler Act capped immigration at two hundred ninety thousand. "
+    text = (line * 800).strip()
+    text += "\n• item one stays with its own block when the list is long enough"
+    policy = load_policy()
+    result = segment(text, policy, token_count=len)
+    assert result.passages
+    assert all(
+        len(text[span.start : span.end]) <= policy.target_tokens
+        for span in result.passages
+        if span.kind == "passage"
+    )
+    assert "".join(text[span.start : span.end] for span in result.passages) == text
+
+
+def test_passages_do_not_cross_page_breaks():
+    page = "This page explains the treaty terms in one continuous paragraph. " * 30
+    text = page + "\n" + page
+    second = len(page) + 1
+    policy = load_policy()
+    result = segment(text, policy, token_count=len, page_breaks=(second,))
+    assert all(not (span.start < second < span.end) for span in result.passages)
+    assert "".join(text[span.start : span.end] for span in result.passages) == text
+
+
+def test_thin_heading_is_merged_into_the_paragraph():
+    paragraph = (
+        "The reading then explains the community that formed after the war. " * 6
+    )
+    text = f"Heading\n\n\n\n{paragraph}"
+    result = segment(text, load_policy(), token_count=len)
+    assert result.passages
+    assert all(
+        sum(char.isalnum() for char in text[span.start : span.end]) >= 40
+        for span in result.passages
+    )
+    assert "".join(text[span.start : span.end] for span in result.passages) == text
+
+
+def test_thin_neighbor_does_not_take_a_candidate_slot(monkeypatch):
+    course = make_course()
+    source = insert_source(course.course_id)
+    anchor = insert_chunk(
+        source,
+        "The variance formula is sigma squared.",
+        chunk_index=0,
+        embedding=[1, 0],
+    )
+    blank = insert_chunk(source, "\n\n", chunk_index=1, embedding=[1, 0])
+    monkeypatch.setattr(provider, "embedding_token_count", len)
+    with connection() as conn:
+        result = funnel.retrieve(
+            conn,
+            course.course_id,
+            "variance formula",
+            load_retrieval_policy(),
+            embedding_model="test-embed",
+            source_ids=[source],
+        )
+    found = {candidate.chunk_id for candidate in result.candidates}
+    assert anchor in found
+    assert blank not in found
+
+
 def test_qualification_survives_reranking_and_source_selection(monkeypatch):
     course = make_course()
     source = insert_source(course.course_id)

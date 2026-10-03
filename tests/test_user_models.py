@@ -4,6 +4,7 @@ computer becomes one more catalog entry."""
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,27 @@ from src.backend.runtime import model_store, user_models
 from src.backend.runtime.user_models import AddModelError, HuggingFaceLink
 
 SHA = "8203991019c36dd618145aa76246097252e45283a4f75c0991a0ce902a0ad7d3"
+
+
+def test_concurrent_same_name_registrations_keep_unique_entries(tmp_path: Path) -> None:
+    files = []
+    for index in range(8):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        file = directory / "model.gguf"
+        file.write_bytes(f"different model {index}".encode())
+        files.append(file)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        models = list(pool.map(user_models.add_from_file, files))
+    assert len({model.id for model in models}) == 8
+    assert {model.sha256 for model in user_models.user_models()} == {
+        model.sha256 for model in models
+    }
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert all(pool.map(user_models.remove, [model.id for model in models]))
+    assert user_models.user_models() == []
+
+
 TREE: list[dict[str, Any]] = [
     {"type": "file", "path": "README.md", "size": 10},
     {

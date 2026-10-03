@@ -32,6 +32,12 @@ class Conversation:
     message_count: int
     summary: str = ""
     summary_through: int = 0
+    # The message seq when the chat's source selection last changed (0 =
+    # never). The summarizer folds the turns before it into a topic-only
+    # summary so an excluded source's facts are not re-asserted (B-02).
+    scope_revised_seq: int = 0
+    # The selection in force at that revision; None means every source.
+    scope_revised_ids: tuple[UUID, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,12 @@ def _to_conversation(row: dict[str, Any]) -> Conversation:
         message_count=row["message_count"],
         summary=row.get("summary", ""),
         summary_through=row.get("summary_through", 0),
+        scope_revised_seq=row.get("scope_revised_seq", 0) or 0,
+        scope_revised_ids=(
+            _source_ids(row["scope_revised_ids"])
+            if "scope_revised_ids" in row
+            else None
+        ),
     )
 
 
@@ -138,7 +150,11 @@ def update(
     title: str,
     model_choice: dict[str, Any] | None,
     source_ids: tuple[UUID, ...] | None,
+    scope_changed: bool = False,
 ) -> Conversation | None:
+    """Update the mutable fields. When `scope_changed`, record a scope
+    revision at the current message seq: earlier answers may cite a source
+    the student just excluded (B-02)."""
     with connection() as conn:
         conn.execute(
             get(_FILE, "update"),
@@ -154,6 +170,7 @@ def update(
                     if source_ids is not None
                     else None
                 ),
+                "scope_changed": 1 if scope_changed else 0,
             },
         )
         conn.commit()
@@ -188,6 +205,8 @@ def add_turn(
 ) -> tuple[Message, Message]:
     """Record one question and its answer, and title an untitled chat from
     its first question. Part of the caller's transaction."""
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
     seq = int(
         conn.execute(
             get(_FILE, "next_seq"), {"conversation_id": conversation_id}
@@ -197,8 +216,9 @@ def add_turn(
         (uuid4(), seq, "user", question, None, {}),
         (uuid4(), seq + 1, "assistant", answer, trace_id, payload),
     )
+    stored = []
     for message_id, message_seq, role, text, trace, data in rows:
-        conn.execute(
+        row = conn.execute(
             get(_FILE, "add_message"),
             {
                 "message_id": message_id,
@@ -209,18 +229,22 @@ def add_turn(
                 "trace_id": trace,
                 "payload": json.dumps(data, ensure_ascii=False),
             },
-        )
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("message insert did not return a row")
+        stored.append(_to_message(row))
     conn.execute(
         get(_FILE, "set_title_if_empty"),
         {"conversation_id": conversation_id, "title": title_from(question)},
     )
     conn.execute(get(_FILE, "touch"), {"conversation_id": conversation_id})
-    stored = [m for m in messages(conn, conversation_id) if m.seq >= seq]
     return stored[0], stored[1]
 
 
 def set_summary(conversation_id: UUID, summary: str, through: int) -> None:
     """Store a newer rolling summary; an older one never overwrites it."""
+    if not summary.strip():
+        return
     with connection() as conn:
         conn.execute(
             get(_FILE, "set_summary"),

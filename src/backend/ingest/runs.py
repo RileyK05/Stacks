@@ -253,6 +253,8 @@ def record_history(
     reason: str,
     queued_at: Any,
 ) -> None:
+    if queued_at is None:
+        return
     conn.execute(
         get(_FILE, "record_ingestion_history"),
         {

@@ -1,6 +1,7 @@
 """The backend process the desktop shell runs (src/frontend/src-tauri).
 
     python -m src.backend.serve [--port N] [--watch-stdin]
+    python -m src.backend.serve --activate <backup_id>
 
 It binds 127.0.0.1 itself (port 0 by default, so the OS picks a free one)
 and prints `STACKS_PORT=<port>` on stdout once it is listening; the shell
@@ -11,6 +12,11 @@ write end, so quitting the app — or the app crashing — closes it, and the
 backend shuts down cleanly: its lifespan stops the model server and the
 ingestion worker. The per-launch token (APP_API_TOKEN) and the data
 directory (APP_DATA_DIR) arrive through the environment.
+
+`--activate` is the one-shot activation path (B-14): it swaps a recovered
+backup into the data folder and exits without serving. The shell runs it
+only after the normal backend has stopped, so no writer is open during the
+swap (src/backend/activation.py).
 """
 
 from __future__ import annotations
@@ -62,13 +68,34 @@ def _stop_when_stdin_closes(server: uvicorn.Server) -> None:
     threading.Thread(target=watch, name="stdin-watch", daemon=True).start()
 
 
+def _activate(backup_id: str) -> int:
+    from src.backend.activation import ActivationError, activate_backup
+
+    try:
+        result = activate_backup(backup_id)
+    except (ActivationError, ValueError, FileNotFoundError, OSError) as error:
+        print(f"activation failed: {error}", file=sys.stderr)
+        return 2
+    print(f"ACTIVATED={result.data_dir}", flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="stacks-backend")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--watch-stdin", action="store_true")
+    parser.add_argument(
+        "--activate",
+        metavar="BACKUP_ID",
+        help="swap a recovered backup into the data folder and exit (B-14)",
+    )
     args = parser.parse_args(argv)
 
     os.environ.setdefault("APP_ENV", "production")
+    if args.activate is not None:
+        # Configure logging first so an activation failure is recorded.
+        _configure_logging()
+        return _activate(args.activate)
     _configure_logging()
     sock = _bind(args.port)
     port = sock.getsockname()[1]

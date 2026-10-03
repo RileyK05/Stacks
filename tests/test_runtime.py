@@ -89,6 +89,7 @@ class _FakeStream:
     def __init__(self, status: int, body: bytes) -> None:
         self.status_code = status
         self._body = body
+        self.headers: dict[str, str] = {}
 
     def __enter__(self) -> _FakeStream:
         return self
@@ -115,7 +116,12 @@ def _serve(monkeypatch: pytest.MonkeyPatch, payload: bytes) -> list[dict]:
     def fake_stream(method, url, headers=None, **kwargs):
         seen.append(dict(headers or {}))
         offset = int(headers["Range"].split("=")[1].rstrip("-")) if headers else 0
-        return _FakeStream(206 if offset else 200, payload[offset:])
+        response = _FakeStream(206 if offset else 200, payload[offset:])
+        if offset:
+            response.headers["Content-Range"] = (
+                f"bytes {offset}-{len(payload) - 1}/{len(payload)}"
+            )
+        return response
 
     monkeypatch.setattr(httpx, "stream", fake_stream)
     return seen

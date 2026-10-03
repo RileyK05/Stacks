@@ -29,6 +29,7 @@ KNOWN_PROMPTS = (
         "tutor_answer_quotes",
         "artifact_edit",
         "learning_adaptation",
+        "workspace_quiz_count",
         "companion_work",
         "companion_review",
         "companion_revision",
@@ -38,6 +39,8 @@ KNOWN_PROMPTS = (
         "map_explain",
         "map_quiz",
         "background_review",
+        "conversation_scope_change",
+        "scope_change_summary",
     }
 )
 

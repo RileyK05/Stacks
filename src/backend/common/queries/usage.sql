@@ -1,11 +1,11 @@
 -- name: record
 INSERT INTO usage_ledger
     (ledger_id, course_id, course_label, task, provider, model,
-     input_tokens, output_tokens)
+     input_tokens, output_tokens, is_local)
 VALUES
     (:ledger_id, :course_id,
      (SELECT name FROM courses WHERE course_id = :course_id),
-     :task, :provider, :model, :input_tokens, :output_tokens)
+     :task, :provider, :model, :input_tokens, :output_tokens, :is_local)
 RETURNING ledger_id, course_id, course_label, task, provider, model,
           input_tokens, output_tokens, created_at;
 
@@ -21,7 +21,7 @@ LIMIT :limit;
 -- optional monthly budget measures (local calls cost nothing).
 SELECT COALESCE(SUM(input_tokens + output_tokens), 0) AS spent
 FROM usage_ledger
-WHERE created_at >= :since AND provider <> 'local';
+WHERE created_at >= :since AND is_local = 0;
 
 -- name: totals_since
 SELECT provider, model, task,

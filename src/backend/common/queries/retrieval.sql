@@ -76,3 +76,11 @@ SELECT DISTINCT locator.label
 FROM chunk_locators AS span
 JOIN locators AS locator ON locator.locator_id = span.locator_id
 WHERE span.chunk_id IN (SELECT value FROM json_each(:chunk_ids));
+
+-- name: chunk_id_locator_labels
+-- Per-chunk labels (no DISTINCT across chunks) so the retrieval eval can
+-- score reciprocal rank at a candidate's own position (B-07).
+SELECT span.chunk_id, locator.label
+FROM chunk_locators AS span
+JOIN locators AS locator ON locator.locator_id = span.locator_id
+WHERE span.chunk_id IN (SELECT value FROM json_each(:chunk_ids));

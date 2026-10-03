@@ -13,6 +13,7 @@ from pathlib import Path
 
 from lxml import etree
 from src.backend.common.config import DEFAULT_OFFICE_PORT, PROJECT_ROOT
+from src.backend.office_addin.certs import _atomic_write
 
 # Only what Office loads; the add-in's tests and tooling sit one level up.
 ADDIN_DIR = PROJECT_ROOT / "src" / "office-addin" / "public"
@@ -42,7 +43,10 @@ def office_version(app_version: str) -> str:
 
 
 def render(port: int, app_version: str) -> str:
-    text = TEMPLATE.read_text(encoding="utf-8").replace(TEMPLATE_ORIGIN, origin(port))
+    original = TEMPLATE.read_text(encoding="utf-8")
+    if TEMPLATE_ORIGIN not in original or "<Version>" not in original:
+        raise ValueError("Office manifest template has no expected origin or version")
+    text = original.replace(TEMPLATE_ORIGIN, origin(port))
     return re.sub(
         r"<Version>[^<]*</Version>",
         f"<Version>{office_version(app_version)}</Version>",
@@ -54,5 +58,5 @@ def render(port: int, app_version: str) -> str:
 def write(folder: Path, port: int, app_version: str) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / "manifest.xml"
-    path.write_text(render(port, app_version), encoding="utf-8")
+    _atomic_write(path, render(port, app_version).encode("utf-8"))
     return path

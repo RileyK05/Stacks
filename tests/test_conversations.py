@@ -282,6 +282,129 @@ def test_older_turns_are_folded_into_a_rolling_summary(
     assert "Summary of the earlier conversation" in prompt
 
 
+def test_scope_change_marks_context_and_answers_only_from_new_material(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B-02 acceptance: discuss A, switch to only B, ask a follow-up A
+    supports but B does not. Retrieval must stay in B, and the prompt must
+    tell the model the earlier tutor statement is not a fact — as trusted
+    instruction outside the data fence."""
+    course_id = _course(client)
+    source_a, _ = chunk_source_locator(
+        add_chunk(UUID(course_id), "Linear maps preserve addition and scaling.")
+    )
+    source_b, _ = chunk_source_locator(
+        add_chunk(UUID(course_id), "A basis spans the space and is independent.")
+    )
+    calls = configure_test_provider(monkeypatch, ANSWER)
+    chat_id = _chat(client, course_id)
+
+    _send(client, course_id, chat_id, "What is a linear map?")
+    changed = client.patch(
+        f"/courses/{course_id}/conversations/{chat_id}",
+        json={"source_ids": [str(source_b)]},
+    )
+    assert changed.status_code == 200
+    assert changed.json()["scope_revised_seq"] == 2, "the revision is at the last turn"
+
+    # A follow-up that the old source A supported but B does not must come
+    # back as an honest limitation, not a convenient fact from A.
+    limited = _send(client, course_id, chat_id, "Does that still preserve addition?")
+    assert limited.status_code == 200
+    reply = limited.json()["reply"]
+    assert reply["no_match"] is True and reply["answer"] is None
+    assert "nothing in the course materials" in reply["text"]
+
+    # A follow-up the new source can answer still carries the scope note as
+    # trusted instruction outside the fence, and reads only B.
+    calls.clear()
+    _send(client, course_id, chat_id, "What is a basis?")
+    prompt = " ".join(
+        str([c for c in calls if c["task"] == "tutor_answer"][-1]["prompt"]).split()
+    )
+    assert "changed the selected course sources" in prompt
+    assert "Do not treat any earlier tutor statement as a course fact" in prompt
+    fence = prompt.index("UNTRUSTED_COURSE_MATERIAL begin")
+    assert prompt.index("changed the selected course sources") < fence, (
+        "the scope instruction is trusted, outside the fence"
+    )
+    evidence = prompt[prompt.index("Course material:") :]
+    assert "Linear maps preserve addition" not in evidence, (
+        "excluded source A's chunk is not re-read"
+    )
+    assert "basis spans" in evidence, "the answer reads only the selected source B"
+
+
+def test_only_a_real_selection_change_records_a_scope_revision(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course_id = _course(client)
+    source_a, _ = chunk_source_locator(add_chunk(UUID(course_id), "alpha"))
+    source_b, _ = chunk_source_locator(add_chunk(UUID(course_id), "beta"))
+    configure_test_provider(monkeypatch, ANSWER)
+    chat_id = _chat(client, course_id)
+    _send(client, course_id, chat_id, "What is linearity?")
+
+    first = client.patch(
+        f"/courses/{course_id}/conversations/{chat_id}",
+        json={"source_ids": [str(source_a)]},
+    ).json()
+    assert first["scope_revised_seq"] == 2, "narrowing from all sources is a change"
+
+    reordered = client.patch(
+        f"/courses/{course_id}/conversations/{chat_id}",
+        json={"source_ids": [str(source_a), str(source_a)]},
+    ).json()
+    assert reordered["scope_revised_seq"] == 2, "a same-set selection adds no revision"
+
+    renamed = client.patch(
+        f"/courses/{course_id}/conversations/{chat_id}", json={"title": "Week 1"}
+    ).json()
+    assert renamed["scope_revised_seq"] == 2, "renaming is not a scope change"
+
+    added = client.patch(
+        f"/courses/{course_id}/conversations/{chat_id}",
+        json={"source_ids": [str(source_a), str(source_b)]},
+    ).json()
+    assert added["scope_revised_seq"] == 2, (
+        "a new selection is a revision (at same seq)"
+    )
+
+
+def test_scope_change_summarizes_old_turns_as_topic_only(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A turn that scrolled out before a scope change is folded in with the
+    scope-change summary prompt, and only the pre-change turns are folded
+    (B-02)."""
+    course_id = _course(client)
+    source_b, _ = chunk_source_locator(
+        add_chunk(UUID(course_id), "a basis spans the space")
+    )
+    calls = configure_test_provider(monkeypatch, ANSWER)
+    chat_id = _chat(client, course_id)
+    for question in ("What is linearity?", "Why?", "An example?"):
+        _send(client, course_id, chat_id, question)
+
+    client.patch(
+        f"/courses/{course_id}/conversations/{chat_id}",
+        json={"source_ids": [str(source_b)]},
+    )
+    _send(client, course_id, chat_id, "More?")
+
+    summaries = [c for c in calls if c["task"] == "conversation_summary"]
+    assert summaries, "the scrolled-out turns are summarized"
+    last = str(summaries[-1]["prompt"])
+    assert "changed" in last and "as a fact" in last, (
+        "the topic-only summary prompt is used"
+    )
+    stored = conversations_repo.get_conversation(UUID(course_id), UUID(chat_id))
+    assert stored is not None
+    assert stored.summary_through <= stored.scope_revised_seq, (
+        "post-change turns are not folded into the pre-change summary"
+    )
+
+
 def test_a_failed_summary_never_fails_the_chat(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

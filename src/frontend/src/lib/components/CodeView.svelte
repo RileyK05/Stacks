@@ -1,5 +1,7 @@
 <script lang="ts">
   import hljs from 'highlight.js/lib/common';
+  import { onDestroy } from 'svelte';
+  import { toast } from '$lib/stores/toast.svelte';
   import 'highlight.js/styles/github-dark.css';
   import { sanitizeHtml } from '$lib/utils/render';
   import type { WorkspaceCode } from '$lib/stores/workspace.svelte';
@@ -14,8 +16,11 @@
   let { item, sources }: Props = $props();
 
   let copied = $state(false);
+  let copyTimer: ReturnType<typeof setTimeout> | null = null;
+  onDestroy(() => { if (copyTimer) clearTimeout(copyTimer); });
 
   const highlighted = $derived.by(() => {
+    if (item.code.length > 20_000) return '';
     try {
       if (item.language && hljs.getLanguage(item.language)) {
         return hljs.highlight(item.code, { language: item.language }).value;
@@ -29,9 +34,14 @@
   const fallback = $derived(highlighted === '');
 
   async function copy() {
-    await navigator.clipboard.writeText(item.code);
-    copied = true;
-    setTimeout(() => (copied = false), 1500);
+    try {
+      await navigator.clipboard.writeText(item.code);
+      if (copyTimer) clearTimeout(copyTimer);
+      copied = true;
+      copyTimer = setTimeout(() => (copied = false), 1500);
+    } catch {
+      toast('Could not copy the code. Select it and copy manually.', 'error');
+    }
   }
 </script>
 

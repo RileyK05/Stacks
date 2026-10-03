@@ -15,7 +15,7 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from src.backend.api.deps import require_course
 from src.backend.api.tutor import AnswerView, answer_view
 from src.backend.common import (
@@ -53,6 +53,9 @@ class ConversationSummaryView(BaseModel):
     model_choice: ModelChoiceView | None
     # None: every source in the course.
     source_ids: list[str] | None
+    # Message seq when the source selection last changed (0 = never); the
+    # chat treats earlier turns as topic-only context from then on (B-02).
+    scope_revised_seq: int = 0
 
 
 class MessageView(BaseModel):
@@ -111,6 +114,18 @@ class SendMessage(BaseModel):
         return value
 
 
+def _scope_differs(
+    before: tuple[UUID, ...] | None, after: tuple[UUID, ...] | None
+) -> bool:
+    """Whether the selection meaningfully changed. None means every
+    source, and the picker's order is not semantic, so compare as sets
+    with None distinct from an empty tuple (which cannot occur: the API
+    rejects an empty selection)."""
+    if before is None or after is None:
+        return before is not after
+    return set(before) != set(after)
+
+
 def _summary_view(conversation: Conversation) -> ConversationSummaryView:
     return ConversationSummaryView(
         conversation_id=str(conversation.conversation_id),
@@ -128,6 +143,7 @@ def _summary_view(conversation: Conversation) -> ConversationSummaryView:
             if conversation.source_ids is not None
             else None
         ),
+        scope_revised_seq=conversation.scope_revised_seq,
     )
 
 
@@ -135,7 +151,10 @@ def _message_view(message: Message) -> MessageView:
     payload = message.payload
     answer = None
     if message.role == "assistant" and not payload.get("no_match"):
-        answer = AnswerView.model_validate({**payload, "text": message.text})
+        try:
+            answer = AnswerView.model_validate({**payload, "text": message.text})
+        except ValidationError:
+            answer = None
     return MessageView(
         message_id=str(message.message_id),
         seq=message.seq,
@@ -198,6 +217,7 @@ def update_conversation(
                 )
             model_choice = payload.model_choice.model_dump(exclude_none=True)
     source_ids = current.source_ids
+    scope_changed = False
     if "source_ids" in sent:
         source_ids = None
         if payload.source_ids is not None:
@@ -213,12 +233,14 @@ def update_conversation(
                     "a chosen source is not in this course",
                 )
             source_ids = tuple(dict.fromkeys(payload.source_ids))
+        scope_changed = _scope_differs(current.source_ids, source_ids)
     updated = conversations_repo.update(
         course_id,
         conversation_id,
         title=payload.title if payload.title is not None else current.title,
         model_choice=model_choice,
         source_ids=source_ids,
+        scope_changed=scope_changed,
     )
     assert updated is not None
     return _summary_view(updated)
@@ -267,6 +289,8 @@ def send_message(
                     bigger=payload.bigger_model,
                     choice=choice,
                     conversation=context.render(),
+                    teaching_trace_ids=context.teaching_trace_ids,
+                    scope_note=context.scope_note(),
                     source_ids=conversation.source_ids,
                     search_query=search,
                     overview=overview,

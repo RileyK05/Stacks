@@ -9,7 +9,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from src.backend.common.companion_config import load_companion_policy
-from src.backend.common.db import connection
 from src.backend.common.schemas.work import DocumentInput
 from src.backend.office_reader.screens import read_screens
 
@@ -96,10 +95,7 @@ def capture(window: CaptureWindow) -> DocumentInput:
         "content. Check the captured text before relying on it."
     ]
     if not text and raw["image"]:
-        with connection() as conn:
-            read = read_screens(
-                conn, [base64.b64decode(raw["image"])], host=current.title
-            )
+        read = read_screens([base64.b64decode(raw["image"])], host=current.title)
         text = read.text
         origin = "screen"
         warnings = [

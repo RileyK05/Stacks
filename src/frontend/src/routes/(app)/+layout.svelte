@@ -169,7 +169,9 @@
       <!-- Re-create the page when its address changes, so state from one course
            (chat, panel, polling) never leaks into another. -->
       {#key page.url.pathname}
-        {@render children()}
+    {#key page.url.pathname}
+      {@render children()}
+    {/key}
       {/key}
     </div>
   </main>

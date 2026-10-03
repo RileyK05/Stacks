@@ -30,6 +30,7 @@ def record_trace(
     result: RetrievalResult,
     *,
     embedding_model: str | None = None,
+    cited: tuple[tuple[UUID, int], ...] = (),
 ) -> StoredTrace:
     """Retain the retrieval path, related context and exact coverage read."""
     per_chunk = [
@@ -52,11 +53,17 @@ def record_trace(
     for candidate in result.candidates:
         for layer in candidate.layers:
             contribution[layer] = contribution.get(layer, 0) + 1
-    chunk_payload = {
+    chunk_payload: dict[str, object] = {
         "chunk_ids": [entry["chunk_id"] for entry in per_chunk],
         "per_chunk_layers": per_chunk,
         "layer_contribution": contribution,
     }
+    if cited:
+        # The full candidate list stays above. These are the markers the
+        # answer actually printed, in marker order, so the sources list
+        # does not renumber them.
+        chunk_payload["cited_chunk_ids"] = [str(chunk_id) for chunk_id, _ in cited]
+        chunk_payload["citation_markers"] = [marker for _, marker in cited]
     row = conn.execute(
         get(_FILE, "insert_trace"),
         {

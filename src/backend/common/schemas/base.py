@@ -86,6 +86,10 @@ KNOWN_GENERATION_TASKS = frozenset(
         "ocr",
         "conversation_summary",
         "learning_research",
+        # The semantic eval judge (evals/judge.py). Not a product feature:
+        # it exists so the answer suite can score correctness, not just
+        # citations and markers (B-06).
+        "answer_eval_judge",
     }
 )
 

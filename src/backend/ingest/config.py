@@ -24,11 +24,20 @@ class OcrConfig(BaseModel):
     scale: float = Field(gt=0)
 
 
+class TextConfig(BaseModel):
+    """When a PDF page is blank or its text layer is not readable prose."""
+
+    min_page_chars: int = Field(default=20, ge=1)
+    quality_floor: float = Field(default=0.35, ge=0, le=1)
+    max_decode_bytes: int = Field(default=64 * 1024 * 1024, ge=1)
+
+
 class IngestionConfig(BaseModel):
     pipeline_version: str
     max_attempts: int = Field(ge=1)
     poll_interval_seconds: int = Field(ge=1)
     ocr: OcrConfig
+    text: TextConfig = Field(default_factory=TextConfig)
     stages: list[StageConfig]
 
     @model_validator(mode="after")

@@ -6,6 +6,7 @@ and resumed with an HTTP Range request."""
 from __future__ import annotations
 
 import hashlib
+import re
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -46,7 +47,11 @@ def download_verified(
     and verify it. Raises DownloadError on a checksum mismatch (the bad
     file is deleted so the next attempt starts clean)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.exists() and dest.stat().st_size == size_bytes:
+    if (
+        dest.exists()
+        and dest.stat().st_size == size_bytes
+        and sha256_of(dest) == sha256
+    ):
         return dest
     part = dest.with_name(dest.name + ".part")
     done = part.stat().st_size if part.exists() else 0
@@ -62,6 +67,18 @@ def download_verified(
             follow_redirects=True,
             timeout=httpx.Timeout(60.0, connect=15.0),
         ) as response:
+            if response.status_code == 206:
+                match = re.fullmatch(
+                    r"bytes (\d+)-(\d+)/(\d+)",
+                    response.headers.get("Content-Range", ""),
+                )
+                if (
+                    match is None
+                    or int(match[1]) != done
+                    or int(match[3]) != size_bytes
+                    or not done <= int(match[2]) < size_bytes
+                ):
+                    raise DownloadError(f"{dest.name}: invalid download range")
             if done and response.status_code != 206:
                 done = 0  # server ignored the range: start over
             response.raise_for_status()
@@ -69,6 +86,10 @@ def download_verified(
                 for block in response.iter_bytes(CHUNK_BYTES):
                     if cancel is not None and cancel.is_set():
                         raise DownloadCancelled(f"cancelled: {dest.name}")
+                    if done + len(block) > size_bytes:
+                        raise DownloadError(
+                            f"{dest.name}: download exceeds expected size"
+                        )
                     handle.write(block)
                     done += len(block)
                     if progress is not None:

@@ -16,9 +16,10 @@ on ONNX Runtime. See `docs/project.md` for the product plan,
 `docs/plan-notebook.md` for the release plan and handoff (**start at its
 "Current handoff" section**). Read them before making structural decisions.
 
-> The six working docs (this file, `project.md`, `system.md`, `notes.md`,
-> `plan-notebook.md`, and `docket.md`) all live in `docs/`. `docket.md` is a
-> triaged engineering ledger; candidate findings are not facts until verified. Older
+> The seven working docs (this file, `project.md`, `system.md`, `notes.md`,
+> `plan-notebook.md`, `docket.md`, and `backlog.md`) all live in `docs/`.
+> `docket.md` holds active defects, acceptance gaps and tradeoff decisions;
+> `backlog.md` holds optional ideas and unconfirmed candidates. Older
 > decision records and plans were removed on 2026-09-25 and survive in git
 > history; code and docs that cite "decision 0NN", `docs/decisions/` or
 > `plan-local-first.md` refer to those (`git log --all -- <path>`).
@@ -125,6 +126,7 @@ docs/
   notes.md       # append-only decision log (never delete entries)
   plan-notebook.md # current release plan; start here
   docket.md      # triaged bug/release ledger; verify candidates before acting
+  backlog.md     # optional capabilities and unconfirmed candidates
 ```
 
 Subsystem packages own their feature flows. Cross-cutting code
@@ -220,9 +222,10 @@ mechanical, prompt version is stamped into every run log under `runs/`.
 
 ## Documentation lifecycle
 
-- Keep the six working docs listed above as the durable home. `system.md` owns
+- Keep the seven working docs listed above as the durable home. `system.md` owns
   implemented behavior; `project.md` owns product scope; `docket.md` owns open
-  issues/decisions; `plan-notebook.md` owns the current handoff and release gates.
+  issues/decisions; `backlog.md` owns deferred ideas and unconfirmed candidates;
+  `plan-notebook.md` owns the current handoff and release gates.
 - Temporary task plans/reviews are allowed while work is active. On completion,
   transfer only lasting contracts and remaining work into those existing docs,
   then delete the temporary file and fix current references. Do not leave a

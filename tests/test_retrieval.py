@@ -107,7 +107,7 @@ def test_source_filter_is_applied_before_candidate_limit(course) -> None:
     selected_source = insert_source(course.course_id)
     from tests.factories import insert_chunk
 
-    selected_chunk = insert_chunk(selected_source, "linearity")
+    selected_chunk = insert_chunk(selected_source, "Linearity holds for this map.")
     policy = _policy()
     with connection() as conn:
         result = funnel.retrieve(
@@ -262,7 +262,7 @@ def test_fuse_embedding_only_quota(course) -> None:
 
 
 def test_full_funnel_and_trace_persistence(course) -> None:
-    chunk = add_chunk(course.course_id, "linearity of transformations")
+    chunk = add_chunk(course.course_id, "Linearity of transformations holds.")
     policy = _policy()
     with connection() as conn:
         result = funnel.retrieve(conn, course.course_id, QUERY, policy)
@@ -348,6 +348,48 @@ def test_trace_records_per_chunk_layers(course) -> None:
     assert "per_chunk_layers" in payload
     for entry in payload["per_chunk_layers"]:
         assert entry["layers"], "every cited chunk records its seams"
+
+
+def _seed_eval_course() -> None:
+    """Seed the committed `data/eval/retrieval/cases.json` course so the
+    baseline cases actually run on every push (B-07). One chunk per page;
+    keyword content matches each case's question."""
+    course = make_course("EVAL-COURSE")
+    pages = {
+        "page 1": "A linear map preserves addition and scalar multiplication.",
+        "page 2": "The chain rule and the limit definition compute derivatives.",
+        "page 3": "Check a map preserves addition by testing T(u+v)=T(u)+T(v).",
+        "page 4": (
+            "The fundamental theorem of calculus connects derivatives and "
+            "integrals; the limit definition of the derivative uses a difference "
+            "quotient."
+        ),
+        "page 5": "A basis is a linearly independent spanning set of vectors.",
+        "page 6": (
+            "A set of vectors is independent when the only zero combination is "
+            "trivial; an eigenvalue is a scalar with a nonzero eigenvector."
+        ),
+    }
+    for label, text in pages.items():
+        add_chunk(course.course_id, text, label=label)
+
+
+def test_committed_retrieval_cases_resolve_and_hit_baseline() -> None:
+    """B-07 baseline: every committed case resolves against a seeded
+    EVAL-COURSE and the fused result contains its expected labels. This
+    does not validate real materials; it keeps the harness honest and the
+    cases exercised."""
+    from src.backend.retrieval import evals as evals_module
+
+    _seed_eval_course()
+    with connection() as conn:
+        summary = evals_module.run_eval(conn, _policy())
+    assert not summary.unresolved_cases, summary.unresolved_cases
+    misses = [r.question for r in summary.cases if not r.hit]
+    assert not misses, f"fused retrieval missed committed cases: {misses}"
+    assert summary.mean_reciprocal_rank > 0.0
+    assert 0.0 <= summary.mean_precision <= 1.0
+    assert summary.cases and all(0.0 <= r.precision <= 1.0 for r in summary.cases)
 
 
 def test_eval_runner_exact_labels_and_unresolved(course, tmp_path) -> None:

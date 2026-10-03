@@ -11,6 +11,7 @@ known when it starts — the start error says so plainly.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Callable
@@ -21,6 +22,8 @@ from urllib.parse import quote, urlparse
 
 import httpx
 from src.backend.common import settings_repo
+from src.backend.common.db import connection
+from src.backend.common.queries import get
 from src.backend.runtime.config import CatalogModel, Tier, load_runtime_config
 from src.backend.runtime.downloads import sha256_of
 
@@ -135,28 +138,43 @@ def _tier(size_bytes: int) -> Tier:
     return "large"
 
 
-def _new_id(file: str) -> str:
+def _new_id(file: str, taken: set[str] | None = None) -> str:
     stem = Path(file).name.removesuffix(".gguf").removesuffix(".GGUF")
     base = _SLUG.sub("-", stem.lower()).strip("-") or "model"
-    taken = {m.id for m in all_models()}
+    if taken is None:
+        taken = {m.id for m in all_models()}
     candidate, counter = base, 2
     while candidate in taken:
         candidate, counter = f"{base}-{counter}", counter + 1
     return candidate
 
 
-def _store(models: list[CatalogModel]) -> None:
-    settings_repo.put_setting(
-        SETTING, [m.model_dump(exclude_none=True) for m in models]
-    )
-
-
 def _add(model: CatalogModel) -> CatalogModel:
-    existing = user_models()
-    duplicate = next((m for m in all_models() if m.sha256 == model.sha256), None)
-    if duplicate is not None:
-        raise AddModelError(f"that model is already in your list ({duplicate.label})")
-    _store([*existing, model])
+    with connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(get("settings", "get_setting"), {"key": SETTING}).fetchone()
+        existing = (
+            [CatalogModel.model_validate(item) for item in row["value"]] if row else []
+        )
+        catalog = [*load_runtime_config().models, *existing]
+        duplicate = next((m for m in catalog if m.sha256 == model.sha256), None)
+        if duplicate is not None:
+            raise AddModelError(
+                f"that model is already in your list ({duplicate.label})"
+            )
+        model = model.model_copy(
+            update={"id": _new_id(model.file, {m.id for m in catalog})}
+        )
+        conn.execute(
+            get("settings", "put_setting"),
+            {
+                "key": SETTING,
+                "value": json.dumps(
+                    [m.model_dump(exclude_none=True) for m in [*existing, model]]
+                ),
+            },
+        )
+        conn.commit()
     return model
 
 
@@ -217,9 +235,15 @@ def remove(model_id: str) -> bool:
     """Forget an added model. The app's own downloaded copy is deleted by
     the caller (model_store.delete_model); a local file the user pointed
     at is never touched."""
-    models = user_models()
-    kept = [m for m in models if m.id != model_id]
-    if len(kept) == len(models):
-        return False
-    _store(kept)
+    with connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(get("settings", "get_setting"), {"key": SETTING}).fetchone()
+        models = row["value"] if row else []
+        kept = [m for m in models if m["id"] != model_id]
+        if len(kept) == len(models):
+            return False
+        conn.execute(
+            get("settings", "put_setting"), {"key": SETTING, "value": json.dumps(kept)}
+        )
+        conn.commit()
     return True

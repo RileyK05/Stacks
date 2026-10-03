@@ -104,11 +104,11 @@
         class="rounded-xl border border-line-strong bg-surface px-4 py-3 font-mono text-[13px] leading-relaxed text-fg focus:border-accent focus:outline-none"
       ></textarea>
     {/if}
-    <CodeView item={{ type: 'code', title: null, language: code.language || null, code: code.code, sources: [1] }} sources={[]} />
+    <CodeView item={{ type: 'code', title: null, language: code.language || null, code: code.code, sources: [] }} sources={[]} />
   </div>
 {:else if kind === 'chart'}
   <div class="flex flex-col gap-3">
-    <WorkspaceHtmlView item={{ type: 'html', title: null, html: chart.html, sources: [1] }} sources={[]} />
+    <WorkspaceHtmlView item={{ type: 'html', title: null, html: chart.html, sources: [] }} sources={[]} />
     {#if editable}
       <details class="rounded-xl border border-line bg-surface">
         <summary class="cursor-pointer px-4 py-2.5 text-[13px] font-medium text-muted">Edit the HTML</summary>

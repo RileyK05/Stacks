@@ -37,9 +37,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
       - name: Install
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev]" -c constraints.txt
+      - name: Dependency integrity
+        run: |
+          python -m pip check
+          python -m scripts.freeze_constraints --check
       - name: Linux runtime library
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgomp1
@@ -49,8 +55,36 @@ jobs:
         run: python -m ruff format --check src/backend scripts tests
       - name: Mypy
         run: python -m mypy src
+      # The answer/retrieval eval harnesses run inside pytest
+      # (tests/test_eval_answer.py, tests/test_retrieval.py), so the
+      # committed eval cases are exercised on every push. Encoder ONNX
+      # ↔ torch parity needs torch + large model downloads and runs in
+      # the dedicated `parity` job below, not here.
       - name: Pytest
         run: python -m pytest -q
+
+  encoder-parity:
+    name: Encoder ONNX ↔ torch parity
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
+      # CPU-only torch keeps the parity download manageable.
+      - name: Install
+        run: |
+          python -m pip install -e ".[parity]" -c constraints.txt
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      # Downloads the pinned ONNX graph + tokenizer (encoders.ensure_files)
+      # and the torch reference, then asserts cosine ≈ 1 and identical
+      # reranker ordering (T-21). Golden-rule-3 gate.
+      - name: Parity
+        run: python -m scripts.check_encoders
 
   frontend:
     name: Frontend and shell / ${{ matrix.name }}
@@ -74,7 +108,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -90,7 +126,7 @@ jobs:
           workspaces: src/frontend/src-tauri
       - name: Install
         run: |
-          python -m pip install -e .
+          python -m pip install -e . -c constraints.txt
           npm ci --prefix src/frontend
           npm ci --prefix src/office-addin
       - name: Linux Tauri libraries

@@ -139,7 +139,16 @@ def test_old_annotations_and_history_survive_retiring_the_old_stores(
         conn.commit()
     finally:
         conn.close()
-    assert migrations.migrate(path) == ["014", "015", "016", "017"]
+    assert migrations.migrate(path) == [
+        "014",
+        "015",
+        "016",
+        "017",
+        "018",
+        "019",
+        "020",
+        "021",
+    ]
     conn = connect(path)
     try:
         annotations = conn.execute(

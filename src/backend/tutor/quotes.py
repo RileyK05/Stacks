@@ -126,7 +126,23 @@ def anchor_citations(answer: str, verified: list[Quote]) -> str:
     """An answer built from verified quotes but written without `[n]`
     markers gets them: the evidence is real, only the formatting was
     skipped. Markers the model did write are left alone."""
-    if not verified or _CITATION_RE.search(answer):
+    from src.backend.common.citations import (
+        CITATION_RE,
+        cited_numbers,
+        marker_numbers,
+        prose_transform,
+    )
+
+    if not verified:
         return answer
     numbers = sorted({quote.source for quote in verified})
-    return answer.rstrip() + " " + "".join(f"[{n}]" for n in numbers)
+
+    def reconcile(match: re.Match[str]) -> str:
+        kept = [n for n in marker_numbers(match.group(1)) if n in numbers]
+        return "[" + ", ".join(str(n) for n in kept) + "]" if kept else ""
+
+    answer = prose_transform(answer, lambda text: CITATION_RE.sub(reconcile, text))
+    missing = set(numbers) - cited_numbers(answer)
+    return answer.rstrip() + (
+        " " + "".join(f"[{n}]" for n in sorted(missing)) if missing else ""
+    )

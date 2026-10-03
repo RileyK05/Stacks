@@ -18,6 +18,7 @@ import logging
 import shutil
 import tempfile
 import zlib
+from collections.abc import Generator
 from contextlib import suppress
 from io import BytesIO
 from pathlib import Path
@@ -286,13 +287,13 @@ def remove_stored(course_id: UUID, source_id: UUID) -> None:
         path.parent.rmdir()
 
 
-def read_stored(
+def iter_stored(
     course_id: UUID,
     source_id: UUID,
     stored_encoding: str | None,
     *,
     max_decompressed_bytes: int,
-) -> bytes:
+) -> Generator[bytes, None, None]:
     """Read a stored file back, decompressing in bounded chunks. The
     decompression ceiling is mandatory (the whole-buffer read this replaces
     is the seam a zip-bomb would exploit); identity-encoded files are capped
@@ -306,9 +307,17 @@ def read_stored(
             raise DecompressionLimitExceededError(
                 source_id, max_decompressed_bytes, expanded
             )
-        return path.read_bytes()
+        with path.open("rb") as stream:
+            produced = 0
+            for chunk in iter(lambda: stream.read(CHUNK_SIZE), b""):
+                produced += len(chunk)
+                if produced > max_decompressed_bytes:
+                    raise DecompressionLimitExceededError(
+                        source_id, max_decompressed_bytes, produced
+                    )
+                yield chunk
+        return
     produced = 0
-    parts: list[bytes] = []
     try:
         with path.open("rb") as raw_stream, gzip.GzipFile(fileobj=raw_stream) as gunzip:
             while True:
@@ -320,14 +329,30 @@ def read_stored(
                     raise DecompressionLimitExceededError(
                         source_id, max_decompressed_bytes, produced
                     )
-                parts.append(chunk)
+                yield chunk
     except (EOFError, gzip.BadGzipFile, zlib.error) as error:
         # zlib.error is the corrupt-deflate-body case (valid gzip header,
         # garbage payload) — the likeliest real corruption, and the one mode
         # that is neither BadGzipFile nor EOFError. Without it a corrupt
         # stored file escapes as a raw zlib.error instead of this ValueError.
         raise ValueError(f"stored gzip stream is corrupt: {source_id}") from error
-    return b"".join(parts)
+
+
+def read_stored(
+    course_id: UUID,
+    source_id: UUID,
+    stored_encoding: str | None,
+    *,
+    max_decompressed_bytes: int,
+) -> bytes:
+    return b"".join(
+        iter_stored(
+            course_id,
+            source_id,
+            stored_encoding,
+            max_decompressed_bytes=max_decompressed_bytes,
+        )
+    )
 
 
 def sanitize_display_name(name: str) -> str:

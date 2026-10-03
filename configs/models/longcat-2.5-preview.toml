@@ -1,0 +1,5 @@
+# LongCat-2.5-Preview counts reasoning tokens against max_tokens. The
+# 2048 default ends a deck-sized answer before any visible text.
+model = "LongCat-2.5-Preview"
+reasoning = true
+max_output_tokens = 16384

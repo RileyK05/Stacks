@@ -217,7 +217,7 @@ class LlamaServer:
             for key in keys:
                 try:
                     self._launch_locked(key, model, path)
-                except RuntimeUnavailableError as err:
+                except (RuntimeUnavailableError, OSError) as err:
                     last_error = str(err)
                     logger.warning("llama-server (%s) failed to start: %s", key, err)
                     self._stop_locked()
@@ -265,17 +265,19 @@ class LlamaServer:
             if sys.platform == "win32"
             else 0
         )
-        process = subprocess.Popen(
-            command,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
-        )
-        log.close()
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+        finally:
+            log.close()
+        self._process = process
         if self._job is not None:
             self._job.assign(process)
-        self._process = process
         _pidfile().write_text(str(process.pid), encoding="utf-8")
         self._wait_healthy_locked(process, config.startup_timeout_seconds)
 
@@ -351,6 +353,34 @@ def _pidfile() -> Path:
 def _process_executable(pid: int) -> str | None:
     """The executable path of a running process, or None if it is gone or
     cannot be read. Linux has /proc; macOS has no /proc, so ask ps."""
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.QueryFullProcessImageNameW.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        kernel.QueryFullProcessImageNameW.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return None
+        try:
+            length = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(length.value)
+            if kernel.QueryFullProcessImageNameW(
+                handle, 0, buffer, ctypes.byref(length)
+            ):
+                return buffer.value
+            return None
+        finally:
+            kernel.CloseHandle(handle)
     if sys.platform == "linux":
         try:
             return str(Path(f"/proc/{pid}/exe").resolve(strict=True))
@@ -378,22 +408,19 @@ def cleanup_stale_server() -> None:
         path.unlink(missing_ok=True)
         return
     try:
-        if sys.platform == "win32":
-            output = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                capture_output=True,
-                text=True,
-                check=False,
-            ).stdout
-            if "llama-server" in output:
+        exe = _process_executable(pid)
+        if (
+            exe is not None
+            and Path(exe).resolve().is_relative_to(runtime_dir().resolve())
+            and Path(exe).name in {"llama-server", "llama-server.exe"}
+        ):
+            if sys.platform == "win32":
                 subprocess.run(
                     ["taskkill", "/PID", str(pid), "/F"],
                     check=False,
                     capture_output=True,
                 )
-        else:
-            exe = _process_executable(pid)
-            if exe is not None and str(runtime_dir()) in exe:
+            else:
                 os.kill(pid, 15)
     except OSError:
         pass

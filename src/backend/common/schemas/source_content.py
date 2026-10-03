@@ -28,4 +28,11 @@ class Source(BaseRecord):
     size_bytes: int | None = Field(default=None, ge=0)
     file_hash: str | None = None
     error_message: str | None = None
+    pages_total: int | None = None
+    pages_empty: int | None = None
+    pages_low_quality: int | None = None
+    pages_ocr: int | None = None
+    chunk_count: int = 0
+    ingestion_stage: str | None = None
+    index_stale: bool = False
     created_at: datetime = Field(default_factory=_now)

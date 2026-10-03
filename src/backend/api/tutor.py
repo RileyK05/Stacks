@@ -18,6 +18,7 @@ from src.backend.common.db import connection, json_ids
 from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.common.queries import get
 from src.backend.retrieval.config import load_retrieval_policy
+from src.backend.retrieval.labels import label_for_window, parse_locator_span
 from src.backend.tutor import answer as tutor_answer
 from src.backend.tutor import chat
 from src.backend.tutor.compose import Intent, classify_intent
@@ -95,6 +96,9 @@ class CitationView(BaseModel):
     char_end: int | None = None
     text_length: int | None = None
     generated_materials: list[dict[str, str | int]] = Field(default_factory=list)
+    # The [n] the answer printed. Older traces have no cited subset, so
+    # this is the passage's place in the full retrieved list.
+    marker: int = 1
 
 
 class _Coverage(BaseModel):
@@ -157,20 +161,44 @@ def trace_citations(course_id: UUID, trace_id: UUID) -> list[CitationView]:
         payload = trace["retrieved_chunk_ids"]
         if not isinstance(payload, dict):
             payload = {}
-        chunk_ids = [UUID(cid) for cid in payload.get("chunk_ids", [])]
+        stored_ids = [str(cid) for cid in payload.get("chunk_ids", [])]
+        cited_ids = [str(cid) for cid in payload.get("cited_chunk_ids") or []]
+        raw_markers = payload.get("citation_markers") or []
+        if cited_ids:
+            shown_ids = cited_ids
+            marker_by_id = {
+                chunk_id: int(raw_markers[index])
+                if index < len(raw_markers)
+                else index + 1
+                for index, chunk_id in enumerate(cited_ids)
+            }
+        else:
+            shown_ids = stored_ids
+            marker_by_id = {
+                chunk_id: index + 1 for index, chunk_id in enumerate(stored_ids)
+            }
+        chunk_ids = [UUID(cid) for cid in shown_ids]
         if not chunk_ids:
             return []
         rows = conn.execute(
             get("retrieval_traces", "chunks_with_locators_by_ids"),
             {"chunk_ids": json_ids(chunk_ids)},
         ).fetchall()
-    coverage = {}
+        spans: dict[str, list[tuple[int, int, str]]] = {}
+        for span_row in conn.execute(
+            get("retrieval_traces", "chunk_locator_spans"),
+            {"chunk_ids": json_ids(chunk_ids)},
+        ).fetchall():
+            parsed = parse_locator_span(span_row)
+            if parsed is not None:
+                spans.setdefault(str(span_row["chunk_id"]), []).append(parsed)
+    coverage: dict[str, _Coverage] = {}
     for item in payload.get("per_chunk_layers", []) or []:
         try:
-            parsed = _Coverage.model_validate(item)
+            record = _Coverage.model_validate(item)
         except ValidationError:
             continue
-        coverage[parsed.chunk_id] = parsed
+        coverage[record.chunk_id] = record
     result = []
     for row in rows:
         detail = coverage.get(str(row["chunk_id"]), _Coverage(chunk_id=""))
@@ -188,7 +216,15 @@ def trace_citations(course_id: UUID, trace_id: UUID) -> list[CitationView]:
                 chunk_index=row["chunk_index"],
                 text=row["text"][start:end] if partial else row["text"],
                 locator_type=row["locator_type"],
-                label=row["label"],
+                label=label_for_window(
+                    spans.get(str(row["chunk_id"]), ()),
+                    chunk_start=row["char_start"],
+                    chunk_end=row["char_end"],
+                    window_start=start or 0,
+                    window_end=end,
+                    partial=partial,
+                    fallback=row["label"] or "",
+                ),
                 description=row["description"],
                 filename=row["filename"],
                 partial=partial,
@@ -196,6 +232,7 @@ def trace_citations(course_id: UUID, trace_id: UUID) -> list[CitationView]:
                 char_end=end if partial else None,
                 text_length=len(row["text"]),
                 generated_materials=detail.generated_materials,
+                marker=marker_by_id.get(str(row["chunk_id"]), 1),
             )
         )
     return result

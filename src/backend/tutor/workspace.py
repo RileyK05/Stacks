@@ -222,13 +222,24 @@ def _citation_problem(item: WorkspaceItem, material_count: int) -> str | None:
         cited = [*item.sources, *_inline_citations(item.deck)]
         return _out_of_range(cited, material_count, "slides")
     if isinstance(item, WorkspaceSheet):
-        cited = [*item.sources]
+        cited = [
+            *item.sources,
+            *(
+                n
+                for cell in [
+                    *item.columns,
+                    *(cell for row in item.rows for cell in row),
+                ]
+                for n in _inline_citations(cell)
+            ),
+        ]
         return _out_of_range(cited, material_count, "sheet")
     for number, question in enumerate(item.questions, start=1):
         cited = [
             *question.sources,
             *_inline_citations(question.prompt),
             *_inline_citations(question.explanation or ""),
+            *(n for option in question.options for n in _inline_citations(option)),
         ]
         problem = _out_of_range(cited, material_count, f"question {number}")
         if problem is not None:
@@ -237,7 +248,9 @@ def _citation_problem(item: WorkspaceItem, material_count: int) -> str | None:
 
 
 def _inline_citations(text: str) -> list[int]:
-    return [int(n) for n in INLINE_CITATION_RE.findall(text)]
+    from src.backend.common.citations import cited_numbers
+
+    return sorted(cited_numbers(text))
 
 
 def _out_of_range(cited: list[int], material_count: int, where: str) -> str | None:

@@ -17,7 +17,8 @@
     ...rest
   }: Props = $props();
 
-  let inputId = $derived(id ?? label?.toLowerCase().replace(/\s+/g, '-'));
+  const generatedId = $props.id();
+  let inputId = $derived(id ?? generatedId);
 </script>
 
 <div class="flex flex-col gap-1.5">

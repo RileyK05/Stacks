@@ -18,8 +18,9 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from src.backend.api import (
     artifacts,
     backups,
@@ -39,8 +40,10 @@ from src.backend.api import (
 from src.backend.api.deps import require_app_token
 from src.backend.common import backups as backup_service
 from src.backend.common import maintenance
+from src.backend.common.body_limits import install_body_limits
 from src.backend.common.config import get_settings
 from src.backend.common.migrate import migrate
+from src.backend.common.secrets import CredentialStoreUnavailableError
 from src.backend.ingest import worker as ingestion_worker
 from src.backend.office_addin import service as office_addin
 from src.backend.office_addin.app import create_office, create_office_host
@@ -69,6 +72,14 @@ def create_api() -> FastAPI:
         redoc_url=None,
         openapi_url=None if production else "/openapi.json",
     )
+    install_body_limits(api)
+
+    @api.exception_handler(CredentialStoreUnavailableError)
+    async def credential_failure(
+        request: Request, err: CredentialStoreUnavailableError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(err)})
+
     api.include_router(courses.router)
     api.include_router(sources.router)
     api.include_router(tutor.router)
@@ -94,11 +105,11 @@ def create_api() -> FastAPI:
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     del app
-    applied = migrate()
+    applied = await asyncio.to_thread(migrate)
     if applied:
         logger.info("applied migrations: %s", ", ".join(applied))
     try:
-        office_addin.start_if_connected()
+        await asyncio.to_thread(office_addin.start_if_connected)
     except Exception:
         logger.exception("could not start the Office add-in host")
     stop = asyncio.Event()
@@ -108,15 +119,31 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         asyncio.create_task(ingestion_worker.run_forever(stop)),
         asyncio.create_task(supervisor.run_forever(stop)),
     ]
+    for task in tasks:
+        task.add_done_callback(_report_service_failure)
     try:
         yield
     finally:
-        office_addin.stop()
+        try:
+            await asyncio.to_thread(office_addin.stop)
+        except Exception:
+            logger.exception("could not stop the Office add-in host")
         stop.set()
         for task in tasks:
             task.cancel()
             with suppress(asyncio.CancelledError):
-                await task
+                try:
+                    await task
+                except Exception:
+                    logger.exception("background service failed during shutdown")
+
+
+def _report_service_failure(task: asyncio.Task[None]) -> None:
+    if not task.cancelled() and (error := task.exception()) is not None:
+        logger.error(
+            "background service failed",
+            exc_info=(type(error), error, error.__traceback__),
+        )
 
 
 def cors_origins() -> list[str]:

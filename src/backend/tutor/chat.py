@@ -45,7 +45,7 @@ FOLLOW_UP_MAX_WORDS = 12
 FOLLOW_UP_LOOKBACK = 2
 SUMMARY_MAX_CHARS = 1200
 
-_CITATIONS = re.compile(r"\s*\[\d+(?:\s*[,–-]\s*\d+)*\]")
+_CITATIONS = re.compile(r"\[\d+(?:\s*[,–-]\s*\d+)*\]")
 
 
 @dataclass(frozen=True)
@@ -54,15 +54,20 @@ class ChatContext:
     recent: tuple[tuple[str, str], ...]
     # The student's latest questions, newest first.
     previous_questions: tuple[str, ...] = ()
+    # True when the source selection changed within this chat, so earlier
+    # turns may cite facts from a source no longer selected.
+    scope_revised: bool = False
+    teaching_trace_ids: tuple[UUID, ...] = ()
 
     @property
     def empty(self) -> bool:
         return not self.summary and not self.recent
 
     def render(self) -> str:
-        """The conversation block that precedes the question in the
-        prompt. Old citation numbers are dropped: they pointed at a
-        different numbered list than the one the model reads now."""
+        """The conversation block that precedes the question, fenced as
+        data with the course text. Old citation numbers are dropped: they
+        pointed at a different numbered list than the one the model reads
+        now."""
         parts: list[str] = []
         if self.summary:
             parts.append(f"Summary of the earlier conversation:\n{self.summary}")
@@ -71,6 +76,14 @@ class ChatContext:
             parts.append("Most recent turns:\n" + "\n".join(lines))
         return "\n\n".join(parts)
 
+    def scope_note(self) -> str:
+        """Trusted instruction text appended after a source-scope change
+        (B-02). It must not sit inside the data fence, where the model is
+        told to ignore directions."""
+        if not self.scope_revised:
+            return ""
+        return load_prompt("conversation_scope_change")
+
 
 def _speaker(role: str) -> str:
     return "Student" if role == "user" else "Tutor"
@@ -78,9 +91,11 @@ def _speaker(role: str) -> str:
 
 def _excerpt(text: str) -> str:
     plain = " ".join(_CITATIONS.sub("", text).split())
+    plain = re.sub(r"\s+([.,!?;:])", r"\1", plain)
     if len(plain) <= EXCERPT_CHARS:
         return plain
-    return plain[: EXCERPT_CHARS - 1].rsplit(" ", 1)[0] + "…"
+    prefix = plain[: EXCERPT_CHARS - 1]
+    return (prefix.rsplit(" ", 1)[0] if " " in prefix else prefix) + "…"
 
 
 def _turn_text(message: Message) -> str:
@@ -125,10 +140,22 @@ def context_for(conversation: Conversation, history: Sequence[Message]) -> ChatC
         for m in reversed(history)
         if m.role == "user" and classify_intent(m.text) is not Intent.CHAT
     ]
+    # A scope revision at seq 0 means the selection changed before any
+    # turn was recorded, so there is nothing earlier to distrust. Any
+    # other revision has earlier turns that may cite an excluded source.
+    scope_revised = bool(conversation.scope_revised_seq) and any(
+        m.seq <= conversation.scope_revised_seq for m in history
+    )
     return ChatContext(
         summary=conversation.summary,
         recent=tuple((m.role, _turn_text(m)) for m in recent),
         previous_questions=tuple(asked[:FOLLOW_UP_LOOKBACK]),
+        scope_revised=scope_revised,
+        teaching_trace_ids=tuple(
+            m.trace_id
+            for m in history
+            if m.role == "assistant" and m.trace_id is not None
+        ),
     )
 
 
@@ -164,21 +191,39 @@ class PendingSummary:
     previous: str
     transcript: str
     through: int
+    # True when this folds turns from before a source-scope change: the
+    # summary must keep the topic but drop the facts (B-02).
+    scope_changed: bool = False
 
 
 def pending_summary(
     conversation: Conversation, history: Sequence[Message]
 ) -> PendingSummary | None:
     """The turns that have scrolled out of the recent window but are not in
-    the summary yet, once there is at least one full exchange of them."""
+    the summary yet, once there is at least one full exchange of them.
+
+    If the source selection changed after those turns and they are not
+    summarized yet, they are summarized first and only — a topic-only
+    summary (B-02) — so the model never re-asserts a fact from a source
+    the student has since excluded."""
     older = [
         m for m in history[:-RECENT_MESSAGES] if m.seq > conversation.summary_through
     ]
-    if len(older) < 2:
+    scope_changed = False
+    revised = conversation.scope_revised_seq
+    if revised and conversation.summary_through < revised:
+        # Fold only the pre-change turns, and stop the summary there so
+        # the post-change turns are summarized against current material.
+        older = [m for m in older if m.seq <= revised]
+        scope_changed = True
+    if not older:
         return None
-    transcript = "\n".join(f"{_speaker(m.role)}: {_excerpt(m.text)}" for m in older)
+    transcript = "\n".join(f"{_speaker(m.role)}: {_turn_text(m)}" for m in older)
     return PendingSummary(
-        previous=conversation.summary, transcript=transcript, through=older[-1].seq
+        previous=conversation.summary,
+        transcript=transcript,
+        through=older[-1].seq,
+        scope_changed=scope_changed,
     )
 
 
@@ -196,16 +241,22 @@ def summarize(
         f"Current summary:\n{pending.previous or '(none yet)'}\n\n"
         f"New turns:\n{pending.transcript}"
     )
+    instruction = (
+        "scope_change_summary" if pending.scope_changed else "conversation_summary"
+    )
     try:
         result = provider.generate(
             "conversation_summary",
-            grounded_prompt(load_prompt("conversation_summary"), material),
+            grounded_prompt(load_prompt(instruction), material),
             course_id=course_id,
             choice=choice,
         )
     except Exception:  # noqa: BLE001 - best effort; retried next turn
         logger.warning("conversation summary failed", exc_info=True)
         return
-    summary = " ".join(result.text.split())[:SUMMARY_MAX_CHARS]
+    summary = " ".join(result.text.split())
+    if len(summary) > SUMMARY_MAX_CHARS:
+        prefix = summary[: SUMMARY_MAX_CHARS - 1]
+        summary = (prefix.rsplit(" ", 1)[0] if " " in prefix else prefix) + "…"
     if summary:
         conversations_repo.set_summary(conversation_id, summary, pending.through)

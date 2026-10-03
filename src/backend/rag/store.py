@@ -12,9 +12,13 @@ from src.backend.common import provider
 from src.backend.common.db import Connection
 from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.common.queries import get
-from src.backend.ingest.extract import ExtractedSource
+from src.backend.ingest.extract import ExtractedSource, ExtractionReport
 from src.backend.rag.config import PassagePolicy
 from src.backend.rag.segment import ContainerSpan, Segmentation, segment, windows
+
+# Bump when extracted text or page coverage changes, so an older index can
+# be marked stale. structured-v2 records per-page quality and spacing.
+EXTRACTION_VERSION = "structured-v2"
 
 
 def digest(text: str) -> str:
@@ -36,6 +40,7 @@ class PreparedIndex:
     links: tuple[dict[str, Any], ...]
     search_windows: tuple[dict[str, Any], ...]
     embeddings: tuple[dict[str, Any], ...]
+    report: ExtractionReport | None = None
 
 
 def prepare(
@@ -65,6 +70,11 @@ def prepare(
         encode=provider.embed_chunks,
         token_count=count,
         structure=structure,
+        page_breaks=tuple(
+            loc.start
+            for loc in extracted.locators
+            if loc.locator_type in {"page", "slide", "sheet"}
+        ),
     )
     root_id = uuid5(source_id, f"{text_hash}:document")
     container_ids = [
@@ -232,6 +242,7 @@ def prepare(
         tuple(links),
         tuple(search_rows),
         tuple(embeddings),
+        report=extracted.report,
     )
 
 
@@ -259,15 +270,20 @@ def publish(conn: Connection, prepared: PreparedIndex) -> None:
     conn.executemany(get("ingestion", "insert_chunk_locator"), prepared.links)
     conn.executemany(get("passages", "insert_window"), prepared.search_windows)
     conn.executemany(get("ingestion", "replace_chunk_embedding"), prepared.embeddings)
+    report = prepared.report
     conn.execute(
         get("passages", "publish_index"),
         {
             **params,
             "revision": prepared.revision,
             "file_hash": prepared.file_hash,
-            "extraction_version": "structured-v1",
+            "extraction_version": EXTRACTION_VERSION,
             "segmentation_version": prepared.policy.version,
             "semantic_used": int(prepared.segmentation.semantic_used),
             "warning": prepared.segmentation.warning,
+            "pages_total": None if report is None else report.pages_total,
+            "pages_empty": None if report is None else report.pages_empty,
+            "pages_low_quality": None if report is None else report.pages_low_quality,
+            "pages_ocr": None if report is None else report.pages_ocr,
         },
     )

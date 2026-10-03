@@ -166,7 +166,7 @@ def export_notebook(course_id: UUID) -> Notebook:
                     trace_ids.add(UUID(turn.reply.trace_id))
                 cited_ids.update(UUID(c.chunk_id) for c in turn.reply.citations)
         traces: list[Trace] = []
-        for trace_id in trace_ids:
+        for trace_id in sorted(trace_ids, key=str):
             row = conn.execute(
                 get("archive_notebook", "trace"),
                 {"trace_id": trace_id, "course_id": course_id},

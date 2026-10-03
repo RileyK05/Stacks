@@ -102,13 +102,18 @@ class IngestionHandlers:
             # an unavailable provider is an actionable error).
             self.needs_ocr = True
             self.extracted = None
+            return
+        report = self.extracted.report
+        self.needs_ocr = report is not None and bool(report.ocr_pages)
 
     def ocr(self) -> None:
-        """Recognize text for a source that had no text layer. A no-op for
-        every source that already extracted (the common case); this stage
-        exists so the scanned path is explicit, billed, and inspectable
-        rather than hidden inside extract_text."""
+        """Recognize text for a source that had no text layer, or for the
+        blank and garbled pages of a mixed PDF. A no-op when extraction
+        already covered every page."""
         if not self.needs_ocr:
+            return
+        if self.extracted is not None:
+            self._ocr_weak_pages()
             return
         images = extract.rasterize_pages(
             self.source.course_id,
@@ -129,6 +134,44 @@ class IngestionHandlers:
         if not any(page_text.strip() for page_text in page_texts):
             raise provider.EmptyModelError("ocr: model returned no text")
         self.extracted = extract.ocr_extracted_source(page_texts)
+
+    def _ocr_weak_pages(self) -> None:
+        """OCR only the pages extraction flagged, and keep the text layer
+        when the vision model is unavailable. A mixed PDF must still index."""
+        assert self.extracted is not None and self.extracted.report is not None
+        indexes = list(self.extracted.report.ocr_pages[: self.ocr_max_pages])
+        if not indexes:
+            return
+        try:
+            images = extract.rasterize_pages(
+                self.source.course_id,
+                self.source.source_id,
+                self.source.stored_encoding,
+                max_pages=self.ocr_max_pages,
+                scale=self.ocr_scale,
+                pages=indexes,
+            )
+            if not images:
+                return
+            result = provider.generate(
+                MODEL_TASKS[IngestionStage.OCR],
+                load_prompt("ocr"),
+                course_id=self.source.course_id,
+                images=images,
+            )
+            recognized = split_ocr_pages(result.text, len(images))
+        except provider.ProviderUnavailableError as err:
+            logger.warning(
+                "page OCR unavailable for source %s (%s); %s pages stay unfixed",
+                self.source.source_id,
+                err,
+                len(indexes),
+            )
+            return
+        self.extracted = extract.apply_page_ocr(
+            self.extracted, indexes[: len(recognized)], recognized
+        )
+        self.needs_ocr = False
 
     def prepare_passages(self) -> None:
         assert self.extracted is not None
@@ -206,6 +249,11 @@ def run_ingestion(conn: Connection, source_id: UUID) -> UUID:
         message = _failure_message(err)
         _commit_failure_audit(
             conn, run.run_id, source_id, source.course_id, message, failed_stage=err
+        )
+        raise
+    except Exception as err:
+        _commit_failure_audit(
+            conn, run.run_id, source_id, source.course_id, str(err)[:500]
         )
         raise
     return run.run_id

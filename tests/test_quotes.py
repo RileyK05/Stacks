@@ -67,7 +67,7 @@ def test_anchor_citations_only_fills_missing_markers() -> None:
     assert (
         quotes.anchor_citations("Three lectures.", verified) == "Three lectures. [1][2]"
     )
-    assert quotes.anchor_citations("Three [1].", verified) == "Three [1]."
+    assert quotes.anchor_citations("Three [1].", verified) == "Three [1]. [2]"
     assert quotes.anchor_citations("No evidence.", []) == "No evidence."
 
 

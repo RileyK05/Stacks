@@ -15,6 +15,15 @@ poll_interval_seconds = 5
 max_pages = 50
 scale = 2.0
 
+# A page with fewer than min_page_chars of stripped text is blank and is
+# queued for OCR. A longer page whose readable-prose score is below
+# quality_floor is a garbled text layer and joins the same queue. Blank
+# pages are recognized first; the OCR cap still applies to the queue.
+[text]
+min_page_chars = 20
+quality_floor = 0.35
+max_decode_bytes = 67108864
+
 [[stages]]
 name = "extract_text"
 handler_version = "2"

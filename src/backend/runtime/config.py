@@ -53,7 +53,12 @@ class CatalogModel(BaseModel):
 
     @property
     def download_url(self) -> str:
-        return f"https://huggingface.co/{self.repo}/resolve/{self.revision}/{self.file}"
+        from urllib.parse import quote
+
+        return (
+            f"https://huggingface.co/{quote(self.repo, safe='/')}/resolve/"
+            f"{quote(self.revision, safe='')}/{quote(self.file, safe='/')}"
+        )
 
 
 class RuntimeConfig(BaseModel):

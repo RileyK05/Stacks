@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import Button from '$lib/components/Button.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import RichText from '$lib/components/RichText.svelte';
@@ -18,12 +19,18 @@
   let position = $state(0);
   let flipped = $state(false);
   let again = $state<Set<number>>(new Set());
+  let previousCards = '';
 
   $effect(() => {
-    if (order.length !== deck.cards.length) {
+    const signature = JSON.stringify(deck.cards);
+    untrack(() => {
+      if (signature === previousCards) return;
+      previousCards = signature;
       order = deck.cards.map((_, i) => i);
-      position = Math.min(position, Math.max(deck.cards.length - 1, 0));
-    }
+      position = 0;
+      flipped = false;
+      again = new Set();
+    });
   });
 
   const card = $derived(deck.cards[order[position] ?? 0]);
@@ -39,7 +46,12 @@
   }
 
   function shuffle() {
-    order = [...order].sort(() => Math.random() - 0.5);
+    const shuffled = [...order];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    order = shuffled;
     position = 0;
     flipped = false;
   }

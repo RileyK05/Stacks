@@ -12,14 +12,19 @@ to cp1252 for legacy lecture notes before failing.
 
 from __future__ import annotations
 
+import codecs
 import io
+import logging
 import re
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from pathlib import PurePath
 from uuid import UUID, uuid4
 
 from src.backend.common import storage
 from src.backend.common.lifecycle_config import load_lifecycle_policy
+
+logger = logging.getLogger(__name__)
 
 PAGE_SEPARATOR = "\n"
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
@@ -44,6 +49,33 @@ _XLSX_MIME = f"{_OFFICE}.spreadsheetml.sheet"
 # row may have before it looks like spaced-out prose rather than a table.
 _TABLE_COLUMN_SLACK = 2
 _TABLE_MAX_COLUMNS = 6
+# Old-style digits stored as glyph names (`/one.o`, `/one.o$`, `/one.osf`).
+# Glyph names can coexist with ambiguous punctuation-to-digit font maps.
+# Detect them for OCR; rewriting only the named digits would invent numbers.
+_GLYPH_NAME = re.compile(
+    r"/(zero|one|two|three|four|five|six|seven|eight|nine)"
+    r"\.(?:oldstyle|osf|lf|o)\$?"
+)
+_STOPWORDS = frozenset(
+    {
+        "the",
+        "of",
+        "and",
+        "to",
+        "in",
+        "a",
+        "is",
+        "that",
+        "for",
+        "was",
+        "de",
+        "la",
+        "el",
+        "y",
+    }
+)
+_PROSE_WORD = re.compile(r"[^\W\d_]{2,}")
+_CAMEL_JOIN = re.compile(r"[a-z][A-Z]")
 
 # The upload boundary (api/sources.py) rejects anything outside this set
 # BEFORE storage and quota charge — a zip charged against quota then
@@ -104,11 +136,29 @@ def resolve_mime_type(filename: str, declared: str | None) -> str:
 
 
 @dataclass(frozen=True)
+class ExtractionReport:
+    """How much of a PDF's text layer survived extraction.
+
+    `ocr_pages` is the blank pages first, then the garbled ones worst-first.
+    `pages_ocr` is how many of those were replaced by a later OCR pass.
+    Non-PDF sources leave the report unset.
+    """
+
+    pages_total: int
+    pages_empty: int
+    pages_low_quality: int
+    pages_ocr: int = 0
+    ocr_pages: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
 class ExtractedSource:
     """The full extracted text of a source with its locator map."""
 
     text: str
     locators: tuple[LocatorSpan, ...]
+    page_texts: tuple[str, ...] = ()
+    report: ExtractionReport | None = None
 
 
 @dataclass(frozen=True)
@@ -167,22 +217,57 @@ def read_decoded(
     """Read a stored file back through the capped streaming seam and
     decode it. utf-8-sig strips the Windows BOM; cp1252 covers legacy
     lecture notes; anything else fails the stage."""
-    raw = storage.read_stored(
-        course_id,
-        source_id,
-        stored_encoding,
-        max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+    from src.backend.ingest.config import load_ingestion_config
+
+    cap = min(
+        load_lifecycle_policy().max_decompressed_bytes,
+        load_ingestion_config().text.max_decode_bytes,
     )
+
+    def decode(encoding: str | None) -> str:
+        blocks = storage.iter_stored(
+            course_id, source_id, stored_encoding, max_decompressed_bytes=cap
+        )
+        first = next(blocks, b"")
+        chosen = encoding
+        if chosen is None:
+            if first.startswith((codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)):
+                chosen = "utf-32"
+            elif first.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+                chosen = "utf-16"
+            else:
+                sample = first[:4096]
+                if sample.startswith((b"%PDF-", b"PK\x03\x04")) or (
+                    sample and sample.count(b"\x00") > len(sample) / 10
+                ):
+                    raise ValueError(
+                        "this file contains binary data rather than readable text"
+                    )
+                chosen = "utf-8-sig"
+        decoder = codecs.getincrementaldecoder(chosen)(errors="strict")
+        try:
+            parts = [decoder.decode(first)]
+            parts.extend(decoder.decode(block) for block in blocks)
+            parts.append(decoder.decode(b"", final=True))
+        except UnicodeDecodeError as err:
+            if chosen in {"utf-16", "utf-32"}:
+                raise ValueError(
+                    "this Unicode text file has a damaged encoding"
+                ) from err
+            raise
+        finally:
+            blocks.close()
+        return "".join(parts).replace("\x00", "")
+
     try:
-        text = raw.decode("utf-8-sig")
+        return decode(None)
     except UnicodeDecodeError:
-        text = raw.decode("cp1252")
-    # Postgres TEXT rejects NUL outright (storage.py documents the same
-    # hazard for filenames): a binary uploaded as text/plain decodes via
-    # the cp1252 fallback carrying \x00, turning the extract stage into
-    # a NotNullViolation 500 inside the chunk insert. Control bytes carry
-    # no citable content; drop them at the decode choke point.
-    return text.replace("\x00", "")
+        try:
+            return decode("cp1252")
+        except UnicodeDecodeError as err:
+            raise ValueError(
+                "this text file has an unsupported or damaged encoding"
+            ) from err
 
 
 def _line_of(line_starts: list[int], offset: int) -> int:
@@ -290,8 +375,73 @@ def clean_text(text: str) -> str:
     """Text the database can store. A PDF with a broken font map (or a model
     that answered with half an emoji) yields lone UTF-16 surrogates, which
     cannot be encoded as UTF-8: the insert then failed the whole file at the
-    build stage. NUL is dropped for the same reason `read_decoded` drops it."""
-    return text.replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
+    build stage. NUL is dropped for the same reason `read_decoded` drops it.
+    Broken glyph names stay visible for quality detection and OCR."""
+    without_controls = text.replace("\x00", "").replace("\u00a0", " ")
+    return without_controls.encode("utf-8", "replace").decode("utf-8")
+
+
+def page_quality(text: str) -> float:
+    """1.0 for a page under 200 characters. Longer pages fall when they
+    lack stopwords or are full of `/one.o`-style glyph names."""
+    if _GLYPH_NAME.search(text):
+        return 0.0
+    if len(text) < 200:
+        return 1.0
+    words = _PROSE_WORD.findall(text.lower())
+    word_count = max(1, len(words))
+    glyph_penalty = len(_GLYPH_NAME.findall(text)) / word_count
+    stop_ratio = sum(word in _STOPWORDS for word in words) / word_count
+    alpha_ratio = sum(char.isalpha() or char.isspace() for char in text) / len(text)
+    return min(stop_ratio / 0.15, 1.0) * alpha_ratio - glyph_penalty
+
+
+def choose_page_text(primary: str, alternate: str | None, *, has_table: bool) -> str:
+    """Keep the pypdf text when it found a table, or when pdfium returned
+    nothing. Otherwise take the higher quality text, then the one with
+    fewer mid-word font joins, then the longer one."""
+    if has_table or not alternate:
+        return primary
+    if _page_rank(alternate) > _page_rank(primary):
+        return alternate
+    return primary
+
+
+def _page_rank(text: str) -> tuple[float, int, int]:
+    return (
+        page_quality(text),
+        -len(_CAMEL_JOIN.findall(text)),
+        len(text.strip()),
+    )
+
+
+def _text_limits() -> tuple[int, float]:
+    from src.backend.ingest.config import load_ingestion_config
+
+    policy = load_ingestion_config().text
+    return policy.min_page_chars, policy.quality_floor
+
+
+def assess_pages(
+    page_texts: Sequence[str], *, min_page_chars: int, quality_floor: float
+) -> ExtractionReport:
+    """Blank pages first, then garbled pages from worst score to best."""
+    empty: list[int] = []
+    low: list[tuple[float, int]] = []
+    for index, text in enumerate(page_texts):
+        if len(text.strip()) < min_page_chars:
+            empty.append(index)
+            continue
+        score = page_quality(text)
+        if score < quality_floor:
+            low.append((score, index))
+    low.sort()
+    return ExtractionReport(
+        pages_total=len(page_texts),
+        pages_empty=len(empty),
+        pages_low_quality=len(low),
+        ocr_pages=tuple(empty + [index for _score, index in low]),
+    )
 
 
 def _join_pages(page_texts: list[str]) -> str:
@@ -338,7 +488,7 @@ def extract(
     UnsupportedSourceTypeError. Raises EmptyExtractionError when a source
     yields no text — silent empties are not acceptable."""
     if mime_type == _PDF_MIME:
-        page_texts = _pdf_page_texts(
+        page_texts, report = _pdf_page_texts(
             course_id, source_id, stored_encoding, raw_pdf_bytes
         )
         if not any(page_text.strip() for page_text in page_texts):
@@ -346,10 +496,7 @@ def extract(
             # pipeline routes it to the ocr stage; if OCR is unavailable
             # the stage fails loudly there with an actionable message.
             raise ScannedPdfNeedsOcrError(source_id)
-        return ExtractedSource(
-            text=_join_pages(page_texts),
-            locators=_pdf_locators(page_texts),
-        )
+        return _source_from_pages(page_texts, report)
     if mime_type in _TEXT_MIME_EXACT:
         text = read_decoded(course_id, source_id, stored_encoding)
         if not text.strip():
@@ -421,11 +568,9 @@ def _pdf_page_texts(
     source_id: UUID,
     stored_encoding: str | None,
     raw_pdf_bytes: bytes | None,
-) -> list[str]:
-    import pypdf
-
+) -> tuple[list[str], ExtractionReport]:
     if raw_pdf_bytes is not None:
-        reader = pypdf.PdfReader(io.BytesIO(raw_pdf_bytes))
+        raw = raw_pdf_bytes
     else:
         # Every read goes through the capped seam regardless of stored
         # encoding: read_stored's identity branch applies the ceiling
@@ -437,17 +582,76 @@ def _pdf_page_texts(
             stored_encoding,
             max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
         )
-        reader = pypdf.PdfReader(io.BytesIO(raw))
-    page_texts: list[str] = []
+    pypdf_pages = _pypdf_pages(raw)
+    pdfium_pages = _pdfium_texts(raw)
+    chosen: list[str] = []
+    for index, (primary, has_table) in enumerate(pypdf_pages):
+        alternate = None
+        if pdfium_pages is not None and index < len(pdfium_pages):
+            alternate = pdfium_pages[index]
+        chosen.append(choose_page_text(primary, alternate, has_table=has_table))
+    min_chars, floor = _text_limits()
+    return chosen, assess_pages(chosen, min_page_chars=min_chars, quality_floor=floor)
+
+
+def _pypdf_pages(raw: bytes) -> list[tuple[str, bool]]:
+    import pypdf
+
+    reader = pypdf.PdfReader(io.BytesIO(raw))
+    pages: list[tuple[str, bool]] = []
     for page in reader.pages:
         plain = clean_text(page.extract_text() or "")
         if not plain.strip():
-            page_texts.append(plain)
+            pages.append((plain, False))
             continue
         layout = clean_text(page.extract_text(extraction_mode="layout") or "")
         normalized, has_table = _normalize_layout_tables(layout)
-        page_texts.append(normalized if has_table else plain)
-    return page_texts
+        pages.append((normalized if has_table else plain, has_table))
+    return pages
+
+
+def _pdfium_texts(raw: bytes) -> list[str] | None:
+    """Per-page text from pypdfium2, or None when it cannot read the file.
+
+    A failure here keeps the pypdf text. It must not fail the source:
+    pdfium is the spacing candidate, not the only reader.
+    """
+    import pypdfium2 as pdfium
+
+    try:
+        pdf = pdfium.PdfDocument(io.BytesIO(raw))
+    except Exception:
+        logger.exception("pypdfium2 could not open the PDF; using pypdf text")
+        return None
+    try:
+        texts: list[str] = []
+        for index in range(len(pdf)):
+            page = pdf[index]
+            textpage = None
+            try:
+                textpage = page.get_textpage()
+                texts.append(clean_text(textpage.get_text_range() or ""))
+            finally:
+                if textpage is not None:
+                    textpage.close()
+                page.close()
+        return texts
+    except Exception:
+        logger.exception("pypdfium2 text extraction failed; using pypdf text")
+        return None
+    finally:
+        pdf.close()
+
+
+def _source_from_pages(
+    page_texts: list[str], report: ExtractionReport
+) -> ExtractedSource:
+    return ExtractedSource(
+        text=_join_pages(page_texts),
+        locators=_pdf_locators(page_texts),
+        page_texts=tuple(page_texts),
+        report=report,
+    )
 
 
 def _normalize_layout_tables(layout: str) -> tuple[str, bool]:
@@ -507,6 +711,7 @@ def rasterize_pages(
     *,
     max_pages: int,
     scale: float,
+    pages: Sequence[int] | None = None,
 ) -> list[bytes]:
     """Render a PDF's pages to PNG bytes for the multimodal OCR model.
 
@@ -526,16 +731,21 @@ def rasterize_pages(
     )
     pdf = pdfium.PdfDocument(io.BytesIO(raw))
     try:
-        page_count = min(len(pdf), max_pages)
+        if pages is None:
+            indexes: Sequence[int] = range(min(len(pdf), max_pages))
+        else:
+            indexes = [index for index in pages if 0 <= index < len(pdf)][:max_pages]
         renders: list[bytes] = []
-        for index in range(page_count):
+        for index in indexes:
             page = pdf[index]
             try:
                 bitmap = page.render(scale=scale)
-                image = bitmap.to_pil()
-                buffer = io.BytesIO()
-                image.save(buffer, format="PNG")
-                renders.append(buffer.getvalue())
+                try:
+                    with bitmap.to_pil() as image, io.BytesIO() as buffer:
+                        image.save(buffer, format="PNG")
+                        renders.append(buffer.getvalue())
+                finally:
+                    bitmap.close()
             finally:
                 page.close()
         return renders
@@ -547,8 +757,34 @@ def ocr_extracted_source(page_texts: list[str]) -> ExtractedSource:
     """Build an ExtractedSource from per-page OCR output, using the exact
     same page join and locator builder as a text-layer PDF so OCR
     citations align identically."""
-    page_texts = [clean_text(page_text) for page_text in page_texts]
-    return ExtractedSource(
-        text=_join_pages(page_texts),
-        locators=_pdf_locators(page_texts),
-    )
+    cleaned = [clean_text(page_text) for page_text in page_texts]
+    min_chars, floor = _text_limits()
+    report = assess_pages(cleaned, min_page_chars=min_chars, quality_floor=floor)
+    filled = sum(1 for text in cleaned if text.strip())
+    return _source_from_pages(cleaned, replace(report, pages_ocr=filled, ocr_pages=()))
+
+
+def apply_page_ocr(
+    extracted: ExtractedSource,
+    page_indexes: Sequence[int],
+    recognized: Sequence[str],
+) -> ExtractedSource:
+    """Splice recognized text into the blank or garbled pages it belongs to.
+
+    An empty recognition leaves that page's text layer in place. Locators
+    are rebuilt from the same join as a first extraction.
+    """
+    texts = list(extracted.page_texts)
+    replaced = 0
+    for index, text in zip(page_indexes, recognized, strict=False):
+        if not 0 <= index < len(texts):
+            continue
+        cleaned = clean_text(text)
+        if not cleaned.strip():
+            continue
+        texts[index] = cleaned
+        replaced += 1
+    min_chars, floor = _text_limits()
+    report = assess_pages(texts, min_page_chars=min_chars, quality_floor=floor)
+    previous = extracted.report.pages_ocr if extracted.report else 0
+    return _source_from_pages(texts, replace(report, pages_ocr=previous + replaced))

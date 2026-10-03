@@ -1,9 +1,11 @@
 mod backend;
 mod companion;
+mod library;
 
 use tauri::{Manager, WindowEvent};
 
 use backend::Backend;
+use library::BackendCell;
 
 pub fn run() {
     tauri::Builder::default()
@@ -20,14 +22,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let backend = Backend::spawn(app.handle())?;
-            app.manage(backend);
+            app.manage(BackendCell(std::sync::Mutex::new(Some(backend))));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             backend::backend_info,
             companion::show_companion,
             companion::set_companion_pinned,
-            companion::show_library
+            companion::show_library,
+            library::activate_backup
         ])
         .on_window_event(|window, event| {
             if window.label() == "main" {
@@ -41,8 +44,12 @@ pub fn run() {
         .expect("failed to build the Stacks app")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                if let Some(backend) = app.try_state::<Backend>() {
-                    backend.shutdown();
+                if let Some(cell) = app.try_state::<BackendCell>() {
+                    if let Ok(guard) = cell.0.lock() {
+                        if let Some(backend) = guard.as_ref() {
+                            backend.shutdown();
+                        }
+                    }
                 }
             }
         });

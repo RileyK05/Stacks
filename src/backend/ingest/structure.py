@@ -12,6 +12,8 @@ from src.backend.rag.segment import ContainerSpan, containers
 
 HEADING_SIZE_RATIO = 1.12
 MAX_HEADING_WORDS = 14
+# A title repeated on this share of pages is a running head, not a section.
+_RUNNING_HEAD_SHARE = 0.30
 _LETTERS = re.compile(r"[A-Za-z].*[A-Za-z]")
 
 
@@ -46,16 +48,25 @@ def _outline_headings(reader: Any) -> list[_Heading]:
     return headings
 
 
-def _text_runs(page: Any) -> list[tuple[float, str]]:
-    """(effective font size, text) for every text run on a page."""
-    runs: list[tuple[float, str]] = []
+def _baseline(tm: Any) -> float:
+    try:
+        return round(float(tm[5]), 1)
+    except (TypeError, IndexError, ValueError):
+        return 0.0
+
+
+def _text_runs(page: Any) -> list[tuple[float, str, float]]:
+    """(effective font size, text, baseline) for every text run on a page."""
+    runs: list[tuple[float, str, float]] = []
 
     def visit(text: str, cm: Any, tm: Any, font: Any, size: float) -> None:
         if not text.strip():
             return
         scale = abs(tm[3]) if tm and tm[3] else 1.0
         outer = abs(cm[3]) if cm and cm[3] else 1.0
-        runs.append((round(float(size) * scale * outer, 1), text.strip()))
+        runs.append(
+            (round(float(size) * scale * outer, 1), text.strip(), _baseline(tm))
+        )
 
     try:
         page.extract_text(visitor_text=visit)
@@ -64,9 +75,35 @@ def _text_runs(page: Any) -> list[tuple[float, str]]:
     return runs
 
 
+def _merge_baseline_runs(
+    runs: list[tuple[float, str, float]],
+) -> list[tuple[float, str]]:
+    """Join fragments that sit on one baseline.
+
+    Small-caps headings arrive as separate runs (`C`, `OMMUNITY B`). They
+    are one title; joining them with a space would search for that space
+    inside a word. A new baseline starts a new run.
+    """
+    merged: list[tuple[float, str]] = []
+    last_baseline: float | None = None
+    for size, text, baseline in runs:
+        if (
+            merged
+            and last_baseline is not None
+            and abs(baseline - last_baseline) <= 0.5
+            and abs(size - merged[-1][0]) <= 0.3
+        ):
+            merged[-1] = (merged[-1][0], merged[-1][1] + text)
+            continue
+        merged.append((size, text))
+        last_baseline = baseline
+    return merged
+
+
 def _is_title(title: str) -> bool:
+    letters = sum(char.isalpha() for char in title)
     return (
-        bool(title)
+        letters >= 3
         and _LETTERS.search(title) is not None
         and len(title.split()) <= MAX_HEADING_WORDS
         and not title.endswith(".")
@@ -99,12 +136,45 @@ def _page_headings(runs: list[tuple[float, str]]) -> list[str]:
     return [title for title in titles if _is_title(title)]
 
 
-def _typographic_headings(reader: Any) -> list[_Heading]:
+def _drop_running_heads(headings: list[_Heading], page_count: int) -> list[_Heading]:
+    """A title on one page is a heading. The same title on most pages is
+    the running head."""
+    if page_count <= 0:
+        return headings
+    counts: dict[str, int] = {}
+    for heading in headings:
+        key = heading.title.casefold()
+        counts[key] = counts.get(key, 0) + 1
     return [
+        heading
+        for heading in headings
+        if counts[heading.title.casefold()] < 2
+        or counts[heading.title.casefold()] / page_count < _RUNNING_HEAD_SHARE
+    ]
+
+
+def _typographic_headings(reader: Any) -> list[_Heading]:
+    found = [
         _Heading(page=page_index, title=title)
         for page_index, page in enumerate(reader.pages)
-        for title in _page_headings(_text_runs(page))
+        for title in _page_headings(_merge_baseline_runs(_text_runs(page)))
     ]
+    return _drop_running_heads(found, len(reader.pages))
+
+
+def _heading_start(
+    text: str, page_start: int, page_end: int, title: str, *, allow_page_start: bool
+) -> int | None:
+    """Where `title` begins a line inside the page. A miss does not invent
+    a container at the page start unless the title came from the outline."""
+    page_text = text[page_start:page_end]
+    boundary = r"\b" if title[-1:].isalnum() else ""
+    match = re.search(rf"(?m)^\s*{re.escape(title)}{boundary}", page_text)
+    if match is not None:
+        return page_start + match.start()
+    if allow_page_start:
+        return page_start
+    return None
 
 
 def pdf_containers(
@@ -115,18 +185,27 @@ def pdf_containers(
     reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
     headings = _outline_headings(reader)
     origin = "source"
+    allow_page_start = True
     if not headings:
         headings = _typographic_headings(reader)
         origin = "inference"
+        allow_page_start = False
     pages = [loc for loc in extracted.locators if loc.locator_type == "page"]
     positioned = []
     seen = set()
     for heading in headings:
-        if heading.page >= len(pages):
+        if heading.page >= len(pages) or not heading.title:
             continue
         page = pages[heading.page]
-        at = extracted.text.find(heading.title, page.start, page.end)
-        start = at if at >= 0 else page.start
+        start = _heading_start(
+            extracted.text,
+            page.start,
+            page.end,
+            heading.title,
+            allow_page_start=allow_page_start,
+        )
+        if start is None:
+            continue
         key = (start, heading.level)
         if key not in seen:
             positioned.append((start, heading.level, heading.title))

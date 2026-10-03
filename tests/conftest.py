@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -12,14 +13,42 @@ from fastapi.testclient import TestClient
 # only loads .env keys that are ABSENT from the environment, so pinning
 # these here (before any settings read) keeps a configured LLM key or a
 # real data directory out of every test.
-for _name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL", "APP_API_TOKEN"):
+for _name in (
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
+    "LLM_MODEL",
+    "LLM_BIGGER_API_KEY",
+    "LLM_BIGGER_BASE_URL",
+    "LLM_BIGGER_MODEL",
+    "APP_API_TOKEN",
+):
     os.environ[_name] = ""
 os.environ["APP_ENV"] = "test"
 
 
+@pytest.fixture(autouse=True)
+def _no_developer_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.backend.common import config
+
+    monkeypatch.setattr(config, "_load_dotenv", lambda path: None)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """A unique basetemp per process (T-30).
+
+    Pinning one repo-relative directory in pyproject.toml made two
+    concurrent runs (CI shards, or a local run beside CI) share scratch
+    files. When the caller did not pass --basetemp, derive a per-process
+    directory under the OS temp root instead."""
+    if config.option.basetemp is None:
+        config.option.basetemp = str(
+            Path(tempfile.gettempdir()) / f"stacks-pytest-{os.getpid()}"
+        )
+
+
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """A passing run leaves no scratch files behind; a failing one keeps
-    them (--basetemp, pyproject.toml) so the failure can be inspected."""
+    them (the unique --basetemp) so the failure can be inspected."""
     basetemp = session.config.option.basetemp
     if exitstatus == 0 and basetemp:
         shutil.rmtree(basetemp, ignore_errors=True)

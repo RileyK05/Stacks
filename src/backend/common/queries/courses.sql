@@ -5,6 +5,9 @@ SELECT course_id, name, created_at, deleted_at, purge_after
 FROM courses
 WHERE course_id = :course_id AND deleted_at IS NULL;
 
+-- name: discard_import_course
+DELETE FROM courses WHERE course_id = :course_id;
+
 -- name: get_any
 SELECT course_id, name, created_at, deleted_at, purge_after
 FROM courses

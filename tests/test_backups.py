@@ -622,4 +622,4 @@ def test_backup_api_uses_generated_recovery_folder(client) -> None:
     assert Path(result["data_dir"]).parent.name == "recovered"
     assert result["restart_required"] is True
     assert "your current library was not changed" in result["instructions"]
-    assert "cannot switch to it from Settings yet" in result["instructions"]
+    assert "Activate" in result["instructions"]

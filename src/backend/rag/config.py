@@ -11,6 +11,7 @@ class PassagePolicy(BaseModel):
     version: str
     semantic_enabled: bool
     target_tokens: int = Field(ge=32)
+    min_alnum_chars: int = Field(default=40, ge=0)
     boundary_similarity: float = Field(ge=-1, le=1)
     search_window_tokens: int = Field(ge=32)
     retrieved_passage_tokens: int = Field(ge=32)

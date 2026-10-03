@@ -96,10 +96,11 @@ def recover_backup(payload: RecoverRequest) -> RecoverView:
         data_dir=str(destination),
         database_path=str(destination / "course_assistant.db"),
         instructions=(
-            "Recovery prepared a separate data folder; "
-            "your current library was not changed. "
-            "The desktop app cannot switch to it from Settings yet. "
-            "Keep this folder for manual recovery; "
-            "replacing the active library requires Stacks to be fully closed."
+            "Recovery validated the backup and prepared a separate data "
+            "folder; your current library was not changed. In the desktop "
+            "app, choose Activate to restart the library against this "
+            "backup (the previous library is kept for rollback). Outside "
+            "the app, use the recovered folder manually with Stacks fully "
+            "closed."
         ),
     )

@@ -65,8 +65,6 @@
       const { data, error: err } = await api.GET('/courses');
       if (err || !data) throw err ?? new Error('unexpected empty response');
       courses = data;
-      // First run: nothing to show yet, so lead with the create form.
-      if (data.length === 0) showCreate = true;
     } finally {
       loading = false;
     }
@@ -134,10 +132,12 @@
       <Button variant="secondary" loading={importing} onclick={() => importInput?.click()} title="Open a .course file exported from this app">
         <Icon name="upload-cloud" class="h-4 w-4" /> Import
       </Button>
-      <Button onclick={() => (showCreate = !showCreate)} variant={showCreate ? 'secondary' : 'primary'}>
-        <Icon name={showCreate ? 'x' : 'plus'} class="h-4 w-4" />
-        {showCreate ? 'Cancel' : 'New course'}
-      </Button>
+      {#if courses.length > 0}
+        <Button onclick={() => (showCreate = !showCreate)} variant={showCreate ? 'secondary' : 'primary'}>
+          <Icon name={showCreate ? 'x' : 'plus'} class="h-4 w-4" />
+          {showCreate ? 'Cancel' : 'New course'}
+        </Button>
+      {/if}
     {/if}
   {/snippet}
 </PageHeader>
@@ -150,7 +150,7 @@
   </div>
 {:else}
   <div class="flex flex-col gap-10">
-    {#if showCreate}
+    {#if courses.length === 0 || showCreate}
       <section class="animate-rise rounded-2xl border border-line bg-surface p-5 shadow-card sm:p-6">
         <h2 class="text-[15px] font-semibold text-fg">Create a course</h2>
         <p class="mt-1 text-sm text-muted">
@@ -176,14 +176,8 @@
       <EmptyState
         icon="book"
         title="No courses yet"
-        message="Create a course, upload your materials, and the tutor will answer from them."
-      >
-        {#if !showCreate}
-          <Button variant="secondary" onclick={() => (showCreate = true)}>
-            <Icon name="plus" class="h-4 w-4" /> New course
-          </Button>
-        {/if}
-      </EmptyState>
+        message="Create a course above, upload your materials, and the tutor will answer from them."
+      />
     {:else}
       <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {#each courses as course (course.course_id)}{@render courseCard(course)}{/each}

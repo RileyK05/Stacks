@@ -13,9 +13,10 @@ class in Settings; a chat can pin its own (the model picker), and
 
 Task classes: INTERACTIVE (answers, artifacts — the user is waiting),
 BACKGROUND (ingestion-time work, chat summaries), and BIGGER (the per-answer
-"Ask a bigger model" button — it resolves only from the user's own saved
-choice, never automatically, never from the environment). Resolution order
-for the first two:
+"Ask a bigger model" button). A saved bigger-model choice wins. With none
+saved, `LLM_BIGGER_BASE_URL` / `LLM_BIGGER_MODEL` / `LLM_BIGGER_API_KEY`
+apply. It never falls back to the interactive model or to `LLM_BASE_URL`.
+Resolution order for the first two:
 
 1. the user's saved choice for the class;
 2. for background only: the interactive choice;
@@ -36,6 +37,8 @@ name.
 
 from __future__ import annotations
 
+import ipaddress
+import json
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -43,10 +46,14 @@ from enum import StrEnum
 from functools import cache
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, model_validator
 from src.backend.common import secrets, settings_repo
 from src.backend.common.config import PROJECT_ROOT, get_settings
+from src.backend.common.db import Connection as DbConnection
+from src.backend.common.db import connection as db_connection
+from src.backend.common.queries import get
 from src.backend.common.schemas.base import BACKGROUND_TASKS, KNOWN_GENERATION_TASKS
 
 DEFAULT_MODELS_PATH = PROJECT_ROOT / "configs" / "models.toml"
@@ -176,15 +183,24 @@ def _builtin_local() -> Connection:
     return Connection(id=LOCAL, preset=LOCAL, name=_preset(LOCAL).label)
 
 
-def _saved_connections() -> list[Connection]:
-    raw: Any = settings_repo.get_setting(_CONNECTIONS_KEY) or []
+def _saved_connections(conn: DbConnection | None = None) -> list[Connection]:
+    if conn is None:
+        raw: Any = settings_repo.get_setting(_CONNECTIONS_KEY) or []
+    else:
+        row = conn.execute(
+            get("settings", "get_setting"), {"key": _CONNECTIONS_KEY}
+        ).fetchone()
+        raw = row["value"] if row else []
     return [Connection.model_validate(item) for item in raw]
 
 
-def _store_connections(connections: list[Connection]) -> None:
-    settings_repo.put_setting(
-        _CONNECTIONS_KEY,
-        [c.model_dump() for c in connections if c.id != LOCAL],
+def _store_connections(connections: list[Connection], conn: DbConnection) -> None:
+    conn.execute(
+        get("settings", "put_setting"),
+        {
+            "key": _CONNECTIONS_KEY,
+            "value": json.dumps([c.model_dump() for c in connections if c.id != LOCAL]),
+        },
     )
 
 
@@ -213,21 +229,25 @@ def add_connection(
     template = _preset(preset)
     if preset == LOCAL:
         raise ValueError("the local model is built in")
-    existing = {c.id for c in list_connections()}
-    base = connection_id or _slug(name or template.name)
-    candidate, counter = base, 2
-    while candidate in existing:
-        suffix = f"-{counter}"
-        candidate = f"{base[: CONNECTION_ID_MAX - len(suffix)]}{suffix}"
-        counter += 1
-    connection = Connection(
-        id=candidate,
-        preset=preset,
-        name=(name or template.label).strip(),
-        base_url=(base_url or "").strip() or None,
-        default_model=(default_model or "").strip() or None,
-    )
-    _store_connections([*_saved_connections(), connection])
+    with db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        saved = _saved_connections(conn)
+        existing = {LOCAL, *(c.id for c in saved)}
+        base = connection_id or _slug(name or template.name)
+        candidate, counter = base, 2
+        while candidate in existing:
+            suffix = f"-{counter}"
+            candidate = f"{base[: CONNECTION_ID_MAX - len(suffix)]}{suffix}"
+            counter += 1
+        connection = Connection(
+            id=candidate,
+            preset=preset,
+            name=(name or template.label).strip(),
+            base_url=(base_url or "").strip() or None,
+            default_model=(default_model or "").strip() or None,
+        )
+        _store_connections([*saved, connection], conn)
+        conn.commit()
     return connection
 
 
@@ -240,27 +260,31 @@ def update_connection(
 ) -> Connection:
     if connection_id == LOCAL:
         raise ValueError("the local model is built in")
-    saved = _saved_connections()
-    for index, current in enumerate(saved):
-        if current.id == connection_id:
-            updated = current.model_copy(
-                update={
-                    "name": (name if name is not None else current.name).strip(),
-                    "base_url": (
-                        (base_url.strip() or None)
-                        if base_url is not None
-                        else current.base_url
-                    ),
-                    "default_model": (
-                        (default_model.strip() or None)
-                        if default_model is not None
-                        else current.default_model
-                    ),
-                }
-            )
-            saved[index] = updated
-            _store_connections(saved)
-            return updated
+    with db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        saved = _saved_connections(conn)
+        for index, current in enumerate(saved):
+            if current.id == connection_id:
+                updated = Connection.model_validate(
+                    {
+                        **current.model_dump(),
+                        "name": (name if name is not None else current.name).strip(),
+                        "base_url": (
+                            (base_url.strip() or None)
+                            if base_url is not None
+                            else current.base_url
+                        ),
+                        "default_model": (
+                            (default_model.strip() or None)
+                            if default_model is not None
+                            else current.default_model
+                        ),
+                    }
+                )
+                saved[index] = updated
+                _store_connections(saved, conn)
+                conn.commit()
+                return updated
     raise UnknownConnectionError(f"unknown connection: {connection_id}")
 
 
@@ -268,15 +292,26 @@ def remove_connection(connection_id: str) -> None:
     """Delete a connection, its key, and every saved choice that used it."""
     if connection_id == LOCAL:
         raise ValueError("the local model is built in")
-    saved = _saved_connections()
-    if not any(c.id == connection_id for c in saved):
-        raise UnknownConnectionError(f"unknown connection: {connection_id}")
-    _store_connections([c for c in saved if c.id != connection_id])
-    secrets.delete_api_key(connection_id)
-    for cls in TaskClass:
-        choice = saved_choice(cls)
-        if choice is not None and choice.connection_id == connection_id:
-            clear_choice(cls)
+    with db_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        saved = _saved_connections(conn)
+        if not any(c.id == connection_id for c in saved):
+            raise UnknownConnectionError(f"unknown connection: {connection_id}")
+        secrets.delete_api_key(connection_id)
+        _store_connections([c for c in saved if c.id != connection_id], conn)
+        for cls in TaskClass:
+            row = conn.execute(
+                get("settings", "get_setting"), {"key": _setting_key(cls)}
+            ).fetchone()
+            if (
+                row
+                and ProviderChoice.model_validate(row["value"]).connection_id
+                == connection_id
+            ):
+                conn.execute(
+                    get("settings", "delete_setting"), {"key": _setting_key(cls)}
+                )
+        conn.commit()
 
 
 def has_key(connection: Connection) -> bool:
@@ -356,6 +391,16 @@ def resolve_choice(choice: ProviderChoice) -> ResolvedProvider | None:
     )
 
 
+def _is_loopback(base_url: str) -> bool:
+    host = urlsplit(base_url).hostname or ""
+    if host.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _from_environment() -> ResolvedProvider | None:
     settings = get_settings()
     if not settings.llm_base_url or not settings.llm_model:
@@ -365,9 +410,23 @@ def _from_environment() -> ResolvedProvider | None:
         base_url=settings.llm_base_url,
         model=settings.llm_model,
         api_key=settings.llm_api_key or None,
-        is_local=settings.llm_base_url.startswith(
-            ("http://127.0.0.1", "http://localhost")
-        ),
+        is_local=_is_loopback(settings.llm_base_url),
+        connection="environment",
+        label="Development endpoint",
+    )
+
+
+def _from_bigger_environment() -> ResolvedProvider | None:
+    """Development-only bigger model. Never a fallback for a saved choice."""
+    settings = get_settings()
+    if not settings.llm_bigger_base_url or not settings.llm_bigger_model:
+        return None
+    return ResolvedProvider(
+        name="environment",
+        base_url=settings.llm_bigger_base_url,
+        model=settings.llm_bigger_model,
+        api_key=settings.llm_bigger_api_key or None,
+        is_local=_is_loopback(settings.llm_bigger_base_url),
         connection="environment",
         label="Development endpoint",
     )
@@ -377,7 +436,9 @@ def resolve(cls: TaskClass) -> ResolvedProvider | None:
     """The endpoint for a task class, or None when nothing is configured."""
     choice = saved_choice(cls)
     if cls == TaskClass.BIGGER:
-        return resolve_choice(choice) if choice is not None else None
+        if choice is not None:
+            return resolve_choice(choice)
+        return _from_bigger_environment()
     if choice is None and cls == TaskClass.BACKGROUND:
         choice = saved_choice(TaskClass.INTERACTIVE)
     if choice is not None:

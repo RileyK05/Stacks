@@ -9,7 +9,8 @@ the retrieval trace recorded — auditors see what the model saw.
 Strict refusal is the recorded lean (notes.md Fork B): an empty retrieval
 returns a refusal, NOT an ungrounded answer. The provider-unavailable
 case surfaces honestly too — no provider means no answers, and the
-endpoint says so (503) rather than pretending.
+endpoint says so (503) rather than pretending. The trace keeps every
+retrieved passage; the answer's chunk list is the ones it cited.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -115,6 +116,8 @@ def answer_question(
     bigger: bool = False,
     choice: providers.ProviderChoice | None = None,
     conversation: str = "",
+    teaching_trace_ids: Collection[UUID] = (),
+    scope_note: str = "",
     source_ids: Collection[UUID] | None = None,
     search_query: str | None = None,
     overview: bool = False,
@@ -197,6 +200,7 @@ def answer_question(
     answer_mode = AnswerMode(providers.load_models_config().generation.answer_mode)
     cacheable = (
         not conversation
+        and not scope_note
         and source_ids is None
         and not generated.settings(conn, course_id).include_generated
     )
@@ -254,6 +258,11 @@ def answer_question(
         raise NothingRelevantFoundError(
             "nothing in the course materials matches this question"
         )
+    from src.backend.retrieval.labels import attach_passage_context
+
+    result = dataclasses.replace(
+        result, candidates=attach_passage_context(conn, result.candidates)
+    )
 
     composed = compose_answer(
         question,
@@ -276,19 +285,23 @@ def answer_question(
         answer_mode=answer_mode,
         conversation=conversation,
         teaching=teaching,
+        scope_note=scope_note,
     )
     used = dataclasses.replace(result, candidates=composed.candidates)
+    cited = _cited_passages(composed.text, composed.candidates)
     stored = trace.record_trace(
         conn,
         course_id,
         question,
         used,
         embedding_model=embedding_model,
+        cited=cited,
     )
     last = calls[-1]
     answer = Answer(
         text=composed.text,
-        chunk_ids=tuple(c.chunk_id for c in composed.candidates),
+        chunk_ids=tuple(chunk_id for chunk_id, _marker in cited)
+        or tuple(c.chunk_id for c in composed.candidates),
         trace_id=stored.trace_id,
         layer_contribution=stored.layer_contribution,
         model=last.model,
@@ -296,11 +309,13 @@ def answer_question(
     )
     evidence = learning.evidence_for(conn, answer.chunk_ids)
     current_sources = {str(row["source_id"]) for row in evidence}
+    teaching_traces = {str(identity) for identity in teaching_trace_ids}
     previous_teaching = next(
         (
             event
             for event in inspection.rows(conn, "teaching_events", course_id=course_id)
-            if current_sources.intersection(event["source_ids"])
+            if str(event["trace_ref"]) in teaching_traces
+            and current_sources.intersection(event["source_ids"])
         ),
         None,
     )
@@ -385,6 +400,23 @@ def answer_question(
 _CUT_OFF_RETRY = (
     "\n\nYour previous reply was cut off for length. Reply again, much more briefly."
 )
+
+
+def _cited_passages(
+    text: str, candidates: Sequence[Any]
+) -> tuple[tuple[UUID, int], ...]:
+    """Markers the answer printed, in marker order. Empty when it cited nothing."""
+    from src.backend.tutor.workspace import _inline_citations
+
+    seen: set[int] = set()
+    markers: list[int] = []
+    for number in _inline_citations(text):
+        if number in seen or not 1 <= number <= len(candidates):
+            continue
+        seen.add(number)
+        markers.append(number)
+    markers.sort()
+    return tuple((candidates[number - 1].chunk_id, number) for number in markers)
 
 
 def _generate(task: str, prompt: str, **options: Any) -> provider.GenerationResult:

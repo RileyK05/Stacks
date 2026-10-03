@@ -45,3 +45,27 @@ export function apiBase(): string {
 export function appToken(): string | null {
   return token;
 }
+
+interface ActivationOutcome {
+  ok: boolean;
+  message: string;
+  backend: BackendInfo | null;
+}
+
+/** Activate a recovered backup (B-14). The shell stops the backend, runs
+ * the one-shot swap with rollback, and starts a fresh backend — possibly
+ * on a new port with a new token — so forget the cached connection and
+ * reconnect to the new one. Desktop only. */
+export async function activateBackup(
+  backupId: string
+): Promise<ActivationOutcome> {
+  if (!isTauri()) throw new Error('Activation is only available in the desktop app.');
+  const outcome = await invoke<ActivationOutcome>('activate_backup', {
+    backupId,
+  });
+  origin = '';
+  token = null;
+  connecting = null;
+  if (outcome.ok) await connectBackend();
+  return outcome;
+}

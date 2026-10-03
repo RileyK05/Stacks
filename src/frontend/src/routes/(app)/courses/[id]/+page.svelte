@@ -551,7 +551,7 @@
     {#if exported}
       <div class="flex flex-wrap items-center gap-2 rounded-xl border border-line bg-surface-2 px-4 py-2.5 text-sm text-muted">
         <Icon name="check" class="h-4 w-4 text-success-text" />
-        <span class="min-w-0 flex-1">Saved <span class="font-medium text-fg">{exported.filename}</span> to your Downloads folder. Open it with Import on My courses, on this or another computer.</span>
+        <span class="min-w-0 flex-1 break-words">Saved to <span class="font-medium text-fg">{exported.path}</span>. Open it with Import on My courses, on this or another computer.</span>
         <Button variant="secondary" size="sm" onclick={() => exported && reveal(exported.path)}>Show in folder</Button>
         <Button variant="ghost" size="sm" onclick={() => (exported = null)} aria-label="Dismiss"><Icon name="x" class="h-4 w-4" /></Button>
       </div>

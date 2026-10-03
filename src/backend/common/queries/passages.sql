@@ -27,13 +27,17 @@ VALUES (:window_id, :chunk_id, :char_start, :char_end, :model, :dimension, :embe
 
 -- name: publish_index
 INSERT INTO source_indexes (source_id, revision, file_hash, extraction_version,
-                            segmentation_version, semantic_used, warning)
+                            segmentation_version, semantic_used, warning,
+                            pages_total, pages_empty, pages_low_quality, pages_ocr)
 VALUES (:source_id, :revision, :file_hash, :extraction_version,
-        :segmentation_version, :semantic_used, :warning)
+        :segmentation_version, :semantic_used, :warning,
+        :pages_total, :pages_empty, :pages_low_quality, :pages_ocr)
 ON CONFLICT(source_id) DO UPDATE SET revision = excluded.revision,
     file_hash = excluded.file_hash, extraction_version = excluded.extraction_version,
     segmentation_version = excluded.segmentation_version, semantic_used = excluded.semantic_used,
-    warning = excluded.warning, published_at = now_utc();
+    warning = excluded.warning, published_at = now_utc(),
+    pages_total = excluded.pages_total, pages_empty = excluded.pages_empty,
+    pages_low_quality = excluded.pages_low_quality, pages_ocr = excluded.pages_ocr;
 
 -- name: previous_passages
 SELECT chunk_id, text, char_start, char_end, locator_id FROM chunks

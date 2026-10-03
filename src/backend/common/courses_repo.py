@@ -129,6 +129,12 @@ def purge_course(course_id: UUID) -> bool:
     trash. A file-removal failure is logged, not raised — the orphan sweep
     retries leftover directories on the next maintenance pass."""
     with connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            get(_FILE, "get_any"), {"course_id": course_id}
+        ).fetchone()
+        if existing is None or existing["deleted_at"] is None:
+            return False
         course_memory.refresh(conn, course_id)
         row = conn.execute(
             get(_FILE, "purge_trashed_course"), {"course_id": course_id}
@@ -194,7 +200,10 @@ def sweep_storage_orphans(*, limit: int = 100, min_age: timedelta) -> list[UUID]
     cutoff = (utc_now() - min_age).timestamp()
 
     def _expired(path: Path) -> bool:
-        return path.stat().st_mtime <= cutoff
+        try:
+            return path.stat().st_mtime <= cutoff
+        except OSError:
+            return False
 
     with connection() as conn:
         db_course_ids = {
@@ -232,9 +241,13 @@ def sweep_storage_orphans(*, limit: int = 100, min_age: timedelta) -> list[UUID]
         # file in it are older than the grace (the directory check covers a
         # freshly created, still-empty upload target).
         dir_path = storage.storage_root() / str(course_id)
-        if _expired(dir_path) and all(
-            _expired(entry) for entry in dir_path.iterdir() if entry.is_file()
-        ):
+        try:
+            expired = _expired(dir_path) and all(
+                _expired(entry) for entry in dir_path.iterdir()
+            )
+        except OSError:
+            continue
+        if expired:
             try:
                 storage.remove_course_directory(course_id)
             except OSError:

@@ -1,9 +1,45 @@
 {
+  "_comment": "Committed synthetic retrieval cases (B-07). Seeded by tests/test_retrieval.py::_seed_eval_course so they run on every push. Real-material validation (PDFs, OCR, unmarked proofs, tables, slides, restricted sources, large courses) and per-seam/fusion measurement on those are the residual plan-notebook gate; these establish the harness and a baseline, not broad validation.",
   "cases": [
     {
       "question": "When did we use linearity?",
       "course_tag": "EVAL-COURSE",
       "expected_labels": ["page 1"]
+    },
+    {
+      "question": "How do we check that a map preserves addition?",
+      "course_tag": "EVAL-COURSE",
+      "expected_labels": ["page 1", "page 3"]
+    },
+    {
+      "question": "What is the chain rule used for?",
+      "course_tag": "EVAL-COURSE",
+      "expected_labels": ["page 2"]
+    },
+    {
+      "question": "Give the limit definition of the derivative.",
+      "course_tag": "EVAL-COURSE",
+      "expected_labels": ["page 2", "page 4"]
+    },
+    {
+      "question": "What does the fundamental theorem connect?",
+      "course_tag": "EVAL-COURSE",
+      "expected_labels": ["page 4"]
+    },
+    {
+      "question": "How does the course define a basis?",
+      "course_tag": "EVAL-COURSE",
+      "expected_labels": ["page 5"]
+    },
+    {
+      "question": "What makes a set of vectors independent?",
+      "course_tag": "EVAL-COURSE",
+      "expected_labels": ["page 5", "page 6"]
+    },
+    {
+      "question": "What is an eigenvalue?",
+      "course_tag": "EVAL-COURSE",
+      "expected_labels": ["page 6"]
     }
   ]
 }

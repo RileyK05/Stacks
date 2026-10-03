@@ -40,6 +40,7 @@ def record(
     input_tokens: int,
     output_tokens: int,
     course_id: UUID | None = None,
+    is_local: bool | None = None,
 ) -> UsageLedgerEntry:
     with connection() as conn:
         row = conn.execute(
@@ -52,6 +53,7 @@ def record(
                 "model": model,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                "is_local": int(provider == "local" if is_local is None else is_local),
             },
         ).fetchone()
         conn.commit()
@@ -92,6 +94,8 @@ def set_monthly_budget(budget: int | None) -> None:
     if budget is None:
         settings_repo.delete_setting(BUDGET_SETTING)
     else:
+        if budget < 0:
+            raise ValueError("monthly budget cannot be negative")
         settings_repo.put_setting(BUDGET_SETTING, int(budget))
 
 

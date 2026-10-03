@@ -152,11 +152,12 @@
   }
 
   async function removeKey(connection: Connection) {
-    const { error: err } = await api.DELETE('/settings/keys/{connection_id}', {
-      params: { path: { connection_id: connection.id } }
-    });
-    if (err) error = err;
-    else await onchanged();
+    error = null;
+    try {
+      await api.DELETE('/settings/keys/{connection_id}', { params: { path: { connection_id: connection.id } } });
+      delete tests[connection.id];
+      await onchanged();
+    } catch (caught) { error = caught; }
   }
 
   async function remove(connection: Connection) {
@@ -168,29 +169,28 @@
       danger: true
     });
     if (!ok) return;
-    const { error: err } = await api.DELETE('/settings/connections/{connection_id}', {
-      params: { path: { connection_id: connection.id } }
-    });
-    if (err) error = err;
-    else await onchanged();
+    error = null;
+    try {
+      await api.DELETE('/settings/connections/{connection_id}', { params: { path: { connection_id: connection.id } } });
+      delete tests[connection.id];
+      await onchanged();
+    } catch (caught) { error = caught; }
   }
 
   async function useModel(connection: Connection, model: string) {
-    const { error: err } = await api.PATCH('/settings/connections/{connection_id}', {
-      params: { path: { connection_id: connection.id } },
-      body: { default_model: model }
-    });
-    if (err) {
-      error = err;
-      return;
-    }
-    toast(`${connection.name} now uses ${model}.`);
-    await onchanged();
-    await test(connection);
+    error = null;
+    try {
+      await api.PATCH('/settings/connections/{connection_id}', { params: { path: { connection_id: connection.id } }, body: { default_model: model } });
+      toast(`${connection.name} now uses ${model}.`);
+      await onchanged();
+      await test(connection);
+    } catch (caught) { error = caught; }
   }
 
   async function test(connection: Pick<Connection, 'id'>) {
     testing = connection.id;
+    error = null;
+    delete tests[connection.id];
     try {
       const { data, error: err } = await api.POST('/settings/connections/{connection_id}/test', {
         params: { path: { connection_id: connection.id } }

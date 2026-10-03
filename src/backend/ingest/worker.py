@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -57,7 +59,7 @@ def process_batch(
         with connection() as conn:
             _release_stale_claims(conn)
             _fail_exhausted_claims(conn)
-            claimed = runs.claim_pending_sources(conn, limit=limit)
+            claimed = runs.claim_pending_sources(conn, limit=min(limit, 1))
             conn.commit()
         if not claimed:
             break
@@ -81,6 +83,21 @@ def _ingest_claimed(source_id: UUID) -> bool:
     """Run one claimed source. Returns True on success. On pipeline
     failure the ledger already records everything. On unexpected errors
     the claim is cleaned up so the row is not stranded."""
+    heartbeat_stop = threading.Event()
+
+    def heartbeat() -> None:
+        while not heartbeat_stop.wait(STALE_CLAIM_AFTER.total_seconds() / 3):
+            try:
+                with connection() as conn:
+                    conn.execute(
+                        get(_FILE, "heartbeat_claim"), {"source_id": source_id}
+                    )
+                    conn.commit()
+            except Exception:
+                logger.exception("could not heartbeat ingestion %s", source_id)
+
+    heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+    heartbeat_thread.start()
     try:
         with connection() as conn:
             run_ingestion(conn, source_id)
@@ -95,6 +112,9 @@ def _ingest_claimed(source_id: UUID) -> bool:
         logger.exception("ingestion worker error for source %s", source_id)
         _cleanup_orphaned_claim(source_id)
         return False
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join()
 
 
 def recover_interrupted_runs(conn: Connection) -> int:
@@ -151,9 +171,22 @@ def _cleanup_orphaned_claim(source_id: UUID) -> None:
     generic reason and clear the queue row so the row is not stranded."""
     try:
         with connection() as conn:
+            queued_at = runs.queued_at_for(conn, source_id)
             runs.mark_source_failed(
                 conn, source_id, "worker error: unhandled exception"
             )
+            row = conn.execute(
+                get(_FILE, "source_row"), {"source_id": source_id}
+            ).fetchone()
+            run = runs.latest_run_for_source(conn, source_id)
+            if run is not None and run.status.value in {"pending", "running"}:
+                runs.mark_run_failed_direct(
+                    conn, run.run_id, "worker error: unhandled exception"
+                )
+            if row is not None and queued_at is not None:
+                runs.record_history(
+                    conn, source_id, row["course_id"], "failed", queued_at
+                )
             runs.clear_pending_source(conn, source_id)
             conn.commit()
     except Exception:
@@ -170,9 +203,14 @@ def wakeup() -> None:
     Upload handlers run on FastAPI's threadpool, and asyncio.Event is not
     thread-safe, so the set is scheduled onto the worker's loop. A no-op
     when no worker loop is running (tests, the standalone entrypoint)."""
-    if WAKEUP is None or _LOOP is None or _LOOP.is_closed():
+    event, loop = WAKEUP, _LOOP
+    if event is None or loop is None or loop.is_closed():
         return
-    _LOOP.call_soon_threadsafe(WAKEUP.set)
+    try:
+        loop.call_soon_threadsafe(event.set)
+    except RuntimeError:
+        if not loop.is_closed():
+            raise
 
 
 async def run_forever(stop: asyncio.Event) -> None:
@@ -224,6 +262,7 @@ def main() -> None:
                     )
             except Exception:
                 logger.exception("ingestion worker pass failed")
+            time.sleep(load_ingestion_config().poll_interval_seconds)
     except KeyboardInterrupt:
         logger.info("ingestion worker stopped")
 

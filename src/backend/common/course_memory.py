@@ -65,7 +65,7 @@ def _fit_lines(lines: list[str], header: str, character_budget: int) -> tuple[st
         return header[: max(character_budget, 0)], min(
             len(header), max(character_budget, 0)
         )
-    budget = character_budget - len(header)
+    budget = max(character_budget - len(header) - 1, 0)
     body: list[str] = []
     used = 0
     for line in lines:
@@ -74,10 +74,6 @@ def _fit_lines(lines: list[str], header: str, character_budget: int) -> tuple[st
             break
         body.append(line)
         used += cost
-    if not body and lines:
-        body = [lines[0][:budget]]
-        used = len(body[0])
-        return "\n".join([header] + body), len(header) + used
     text = "\n".join([header] + body) if body else header
     return text, len(text)
 
@@ -92,7 +88,7 @@ def _assemble_summary(
     Excerpts are included only when the evidence budget has room.
     """
     total = _character_budget(token_budget)
-    header = f"Course: {name}"
+    header = f"Course: {name}"[: max(total, 0)]
     remaining = total - len(header)
 
     sources = list(material["sources"])
@@ -100,19 +96,19 @@ def _assemble_summary(
 
     sections: list[str] = [header]
 
-    if sources:
+    if sources and remaining > 2 + len(_SOURCES_HEADER):
         section, spent = _fit_lines(
             [f"- {row['filename']}" for row in sources],
             _SOURCES_HEADER,
-            max(remaining // 3, len(_SOURCES_HEADER)),
+            min(remaining - 2, max(remaining // 3, len(_SOURCES_HEADER))),
         )
         sections.append(section)
-        remaining -= spent + 1
+        remaining -= spent + 2
 
-    if evidence:
+    if evidence and remaining > 2 + len(_EVIDENCE_HEADER):
         # Reserve at most half the budget; compact lines (no excerpts)
         # always fit before excerpted lines are considered.
-        evidence_budget = max(remaining // 2, 1)
+        evidence_budget = min(remaining - 2, max(remaining // 2, len(_EVIDENCE_HEADER)))
         excerpted = [_evidence_line(row, with_excerpt=True) for row in evidence]
         compact = [_evidence_line(row, with_excerpt=False) for row in evidence]
         lines = excerpted if _lines_cost(excerpted) <= evidence_budget else compact

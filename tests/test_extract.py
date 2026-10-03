@@ -19,8 +19,13 @@ from src.backend.ingest.extract import (
     _markdown_locators,
     _normalize_layout_tables,
     _pdf_locators,
+    apply_page_ocr,
+    assess_pages,
+    choose_page_text,
+    clean_text,
     extract,
     ocr_extracted_source,
+    page_quality,
     rasterize_pages,
 )
 
@@ -356,6 +361,244 @@ def test_read_decoded_strips_nul_bytes() -> None:
         text = read_decoded(course_id, source_id, "gzip")
         assert "\x00" not in text
         assert "linearity notes" in text
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+
+def _pdf_with_pages(contents: list[str]) -> bytes:
+    """A PDF whose page streams are the given content operators.
+
+    The content stream is an indirect object: pypdfium2 ignores a stream
+    written inline on the page dictionary.
+    """
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+
+    def font(base: str) -> DictionaryObject:
+        return DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject(base),
+                NameObject("/Encoding"): NameObject("/WinAnsiEncoding"),
+            }
+        )
+
+    for content in contents:
+        writer.add_blank_page(width=612, height=792)
+        page = writer.pages[-1]
+        stream = DecodedStreamObject()
+        stream.set_data(content.encode("latin-1"))
+        page[NameObject("/Contents")] = writer._add_object(stream)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/Font"): DictionaryObject(
+                    {
+                        NameObject("/F1"): font("/Helvetica"),
+                        NameObject("/F2"): font("/Times-Italic"),
+                    }
+                )
+            }
+        )
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+def _show(text: str) -> str:
+    return f"BT\n/F1 12 Tf\n72 700 Td\n({text}) Tj\nET\n"
+
+
+def _stored_pdf(body: bytes) -> tuple[UUID, UUID, Path]:
+    course_id = uuid4()
+    source_id = uuid4()
+    path = storage.write_stored(course_id, source_id, body)
+    return course_id, source_id, path
+
+
+def test_clean_text_preserves_ambiguous_glyph_digits_for_ocr() -> None:
+    assert (
+        clean_text("of /one.o/eight.o/three.o/six.o")
+        == "of /one.o/eight.o/three.o/six.o"
+    )
+    assert clean_text("of /one.o$/three.o") == "of /one.o$/three.o"
+    assert page_quality(clean_text("of /one.o-.")) < 0.35
+
+
+def test_page_quality_flags_cipher_and_glyph_names_only() -> None:
+    cipher = ",N>KMH .B<:GL ;>@:G" * 50
+    glyphs = "of /one.o$/three.o " * 30
+    english = (
+        "The treaty of Guadalupe Hidalgo ended the war and the United States "
+        "paid for the land that was ceded in the agreement to Mexico. "
+    ) * 3
+    spanish = (
+        "La historia de la frontera y el pueblo de Texas es la historia de "
+        "la comunidad y de la tierra que el pueblo habita. "
+    ) * 3
+    assert len(cipher) >= 200 and len(glyphs) >= 200
+    assert page_quality(cipher) < 0.35
+    assert page_quality(glyphs) < 0.35
+    assert page_quality(clean_text(glyphs)) < 0.35
+    assert page_quality(english) >= 0.35
+    assert page_quality(spanish) >= 0.35
+    assert page_quality("Hello") == 1.0
+
+
+def test_page_text_prefers_spaced_text_unless_a_table_was_found() -> None:
+    joined = "cedesLas CaliforniasandNuevo"
+    spaced = "cedes Las Californias and Nuevo"
+    assert choose_page_text(joined, spaced, has_table=False) == spaced
+    assert choose_page_text("A | 100%", "A100%", has_table=True) == "A | 100%"
+    assert choose_page_text("hello", None, has_table=False) == "hello"
+    assert choose_page_text("hello", "", has_table=False) == "hello"
+
+
+def test_mixed_font_pdf_keeps_the_space_between_runs() -> None:
+    """pypdf drops the gap at a font change; pdfium keeps it."""
+    body = _pdf_with_pages(
+        [
+            """BT
+/F1 12 Tf
+72 700 Td
+(cedes) Tj
+/F2 12 Tf
+4 0 Td
+(Las Californias) Tj
+/F1 12 Tf
+4 0 Td
+(and) Tj
+/F2 12 Tf
+4 0 Td
+(Nuevo) Tj
+ET
+"""
+        ]
+    )
+    course_id, source_id, path = _stored_pdf(body)
+    try:
+        extracted = extract(
+            course_id, source_id, "application/pdf", stored_encoding="identity"
+        )
+        assert "Californias and Nuevo" in extracted.text
+        assert "cedesLas" not in extracted.text
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+
+def test_blank_page_inside_a_text_pdf_is_reported() -> None:
+    prose = _show("The treaty ended the war and paid for the land.")
+    body = _pdf_with_pages([prose, "", prose])
+    course_id, source_id, path = _stored_pdf(body)
+    try:
+        extracted = extract(
+            course_id, source_id, "application/pdf", stored_encoding="identity"
+        )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+    assert extracted.report is not None
+    assert extracted.report.pages_total == 3
+    assert extracted.report.pages_empty == 1
+    assert extracted.report.ocr_pages[0] == 1
+
+
+def test_garbled_page_is_queued_after_blank_pages() -> None:
+    cipher = _show(",N>KMH .B<:GL ;>@:G" * 50)
+    prose = _show("The treaty ended the war and paid for the land.")
+    body = _pdf_with_pages([cipher, "", prose])
+    course_id, source_id, path = _stored_pdf(body)
+    try:
+        extracted = extract(
+            course_id, source_id, "application/pdf", stored_encoding="identity"
+        )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+    assert extracted.report is not None
+    assert extracted.report.ocr_pages == (1, 0)
+    assert extracted.report.pages_low_quality == 1
+
+
+def test_ambiguous_glyph_page_requires_ocr_instead_of_inventing_digits() -> None:
+    line = (
+        "February of /one.o/eight.o/three.o/six.o, some Anglo-Texans "
+        "and the Mexican troops of the war. "
+    )
+    body = _pdf_with_pages([_show(line * 6)])
+    course_id, source_id, path = _stored_pdf(body)
+    try:
+        extracted = extract(
+            course_id, source_id, "application/pdf", stored_encoding="identity"
+        )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+    assert "/one.o" in extracted.text
+    assert extracted.report is not None
+    assert extracted.report.ocr_pages == (0,)
+
+
+def test_apply_page_ocr_splices_only_the_blank_page() -> None:
+    prose = "The treaty ended the war and paid for the land."
+    body = _pdf_with_pages([_show(prose), "", _show(prose)])
+    course_id, source_id, path = _stored_pdf(body)
+    try:
+        extracted = extract(
+            course_id, source_id, "application/pdf", stored_encoding="identity"
+        )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+    rescued = "Resendez describes the border after the expedition north."
+    updated = apply_page_ocr(extracted, extracted.report.ocr_pages, [rescued])
+    assert rescued in updated.text
+    assert prose in updated.text
+    assert updated.report is not None
+    assert updated.report.pages_ocr == 1
+    assert updated.report.pages_empty == 0
+    assert updated.text[updated.locators[1].start : updated.locators[1].end] == rescued
+
+
+def test_blank_pages_are_ordered_ahead_of_low_quality_pages() -> None:
+    report = assess_pages(
+        ["", ",N>KMH .B<:GL ;>@:G" * 50, "The treaty of the land. " * 12],
+        min_page_chars=20,
+        quality_floor=0.35,
+    )
+    assert report.ocr_pages[0] == 0
+    assert 1 in report.ocr_pages
+    assert 2 not in report.ocr_pages
+
+
+def test_rasterize_pages_can_render_a_chosen_page() -> None:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=200, height=200)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    course_id, source_id, path = _stored_pdf(buffer.getvalue())
+    try:
+        pages = rasterize_pages(
+            course_id,
+            source_id,
+            "identity",
+            max_pages=50,
+            scale=1.0,
+            pages=[2, 0],
+        )
+        assert len(pages) == 2
+        capped = rasterize_pages(
+            course_id, source_id, "identity", max_pages=1, scale=1.0, pages=[2, 0]
+        )
+        assert len(capped) == 1
+        assert all(page.startswith(b"\x89PNG") for page in pages)
     finally:
         path.unlink(missing_ok=True)
         path.parent.rmdir()

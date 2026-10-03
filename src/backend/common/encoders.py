@@ -38,6 +38,11 @@ class EncoderSpec:
     model: RemoteFile
     tokenizer: RemoteFile
     extra: tuple[RemoteFile, ...] = ()
+    # The SentenceTransformers repo this ONNX export was converted from.
+    # `scripts/check_encoders.py` loads it as the torch reference so the
+    # parity check and the shipped ONNX graph cannot name different
+    # models (T-21).
+    source_repo: str | None = None
 
     def url(self, file: RemoteFile) -> str:
         return f"https://huggingface.co/{self.repo}/resolve/{self.revision}/{file.path}"
@@ -45,6 +50,10 @@ class EncoderSpec:
     @property
     def files(self) -> tuple[RemoteFile, ...]:
         return (self.model, self.tokenizer, *self.extra)
+
+    @property
+    def torch_repo(self) -> str:
+        return self.source_repo or self.repo
 
 
 def encoder_dir(spec: EncoderSpec) -> Path:
@@ -61,21 +70,34 @@ def ensure_files(spec: EncoderSpec) -> Path:
     root = encoder_dir(spec)
     for file in spec.files:
         target = root / file.path
-        if target.is_file() and (
-            file.size_bytes is None or target.stat().st_size == file.size_bytes
-        ):
-            continue
         if file.sha256 and file.size_bytes:
             download_verified(
                 spec.url(file), target, sha256=file.sha256, size_bytes=file.size_bytes
             )
             continue
+        max_bytes = 32 * 1024 * 1024
+        if target.is_file() and 0 < target.stat().st_size <= max_bytes:
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        response = httpx.get(spec.url(file), follow_redirects=True, timeout=60.0)
-        response.raise_for_status()
         partial = target.with_name(target.name + ".part")
-        partial.write_bytes(response.content)
-        partial.replace(target)
+        try:
+            with (
+                httpx.stream(
+                    "GET", spec.url(file), follow_redirects=True, timeout=60.0
+                ) as response,
+                partial.open("wb") as handle,
+            ):
+                response.raise_for_status()
+                written = 0
+                for block in response.iter_bytes(1 << 20):
+                    written += len(block)
+                    if written > max_bytes:
+                        raise ValueError("encoder metadata exceeds the download limit")
+                    handle.write(block)
+            partial.replace(target)
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
     return root
 
 
@@ -202,6 +224,7 @@ GRANITE_EMBEDDING_R2 = EncoderSpec(
         ),
         RemoteFile("special_tokens_map.json"),
     ),
+    source_repo="ibm-granite/granite-embedding-english-r2",
 )
 
 MS_MARCO_MINILM_L6 = EncoderSpec(

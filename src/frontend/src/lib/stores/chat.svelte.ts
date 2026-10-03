@@ -177,6 +177,9 @@ export class CourseChats {
         const waiting = this.pending.get(conversationId);
         if (waiting) turns.push(waiting);
         this.turns = turns;
+        for (const turn of turns) {
+          if (turn.traceId) void this.loadCitations(turn);
+        }
       }
     } catch (caught) {
       if (this.openRequest === request) this.error = caught;
@@ -238,7 +241,7 @@ export class CourseChats {
       );
       if (error || !data) throw error ?? new Error('unexpected empty response');
       applyReply(turn, data.reply);
-      turn.showSources = !turn.noMatch;
+      turn.showSources = false;
       if (!this.removed.has(data.conversation.conversation_id)) this.upsert(data.conversation);
       if (!turn.noMatch) void this.loadCitations(turn);
     } catch (caught) {

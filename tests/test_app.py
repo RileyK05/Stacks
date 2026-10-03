@@ -3,8 +3,10 @@ and the serve entry point's port announcement and stdin shutdown."""
 
 from __future__ import annotations
 
+import queue
 import subprocess
 import sys
+import threading
 import time
 
 import httpx
@@ -108,7 +110,11 @@ def test_serve_announces_its_port_and_stops_when_stdin_closes() -> None:
     )
     try:
         assert process.stdout is not None and process.stdin is not None
-        line = process.stdout.readline().strip()
+        lines: queue.Queue[str] = queue.Queue()
+        threading.Thread(
+            target=lambda: lines.put(process.stdout.readline()), daemon=True
+        ).start()
+        line = lines.get(timeout=60).strip()
         assert line.startswith(PORT_ANNOUNCEMENT), line
         port = int(line.removeprefix(PORT_ANNOUNCEMENT))
 

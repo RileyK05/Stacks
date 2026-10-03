@@ -204,7 +204,7 @@ def _view(artifact: Artifact) -> ArtifactView:
 def _require_artifact(course_id: UUID, artifact_id: UUID) -> Artifact:
     require_course(course_id)
     artifact = artifacts_repo.get_artifact(course_id, artifact_id)
-    if artifact is None:
+    if artifact is None or artifact.kind not in artifact_content.KINDS:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "artifact not found")
     return artifact
 
@@ -453,6 +453,10 @@ def restore_version(
         )
     except StaleVersionError as err:
         raise HTTPException(status.HTTP_409_CONFLICT, str(err)) from err
+    except (ValidationError, ValueError) as err:
+        raise _unprocessable(
+            "that saved version has invalid content; nothing was restored"
+        ) from err
     return _view(saved)
 
 

@@ -39,10 +39,10 @@ def normalise_question(question: str) -> str:
 
 
 def course_fingerprint(conn: Connection, course_id: UUID) -> str:
-    row = conn.execute(
+    rows = conn.execute(
         get(_FILE, "course_fingerprint"), {"course_id": course_id}
-    ).fetchone()
-    return str(row["fingerprint"]) if row else ""
+    ).fetchall()
+    return ",".join(sorted(str(row["part"]) for row in rows))
 
 
 def cache_key(

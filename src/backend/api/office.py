@@ -176,11 +176,18 @@ class ReadRequest(BaseModel):
     kind: Literal["word", "excel", "powerpoint"] | None = None
     course_id: UUID | None = None
     # Scrape: JSON-ish list of {label, text} the host read directly.
-    scrape: list[dict[str, str]] = Field(default_factory=list, max_length=5000)
+    scrape: list[
+        dict[
+            Annotated[str, Field(max_length=80)],
+            Annotated[str, Field(max_length=100_000)],
+        ]
+    ] = Field(default_factory=list, max_length=5000)
     # The downloaded package, base64-encoded (no data: prefix).
-    package_b64: str | None = Field(default=None, max_length=200_000_000)
+    package_b64: str | None = Field(default=None, max_length=55_924_056)
     # PNG page/slide renders, base64-encoded.
-    images_b64: list[str] = Field(default_factory=list, max_length=40)
+    images_b64: list[Annotated[str, Field(max_length=27_962_028)]] = Field(
+        default_factory=list, max_length=40
+    )
 
 
 class ReadAgreement(BaseModel):
@@ -365,8 +372,7 @@ def read_document(request: ReadRequest) -> ReadResult:
     if request.images_b64:
         images = [_decode(image, what="images_b64") for image in request.images_b64]
         try:
-            with connection() as conn:
-                reads.append(read_screens(conn, images, host=request.host))
+            reads.append(read_screens(images, host=request.host))
         except OcrUnavailableError as err:
             reads.append(
                 DocumentRead(method="ocr", host=request.host, warnings=(str(err),))

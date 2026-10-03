@@ -4,8 +4,6 @@
 -- What the course's answers are built from: every indexed source (by id
 -- and content hash) and when each was last ingested. Any upload, delete,
 -- or re-ingestion changes it.
-SELECT COALESCE(group_concat(part, ','), '') AS fingerprint
-FROM (
     SELECT source.source_id || ':' || COALESCE(idx.file_hash, source.file_hash, '') || ':'
            || COALESCE(idx.revision, 'legacy') || ':'
            || COALESCE(MAX(run.completed_at), '') AS part
@@ -16,8 +14,7 @@ FROM (
     WHERE source.course_id = :course_id
       AND (source.status = 'indexed' OR idx.source_id IS NOT NULL)
     GROUP BY source.source_id
-    ORDER BY source.source_id
-);
+    ORDER BY source.source_id;
 
 -- name: lookup
 SELECT trace_id, answer_text, chunk_ids, model

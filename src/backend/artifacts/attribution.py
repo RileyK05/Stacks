@@ -16,7 +16,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from src.backend.artifacts.content import CITATION_RE
+from src.backend.common.citations import cited_numbers, prose_transform
 from src.backend.retrieval.funnel import STOPWORDS
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -66,13 +66,23 @@ def strip_echo(text: str, material: Sequence[str], before: str = "") -> str:
     a line that starts with a material number ("[1] Fraga ...") and copies
     that material, or a run of lines copied verbatim with the PDF's line
     breaks (they end mid-sentence). Quoting a sentence or two stays."""
+    return prose_transform(
+        text,
+        lambda prose: _strip_echo_prose(prose, material, before),
+        include_inline=False,
+    )
+
+
+def _strip_echo_prose(text: str, material: Sequence[str], before: str) -> str:
     passages = [_normalised(passage) for passage in material]
     existing = {line.strip() for line in before.splitlines() if line.strip()}
     lines = text.splitlines()
 
     def copied(line: str) -> bool:
         plain = _normalised(_LEADING_NUMBER.sub("", line))
-        return len(plain) >= ECHO_MIN_CHARS and any(plain in p for p in passages)
+        return len(plain) >= ECHO_MIN_CHARS and any(
+            f" {plain} " in f" {p} " for p in passages
+        )
 
     echo = [False] * len(lines)
     for index, line in enumerate(lines):
@@ -111,29 +121,30 @@ def attach(text: str, material: Sequence[str], before: str = "") -> Attributed:
     existing = {line.strip() for line in before.splitlines() if line.strip()}
     out: list[str] = []
     cited_now = uncited = 0
-    in_code = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith(("```", "~~~")):
-            in_code = not in_code
-        if (
-            in_code
-            or not stripped
-            or stripped in existing
-            or _SKIP.match(line)
-            or CITATION_RE.search(line)
-        ):
-            out.append(line)
-            continue
-        best = _best_passage(stripped, passages)
-        if best is None:
-            if len(_words(stripped)) >= MIN_WORDS:
-                uncited += 1
-            out.append(line)
-            continue
-        cited_now += 1
-        out.append(f"{line.rstrip()} [{best + 1}]")
-    suffix = "\n" if text.endswith("\n") else ""
-    return Attributed(
-        text="\n".join(out) + suffix, cited_now=cited_now, uncited=uncited
-    )
+
+    def attach_prose(prose: str) -> str:
+        nonlocal cited_now, uncited
+        out.clear()
+        for line in prose.splitlines(keepends=True):
+            stripped = line.strip()
+            if (
+                not stripped
+                or stripped in existing
+                or _SKIP.match(line)
+                or cited_numbers(line)
+            ):
+                out.append(line)
+                continue
+            best = _best_passage(stripped, passages)
+            if best is None:
+                if len(_words(stripped)) >= MIN_WORDS:
+                    uncited += 1
+                out.append(line)
+                continue
+            cited_now += 1
+            ending = line[len(line.rstrip("\r\n")) :]
+            out.append(f"{line.rstrip()} [{best + 1}]{ending}")
+        return "".join(out)
+
+    rendered = prose_transform(text, attach_prose, include_inline=False)
+    return Attributed(text=rendered, cited_now=cited_now, uncited=uncited)

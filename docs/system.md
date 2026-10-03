@@ -1,6 +1,6 @@
 # System design
 
-Updated 2026-10-02. This document describes the current local-first desktop
+Updated 2026-10-03. This document describes the current local-first desktop
 system. Hosted accounts, Postgres, enrollment, tiers, and shared courses were
 retired and remain only in git history.
 
@@ -97,12 +97,22 @@ missing/changing files fail the backup. Archives publish atomically, and rotatio
 only follows a successful new backup. Compression runs off the async event loop.
 
 Recovery validates archive paths, sizes, hashes, supported schema, integrity, and
-foreign keys before publishing a separate new folder. It never replaces the live
-database. Machine configuration is cleared; interrupted ingestion is reset.
-Reduced restores preserve saved citation passages and queue active sources to
-rebuild omitted search data. `scripts/restore_backup.py` provides offline folder
-recovery. The installed desktop app cannot activate a recovered folder from
-Settings yet (B-14); preparing files is not a completed desktop restore.
+foreign keys before publishing a separate new folder. Machine configuration is
+cleared; interrupted ingestion is reset. Reduced restores preserve saved citation
+passages and queue active sources to rebuild omitted search data.
+`scripts/restore_backup.py` provides offline folder recovery.
+
+Desktop activation (`src/backend/activation.py`, B-14) completes recovery: the
+shell stops the backend, runs the one-shot `stacks-backend --activate <id>`, and
+restarts the backend against the activated library. Activation re-verifies the
+archive, migrates the restored schema, and swaps the database and `raw/` into
+the live data folder while no writer is open. The previous library is moved
+aside first, so a failure during the switch restores it and the app restarts
+against the unchanged library. Downloaded models, the llama.cpp runtime, and
+Office certificate state are machine setup and are left in place. The last
+attempt's outcome is recorded in `.activation/last.json`. Recovering to a folder
+prepares files; activating is the desktop restore. The full installed restart
+journey remains the B-10 native gate.
 
 ## 4. Ingestion
 
@@ -162,6 +172,19 @@ Missing/excluded support suppresses the whole aid. Toggle/version changes take
 effect on the next request; generated lookup disables answer-cache reuse.
 Student-memory panels and work-document captures are not indexed as course facts.
 
+Two eval harnesses record whether behavior regressed. The retrieval eval
+(`retrieval/evals.py`) scores each seam (`keyword`, `embedding`, `graph`) and
+the fusion for recall@k, precision@k, and reciprocal rank against committed
+label cases, plus `fusion_beats_best_single`; a case with no expected labels is
+rejected at load. The answer eval (`evals/answer.py`) is the generation-side
+twin: mechanical kinds (green/cold/yellow/red/workspace) check citations,
+refusal, steering and structure with regex/parse/DB-join only. Its expectation
+keys are now enforced, not decorative. Independently reviewed correctness cases
+live in `data/eval/answer/semantic_cases.json` and are scored by a model judge
+(`evals/judge.py`) through a separate `run_semantic_eval`, so a deterministic
+gate never depends on a judge and a judge's verdict is recorded as an opinion,
+not ground truth. `scripts/eval_models.py --semantic` runs both.
+
 Substantive answers cite numbered original material. Empty retrieval is refused,
 and unsupported structured output is withheld. Valid citation IDs and green
 tests do not establish that a generated explanation, quiz key, or program is
@@ -177,6 +200,18 @@ Saved conversations retain raw turns and a rolling summary for limited model
 contexts. Workspace blocks can produce validated quizzes, documents, HTML,
 code, sheets, and slide decks; the frontend renders them but never executes
 model-authored code.
+
+When the student changes a chat's source selection (or a selected source is
+deleted), the conversation records a scope revision at the last message
+(migration 018). From then on the earlier turns are context for the topic only:
+the answer prompt carries a trusted instruction that they are not course facts
+and that the answer must read only the numbered material now selected, and the
+rolling summary is updated with a topic-only prompt that keeps the student's
+questions and confusion but drops the explained facts. The follow-up is answered
+from the current selection, so a question the excluded source alone supported
+comes back as an honest "nothing in the course materials" limitation. New
+retrieval was already scoped before candidate limits; this closes the context
+path (B-02).
 
 Task routing separates explanation from artifact requests. Empty or truncated
 model output is rejected; malformed non-quiz artifacts get one bounded repair
@@ -738,3 +773,55 @@ preferences. A registry prompt offers tentative background review/practice when
 appropriate; a suggestion is not a capability judgment. No prerequisite edges
 or inferred dependency chains are stored. Reduced backups omit vectors and
 similarity edges and rebuild them after recovery; citation passages remain.
+
+## 16. Reliability contracts from docket triage
+
+Text input streams through a configured decoded-byte limit, recognizes Unicode
+BOMs and rejects binary signatures. Broken PDF font digits are never guessed;
+low-quality pages request OCR. Ambiguous OCR separators fail rather than silently
+misassigning pages. Bitmap/PIL resources close; pixel/batch bounds remain open.
+Ingestion claims one source at a time, heartbeats long stages and records retry
+and failure history. Late failure cannot replace an already published index.
+
+Citation validation and renumbering share a parser for compound/range markers
+that excludes literal Markdown code. Workspace options and sheet cells are
+checked too. Quotes retain verified passages and reconcile their markers.
+Edits retain existing cited material, including beyond the normal retrieval cap.
+These checks establish provenance/structure, not factual entailment.
+
+Explicit numeric or one-through-twenty quiz counts set the generation schema's
+count within the existing 20-question workspace limit. Verified repairs are not
+clipped to three. An incomplete requested suite is withheld with an honest count;
+it does not become a practice suite. Title-only documents/decks are withheld.
+Study sheets route to documents. Long-output recovery remains planned (§7 and
+`plan-notebook.md`); unknown models still use the conservative default allowance.
+
+Prior teaching evidence must come from the quiz's own conversation, not another
+chat sharing sources. Migration 021 invalidates unsupported associations in
+retained historical practice suites and observations, preserving answers,
+capability evidence and the discarded association for inspection. Valid ordered
+same-conversation associations survive. This does not repair purged suites whose
+origin can no longer be inspected.
+
+Provider connections, user-model catalog mutations and conversation sequence
+allocation serialize their read/write operations. Model catalog IDs are selected
+inside the write transaction; hashing/network work happens beforehand. A failed
+OS keychain read is distinct from an absent key; desktop/Office APIs return an
+actionable 503. SQLite and the OS credential store remain separate resources.
+Migration 020 records usage locality and excludes known local calls from cloud
+totals. Each HTTP completion records reported usage before output validation or
+a retry; budget checks remain a soft stop, not concurrent spending reservations.
+
+Model files use ID/hash-specific paths; reused files and completed downloads are
+hash checked, resumed ranges validated and verification caches use nanosecond
+file fingerprints. Office package expansion, XML declarations and incoming
+request bytes are bounded. Slides/worksheets follow authored relationships;
+speaker notes follow their slide relationship, with unlinked notes labelled
+uncertain. Snapshot coherence during an actively edited Office read remains open.
+Archives stream retained sources and reserve export names without overwriting.
+
+Course-route changes remount bound stores. Pending Enter reports an unsent chat
+draft; exports report their actual path. Confirmation dialogs cycle keyboard focus
+and restore it on close. Flashcard edits reset study order/review marks rather than
+applying stale indices to new content. Native lifecycle source fixes remain
+uncompiled; semantic and installed-platform acceptance stays in `docket.md`.

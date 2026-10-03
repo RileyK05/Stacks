@@ -22,7 +22,8 @@
     disabled = false
   }: Props = $props();
 
-  let selectId = $derived(id ?? label?.toLowerCase().replace(/\s+/g, '-'));
+  const generatedId = $props.id();
+  let selectId = $derived(id ?? generatedId);
 </script>
 
 <div class="flex flex-col gap-1.5">

@@ -168,7 +168,6 @@ def test_screenshot_reader_transcribes_via_the_ocr_seam(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.backend.common import provider
-    from src.backend.common.db import connection
     from src.backend.office_reader import read_screens
 
     seen: dict[str, object] = {}
@@ -183,8 +182,7 @@ def test_screenshot_reader_transcribes_via_the_ocr_seam(
     from src.backend.common.providers import ProviderChoice, TaskClass
 
     providers.save_choice(TaskClass.INTERACTIVE, ProviderChoice(preset="local"))
-    with connection() as conn:
-        read = read_screens(conn, [b"png-a", b"png-b"], host="powerpoint")
+    read = read_screens([b"png-a", b"png-b"], host="powerpoint")
     assert seen["task"] == "ocr"
     assert seen["images"] == [b"png-a", b"png-b"]
     assert [unit.label for unit in read.units] == ["image 1", "image 2"]

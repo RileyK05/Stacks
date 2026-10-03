@@ -461,10 +461,14 @@ export class OpenArtifact {
   }
 
   async loadVersions(): Promise<void> {
-    const { data } = await api.GET('/courses/{course_id}/artifacts/{artifact_id}/versions', {
-      params: { path: this.path }
-    });
-    this.versions = data ?? [];
+    try {
+      const { data } = await api.GET('/courses/{course_id}/artifacts/{artifact_id}/versions', {
+        params: { path: this.path }
+      });
+      this.versions = data ?? [];
+    } catch (caught) {
+      this.error = caught;
+    }
   }
 
   async restore(version: number): Promise<boolean> {

@@ -20,6 +20,11 @@ _LIST = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+\S")
 _TABLE = re.compile(r"(?m)^\s*\|.+\|\s*$")
 _EQUATION = re.compile(r"\$\$|\\\[|\\begin\{(?:equation|align)")
 _DEFINITION = re.compile(r"(?i)^\s*(?:where|in which|here|with|that is)\b")
+_WORD = re.compile(r"[^\W\d_]{2,}")
+_SENTENCE_END = re.compile(r"[.!?][\"')\]]*(?:\s|$)")
+# A proof, example, table, or equation is one unit. Splitting it would
+# separate the claim from its ending, or a row from its header.
+_ATOMIC = frozenset({"table", "equation", "proof", "example"})
 
 
 @dataclass(frozen=True)
@@ -85,7 +90,78 @@ def containers(text: str) -> tuple[ContainerSpan, ...]:
     return tuple(result)
 
 
-def _blocks(text: str, start: int, end: int) -> list[tuple[int, int, str]]:
+def is_thin(text: str, minimum: int) -> bool:
+    """True when a span is too small to retrieve on its own.
+
+    A short complete sentence stays (a one-line definition is real
+    evidence). A heading fragment, a blank, or a running head does not.
+    """
+    alnum = sum(char.isalnum() for char in text)
+    if alnum >= minimum:
+        return False
+    words = _WORD.findall(text)
+    return not (len(words) >= 2 and _SENTENCE_END.search(text))
+
+
+def _crosses(start: int, end: int, breaks: Sequence[int]) -> bool:
+    return any(start < boundary < end for boundary in breaks)
+
+
+def _split_oversized(
+    text: str,
+    start: int,
+    end: int,
+    kind: str,
+    target: int,
+    count: Callable[[str], int],
+) -> list[tuple[int, int, str]]:
+    """Cut a block down to `target` tokens without overlapping pieces.
+
+    Sentence ends and newlines win. A single line that is still too long
+    is cut on a space, then on a character, so a block cannot stay oversized.
+    """
+    if kind in _ATOMIC or count(text[start:end]) <= target:
+        return [(start, end, kind)]
+    pieces: list[tuple[int, int, str]] = []
+    cursor = start
+    while cursor < end:
+        if count(text[cursor:end]) <= target:
+            pieces.append((cursor, end, "passage"))
+            break
+        lo, hi = cursor + 1, end
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if count(text[cursor:mid]) <= target:
+                lo = mid
+            else:
+                hi = mid - 1
+        limit = lo
+        while limit > cursor and count(text[cursor:limit]) > target:
+            limit -= 1
+        if limit <= cursor:
+            limit = min(end, cursor + 1)
+        region = text[cursor:limit]
+        cut = None
+        for match in re.finditer(r"(?<=[.!?])\s+|\n", region):
+            cut = cursor + match.end()
+        if cut is None or cut <= cursor:
+            space = text.rfind(" ", cursor + 1, limit)
+            cut = space + 1 if space > cursor else limit
+        if cut <= cursor:
+            cut = min(end, cursor + 1)
+        pieces.append((cursor, cut, "passage"))
+        cursor = cut
+    return pieces
+
+
+def _blocks(
+    text: str,
+    start: int,
+    end: int,
+    *,
+    target_tokens: int,
+    token_count: Callable[[str], int],
+) -> list[tuple[int, int, str]]:
     cuts = [
         start,
         *(start + match.end() for match in re.finditer(r"\n\s*\n", text[start:end])),
@@ -128,7 +204,7 @@ def _blocks(text: str, start: int, end: int) -> list[tuple[int, int, str]]:
                     kind in {"list", "table"}
                     and (previous_text.endswith(":") or previous_kind == kind)
                 ) or (previous_kind == "equation" and _DEFINITION.search(block))
-                if attached:
+                if attached and token_count(text[previous_start:b]) <= target_tokens:
                     result[-1] = (
                         previous_start,
                         b,
@@ -139,6 +215,64 @@ def _blocks(text: str, start: int, end: int) -> list[tuple[int, int, str]]:
     return result
 
 
+def _absorb_thin(
+    text: str,
+    blocks: list[tuple[int, int, str, int | None]],
+    minimum: int,
+    target: int,
+    count: Callable[[str], int],
+    breaks: Sequence[int],
+) -> list[tuple[int, int, str, int | None]]:
+    """Pull a heading fragment or blank into the next real block.
+
+    A thin tail with nothing after it extends the previous block. The
+    extension is only the thin text, so it may pass the token target by
+    that much rather than leaving a fragment passage behind.
+    """
+    if minimum <= 0:
+        return blocks
+    result: list[tuple[int, int, str, int | None]] = []
+    index = 0
+    while index < len(blocks):
+        start, end, kind, owner = blocks[index]
+        if not is_thin(text[start:end], minimum):
+            result.append(blocks[index])
+            index += 1
+            continue
+        absorbed_end = end
+        absorbed_kind = kind
+        nxt = index + 1
+        while nxt < len(blocks):
+            _n_start, n_end, n_kind, n_owner = blocks[nxt]
+            # A proof or table already starts where its claim starts.
+            # Pulling a heading into it would move that start.
+            if n_kind in _ATOMIC or n_owner != owner or _crosses(start, n_end, breaks):
+                break
+            absorbed_end = n_end
+            absorbed_kind = n_kind
+            nxt += 1
+            if not is_thin(text[start:absorbed_end], minimum):
+                break
+        if nxt == index + 1:
+            if (
+                result
+                and result[-1][3] == owner
+                and not _crosses(result[-1][0], end, breaks)
+            ):
+                prev_start, _, prev_kind, prev_owner = result[-1]
+                result[-1] = (prev_start, end, prev_kind, prev_owner)
+            else:
+                result.append(blocks[index])
+            index += 1
+            continue
+        for piece_start, piece_end, piece_kind in _split_oversized(
+            text, start, absorbed_end, absorbed_kind, target, count
+        ):
+            result.append((piece_start, piece_end, piece_kind, owner))
+        index = nxt
+    return result
+
+
 def segment(
     text: str,
     policy: PassagePolicy,
@@ -146,13 +280,23 @@ def segment(
     encode: Callable[[list[str]], Sequence[Sequence[float]]] | None = None,
     token_count: Callable[[str], int] | None = None,
     structure: tuple[ContainerSpan, ...] | None = None,
+    page_breaks: Sequence[int] | None = None,
 ) -> Segmentation:
     if not text.strip():
         return Segmentation((), (), False)
     count = token_count or (lambda value: len(value.encode("utf-8")) + 2)
     parents = structure if structure is not None else containers(text)
+    breaks = tuple(
+        sorted({point for point in (page_breaks or ()) if 0 < point < len(text)})
+    )
     cuts = sorted(
-        {0, len(text), *(c.start for c in parents), *(c.end for c in parents)}
+        {
+            0,
+            len(text),
+            *breaks,
+            *(c.start for c in parents),
+            *(c.end for c in parents),
+        }
     )
     blocks: list[tuple[int, int, str, int | None]] = []
     for start, end in zip(cuts, cuts[1:], strict=False):
@@ -164,7 +308,18 @@ def segment(
             ),
             None,
         )
-        blocks.extend((a, b, kind, owner) for a, b, kind in _blocks(text, start, end))
+        for block_start, block_end, kind in _blocks(
+            text, start, end, target_tokens=policy.target_tokens, token_count=count
+        ):
+            blocks.extend(
+                (piece_start, piece_end, piece_kind, owner)
+                for piece_start, piece_end, piece_kind in _split_oversized(
+                    text, block_start, block_end, kind, policy.target_tokens, count
+                )
+            )
+    blocks = _absorb_thin(
+        text, blocks, policy.min_alnum_chars, policy.target_tokens, count, breaks
+    )
     similarities: dict[int, float] = {}
     warning = None
     if policy.semantic_enabled and encode and len(blocks) > 1:
@@ -208,6 +363,7 @@ def segment(
             and previous.kind == kind == "passage"
             and continuous
             and count(text[previous.start : end]) <= policy.target_tokens
+            and not _crosses(previous.start, end, breaks)
         )
         if merge:
             passages[-1] = PassageSpan(

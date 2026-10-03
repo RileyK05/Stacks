@@ -42,6 +42,11 @@ class Settings(BaseModel):
     llm_api_key: str = Field(default="")
     llm_base_url: str = Field(default="")
     llm_model: str = Field(default="")
+    # Same idea for "Ask a bigger model", and only when that slot has no
+    # saved choice. Unset leaves the action unavailable.
+    llm_bigger_api_key: str = Field(default="")
+    llm_bigger_base_url: str = Field(default="")
+    llm_bigger_model: str = Field(default="")
     # Per-launch secret the desktop shell passes to the backend; when set,
     # every API request must carry it (plan §4). Empty in development.
     api_token: str = Field(default="")
@@ -71,6 +76,9 @@ def get_settings() -> Settings:
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_base_url=os.getenv("LLM_BASE_URL", ""),
         llm_model=os.getenv("LLM_MODEL", ""),
+        llm_bigger_api_key=os.getenv("LLM_BIGGER_API_KEY", ""),
+        llm_bigger_base_url=os.getenv("LLM_BIGGER_BASE_URL", ""),
+        llm_bigger_model=os.getenv("LLM_BIGGER_MODEL", ""),
         api_token=os.getenv("APP_API_TOKEN", ""),
         office_bridge_token=os.getenv("APP_OFFICE_TOKEN", ""),
         office_port=int(os.getenv("APP_OFFICE_PORT", str(DEFAULT_OFFICE_PORT))),

@@ -37,9 +37,13 @@ def main() -> int:
         OnnxEmbedder,
     )
 
-    torch_embed = SentenceTransformer(
-        "ibm-granite/granite-embedding-english-r2", device="cpu"
-    )
+    # The torch reference id is declared on the ONNX spec's `source_repo`,
+    # so the shipped graph and the parity check cannot name different
+    # models (T-21).
+    embedding_source = GRANITE_EMBEDDING_R2.torch_repo
+    reranker_source = MS_MARCO_MINILM_L6.torch_repo
+
+    torch_embed = SentenceTransformer(embedding_source, device="cpu")
     torch_embed = torch_embed.float()
     started = time.perf_counter()
     reference = torch_embed.encode(TEXTS, normalize_embeddings=True)
@@ -54,7 +58,7 @@ def main() -> int:
         f"(torch {torch_seconds:.2f}s, onnx {onnx_seconds:.2f}s)"
     )
 
-    torch_rerank = CrossEncoder("cross-encoder/ms-marco-MiniLM-L6-v2", device="cpu")
+    torch_rerank = CrossEncoder(reranker_source, device="cpu")
     pairs = [(QUERY, text) for text in TEXTS]
     ref_scores = np.asarray(torch_rerank.predict(pairs))
     onnx_scores = np.asarray(OnnxCrossEncoder(MS_MARCO_MINILM_L6).predict(pairs))

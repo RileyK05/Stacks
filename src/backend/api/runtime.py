@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.backend.runtime import hardware, model_store, user_models
 from src.backend.runtime.config import load_runtime_config
 from src.backend.runtime.server import RuntimeUnavailableError, get_server
@@ -94,6 +94,14 @@ class AddModelRequest(BaseModel):
     url: str | None = Field(default=None, max_length=500)
     file: str | None = Field(default=None, max_length=500)
     path: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> AddModelRequest:
+        if bool(self.url) == bool(self.path) or (self.path and self.file):
+            raise ValueError(
+                "choose either a model URL (with optional file) or a local path"
+            )
+        return self
 
 
 def _server_view() -> ServerView:
@@ -192,7 +200,10 @@ def delete_model(model_id: str) -> RuntimeView:
     if get_server().status().model_id == model_id:
         get_server().stop()
     if model.local_path is None:
-        model_store.delete_model(model)
+        try:
+            model_store.delete_model(model)
+        except ValueError as err:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(err)) from err
     if model.added_by_user:
         user_models.remove(model_id)
     return _overview()

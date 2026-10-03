@@ -11,6 +11,8 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import ipaddress
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -102,6 +104,20 @@ def issue(folder: Path, *, now: dt.datetime | None = None) -> CertPaths:
         )
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(
+            x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=False,
+                crl_sign=False,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
             x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False
         )
         .add_extension(
@@ -112,19 +128,34 @@ def issue(folder: Path, *, now: dt.datetime | None = None) -> CertPaths:
     )
     del ca_key
 
-    paths.key.write_bytes(
+    _atomic_write(
+        paths.key,
         key.private_bytes(
             serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8,
             serialization.NoEncryption(),
-        )
+        ),
     )
-    paths.cert.write_bytes(
+    _atomic_write(
+        paths.cert,
         leaf.public_bytes(serialization.Encoding.PEM)
-        + ca.public_bytes(serialization.Encoding.PEM)
+        + ca.public_bytes(serialization.Encoding.PEM),
     )
-    paths.ca.write_bytes(ca.public_bytes(serialization.Encoding.DER))
+    _atomic_write(paths.ca, ca.public_bytes(serialization.Encoding.DER))
     return paths
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-")
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def is_current(paths: CertPaths, *, now: dt.datetime | None = None) -> bool:
@@ -136,10 +167,17 @@ def is_current(paths: CertPaths, *, now: dt.datetime | None = None) -> bool:
     try:
         leaf = x509.load_pem_x509_certificate(paths.cert.read_bytes())
         ca = x509.load_der_x509_certificate(paths.ca.read_bytes())
+        key = serialization.load_pem_private_key(paths.key.read_bytes(), password=None)
         leaf.verify_directly_issued_by(ca)
-    except (ValueError, TypeError, InvalidSignature):
+        if key.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        ) != leaf.public_key().public_bytes(
+            serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+        ):
+            return False
+    except (OSError, ValueError, TypeError, InvalidSignature):
         return False
-    return leaf.not_valid_after_utc - RENEW_BEFORE > now
+    return leaf.not_valid_before_utc <= now < leaf.not_valid_after_utc - RENEW_BEFORE
 
 
 def ca_der(paths: CertPaths) -> bytes:

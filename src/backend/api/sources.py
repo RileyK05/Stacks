@@ -59,7 +59,18 @@ class SourceView(BaseModel):
     has_index: bool = False
     error_message: str | None
     size_bytes: int | None
+    pages_total: int | None = None
+    pages_empty: int | None = None
+    pages_low_quality: int | None = None
+    pages_ocr: int | None = None
+    chunk_count: int = 0
+    ingestion_stage: str | None = None
+    index_stale: bool = False
     created_at: datetime
+
+
+class SourceTypeUpdate(BaseModel):
+    source_type: SourceType
 
 
 class PassageView(BaseModel):
@@ -81,7 +92,7 @@ class PassageView(BaseModel):
 def upload_source(
     course_id: UUID,
     file: Annotated[UploadFile, File()],
-    source_type: Annotated[SourceType, Form()],
+    source_type: Annotated[SourceType | None, Form()] = None,
 ) -> SourceUploadView:
     declared = resolve_mime_type(file.filename or "", file.content_type)
     if declared not in INGESTABLE_MIME_TYPES:
@@ -117,6 +128,18 @@ def upload_source(
     # not the poll interval.
     worker_module.wakeup()
     return SourceUploadView.model_validate(result, from_attributes=True)
+
+
+@router.patch("/{course_id}/sources/{source_id}", response_model=SourceView)
+def update_source_type(
+    course_id: UUID, source_id: UUID, payload: SourceTypeUpdate
+) -> SourceView:
+    """Change only the label used in passage headers. The file is not reindexed."""
+    require_course(course_id)
+    updated = sources_repo.set_source_type(course_id, source_id, payload.source_type)
+    if updated is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
+    return SourceView.model_validate(updated, from_attributes=True)
 
 
 @router.get("/{course_id}/sources", response_model=list[SourceView])

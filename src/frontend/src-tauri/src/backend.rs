@@ -22,6 +22,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, State};
 
+use crate::library::BackendCell;
+
 const PORT_ANNOUNCEMENT: &str = "STACKS_PORT=";
 /// First launch applies migrations and loads the encoders; a slow laptop
 /// needs a while.
@@ -79,9 +81,15 @@ impl Backend {
         let status: SharedStatus = Arc::new((Mutex::new(Status::Starting), Condvar::new()));
         let log_dir = launch.log_dir.map(|dir| dir.display().to_string());
         let watcher = status.clone();
-        thread::Builder::new()
+        if let Err(err) = thread::Builder::new()
             .name("backend-stdout".into())
-            .spawn(move || watch_startup(stdout, token, log_dir, watcher))?;
+            .spawn(move || watch_startup(stdout, token, log_dir, watcher))
+        {
+            drop(stdin);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(err.into());
+        }
 
         Ok(Self {
             status,
@@ -93,13 +101,31 @@ impl Backend {
     fn wait_ready(&self) -> Result<BackendInfo, String> {
         let (lock, ready) = &*self.status;
         let mut status = lock.lock().map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + START_TIMEOUT + Duration::from_secs(15);
         loop {
             match &*status {
                 Status::Ready(info) => return Ok(info.clone()),
                 Status::Failed(reason) => return Err(reason.clone()),
-                Status::Starting => status = ready.wait(status).map_err(|e| e.to_string())?,
+                Status::Starting => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        *status = Status::Failed("the backend did not answer in time".into());
+                        ready.notify_all();
+                        continue;
+                    }
+                    status = ready
+                        .wait_timeout(status, remaining)
+                        .map_err(|e| e.to_string())?
+                        .0;
+                }
             }
         }
+    }
+
+    /// Same as `wait_ready`, for callers outside this module (the
+    /// activation coordinator in `library.rs`).
+    pub fn wait_ready_public(&self) -> Result<BackendInfo, String> {
+        self.wait_ready()
     }
 
     pub fn shutdown(&self) {
@@ -132,8 +158,12 @@ impl Backend {
 #[tauri::command]
 pub async fn backend_info(app: AppHandle) -> Result<BackendInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let backend: State<'_, Backend> = app.state();
-        backend.wait_ready()
+        let cell: State<'_, BackendCell> = app.state();
+        let guard = cell.0.lock().map_err(|e| e.to_string())?;
+        match guard.as_ref() {
+            Some(backend) => backend.wait_ready(),
+            None => Err("the backend is restarting".into()),
+        }
     })
     .await
     .map_err(|e| e.to_string())?
@@ -190,6 +220,28 @@ fn launch_command(app: &AppHandle) -> Result<Launch, Box<dyn std::error::Error>>
     })
 }
 
+/// The command that swaps a recovered backup into the data folder and
+/// exits (B-14). Same program as the normal backend, one-shot flag.
+pub fn activation_command(
+    app: &AppHandle,
+    backup_id: &str,
+) -> Result<Command, Box<dyn std::error::Error>> {
+    let launch = launch_command(app)?;
+    let mut command = launch.command;
+    command
+        .arg("--activate")
+        .arg(backup_id)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    Ok(command)
+}
+
 fn new_token() -> Result<String, getrandom::Error> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes)?;
@@ -198,29 +250,89 @@ fn new_token() -> Result<String, getrandom::Error> {
 
 fn watch_startup(stdout: impl Read, token: String, log_dir: Option<String>, status: SharedStatus) {
     let mut lines = BufReader::new(stdout).lines();
-    let port = lines.by_ref().map_while(Result::ok).find_map(|line| {
-        line.trim()
+    while let Some(line) = lines.next() {
+        let line = match line {
+            Ok(line) => line,
+            Err(err) => {
+                publish_status(
+                    &status,
+                    Status::Failed(failure(
+                        &format!("could not read backend startup: {err}"),
+                        &log_dir,
+                    )),
+                );
+                return;
+            }
+        };
+        if let Some(port) = line
+            .trim()
             .strip_prefix(PORT_ANNOUNCEMENT)
             .and_then(|port| port.parse::<u16>().ok())
-    });
-    let outcome = match port {
-        None => Status::Failed(failure("the backend exited before it started", &log_dir)),
-        Some(port) if wait_healthy(port, &token) => Status::Ready(BackendInfo {
-            url: format!("http://127.0.0.1:{port}"),
-            token,
-            log_dir: log_dir.clone(),
-        }),
-        Some(_) => Status::Failed(failure("the backend did not answer in time", &log_dir)),
-    };
-    let (lock, ready) = &*status;
-    if let Ok(mut current) = lock.lock() {
-        *current = outcome;
-        ready.notify_all();
+        {
+            let health_status = status.clone();
+            let health_logs = log_dir.clone();
+            if let Err(err) =
+                thread::Builder::new()
+                    .name("backend-health".into())
+                    .spawn(move || {
+                        let outcome = if wait_healthy(port, &token) {
+                            Status::Ready(BackendInfo {
+                                url: format!("http://127.0.0.1:{port}"),
+                                token,
+                                log_dir: health_logs.clone(),
+                            })
+                        } else {
+                            Status::Failed(failure(
+                                "the backend did not answer in time",
+                                &health_logs,
+                            ))
+                        };
+                        publish_status(&health_status, outcome);
+                    })
+            {
+                publish_status(
+                    &status,
+                    Status::Failed(failure(
+                        &format!("could not monitor backend startup: {err}"),
+                        &log_dir,
+                    )),
+                );
+            }
+            // Drain stdout while the health thread waits for startup.
+            for line in lines {
+                if let Err(err) = line {
+                    publish_status(
+                        &status,
+                        Status::Failed(failure(
+                            &format!("could not read backend output: {err}"),
+                            &log_dir,
+                        )),
+                    );
+                    return;
+                }
+            }
+            publish_status(
+                &status,
+                Status::Failed(failure(
+                    "the backend exited before it became ready",
+                    &log_dir,
+                )),
+            );
+            return;
+        }
     }
-    // Keep draining stdout so the backend never blocks on a full pipe.
-    for line in lines.map_while(Result::ok) {
-        if cfg!(debug_assertions) {
-            println!("[backend] {line}");
+    publish_status(
+        &status,
+        Status::Failed(failure("the backend exited before it started", &log_dir)),
+    );
+}
+
+fn publish_status(status: &SharedStatus, outcome: Status) {
+    let (lock, ready) = &**status;
+    if let Ok(mut current) = lock.lock() {
+        if matches!(*current, Status::Starting) {
+            *current = outcome;
+            ready.notify_all();
         }
     }
 }
@@ -264,5 +376,5 @@ fn healthy(port: u16, token: &str) -> bool {
     }
     let mut status_line = String::new();
     BufReader::new(stream).read_line(&mut status_line).is_ok()
-        && status_line.starts_with("HTTP/1.1 200")
+        && status_line.split_whitespace().nth(1) == Some("200")
 }

@@ -10,6 +10,7 @@ from src.backend.tutor.compose import (
     Intent,
     classify_intent,
     compose_answer,
+    numbered_passages,
     parse_json_object,
     workspace_schema,
 )
@@ -44,6 +45,7 @@ def _candidates(count: int = 2) -> tuple[Candidate, ...]:
         ("Write a Python function for the dot product", Intent.CODE),
         ("Make me a study guide for the midterm", Intent.DOCUMENT),
         ("Make me a cheat sheet", Intent.DOCUMENT),
+        ("Make me a study sheet", Intent.DOCUMENT),
         # Course vocabulary must not trigger a shape.
         ("What notation does the textbook use?", Intent.ANSWER),
         ("Explain the codomain", Intent.ANSWER),
@@ -61,6 +63,108 @@ def _candidates(count: int = 2) -> tuple[Candidate, ...]:
 )
 def test_classify_intent(question: str, intent: Intent) -> None:
     assert classify_intent(question) == intent
+
+
+def test_requested_ten_question_quiz_is_not_capped_at_six() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        assert (
+            response_schema["properties"]["item"]["properties"]["questions"]["maxItems"]
+            == 10
+        )
+        return json.dumps(
+            {
+                "reply": "Practice test",
+                "item": {
+                    "type": "quiz",
+                    "title": "Organizing",
+                    "questions": [
+                        {
+                            "prompt": f"Which group organized event {index}?",
+                            "options": [f"Group {index}", "Another group"],
+                            "answer": 0,
+                            "explanation": f"Group {index} organized the event.",
+                            "sources": [1],
+                        }
+                        for index in range(10)
+                    ],
+                },
+            }
+        )
+
+    result = compose_answer("Create a ten-question quiz", _candidates(), generate)
+    assert result.structured
+    assert (
+        len(extract_workspace_items(result.text, material_count=2).items[0].questions)
+        == 10
+    )
+
+
+def test_short_quiz_cannot_be_published_as_requested_full_suite() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Here is your full test",
+                "item": {
+                    "type": "quiz",
+                    "title": "Organizing",
+                    "questions": [
+                        {
+                            "prompt": "Which group was organized?",
+                            "options": ["Farm workers", "Railroad workers"],
+                            "answer": 0,
+                            "explanation": "Farm workers were organized.",
+                            "sources": [1],
+                        }
+                    ],
+                },
+            }
+        )
+
+    result = compose_answer("Create a quiz with 10 questions", _candidates(), generate)
+    assert not result.structured
+    assert "only 1 of the 10" in result.text
+    assert "workspace" not in result.text
+
+
+@pytest.mark.parametrize("kind,key", [("document", "content"), ("slides", "deck")])
+def test_title_only_study_material_is_withheld(kind: str, key: str) -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Done",
+                "item": {
+                    "type": kind,
+                    "title": "Organizing",
+                    key: "# Organizing",
+                    "sources": [1],
+                },
+            }
+        )
+
+    result = compose_answer(
+        "Make notes" if kind == "document" else "Make slides", _candidates(), generate
+    )
+    assert not result.structured
+
+
+def test_passage_header_names_the_source_type_and_container() -> None:
+    candidate = Candidate(
+        chunk_id=uuid4(),
+        source_id=uuid4(),
+        locator_id=uuid4(),
+        chunk_index=0,
+        text="Sánchez wrote this.",
+        layers=frozenset({"keyword"}),
+        rank=1.0,
+        source_filename="Week2.pdf",
+        source_type="lecture_slides",
+        container_title="Sep 21 lecture",
+    )
+    header = numbered_passages((candidate,)).splitlines()[0]
+    assert f"chunk {candidate.chunk_id}" in header
+    assert "Week2.pdf" in header
+    assert "lecture slides" in header
+    assert "Sep 21 lecture" in header
 
 
 def test_schema_bounds_citations_to_the_provided_material() -> None:

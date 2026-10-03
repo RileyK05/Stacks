@@ -59,6 +59,13 @@ class EvalResult:
     retrieved_labels: tuple[str, ...]
     layer_contribution: dict[str, int]
     per_seam_hits: dict[str, bool] = field(default_factory=dict)
+    # Precision at k: expected labels found / labels retrieved. Recall
+    # (`hit`) is all-or-nothing; precision shows how much a seam drags in
+    # (B-07) and is 0.0 when nothing relevant was retrieved.
+    precision: float = 0.0
+    # Reciprocal rank of the first expected label in the fused ranking
+    # (1.0 = the top result is relevant); 0.0 when none is present.
+    reciprocal_rank: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -70,10 +77,14 @@ class EvalSummary:
     best_single_seam: str
     best_single_recall: float
     fusion_beats_best_single: bool
+    mean_precision: float = 0.0
+    mean_reciprocal_rank: float = 0.0
 
     def __str__(self) -> str:
         lines = [
             f"fused recall@k: {self.fused_recall:.2f}",
+            f"fused precision@k: {self.mean_precision:.2f}, "
+            f"MRR: {self.mean_reciprocal_rank:.2f}",
             "seam recall@k: "
             + ", ".join(
                 f"{seam}={self.seam_recall.get(seam, 0.0):.2f}" for seam in SEAM_NAMES
@@ -94,14 +105,23 @@ def load_cases(path: Path = EVAL_DIR / "cases.json") -> list[EvalCase]:
     if not path.exists():
         return []
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return [
-        EvalCase(
-            question=case["question"],
-            course_tag=case["course_tag"],
-            expected_labels=tuple(case["expected_labels"]),
+    cases: list[EvalCase] = []
+    for case in raw["cases"]:
+        labels = tuple(case["expected_labels"])
+        if not labels:
+            # A case with no expected labels can never hit and would be
+            # scored a permanent miss (B-07): reject it at load instead.
+            raise ValueError(
+                f"retrieval case {case.get('question')!r} has no expected_labels"
+            )
+        cases.append(
+            EvalCase(
+                question=case["question"],
+                course_tag=case["course_tag"],
+                expected_labels=labels,
+            )
         )
-        for case in raw["cases"]
-    ]
+    return cases
 
 
 def _resolve_course(conn: Connection, course_tag: str) -> UUID | None:
@@ -114,13 +134,30 @@ def _resolve_course(conn: Connection, course_tag: str) -> UUID | None:
 def _labels_for_candidates(
     conn: Connection, candidates: tuple[Candidate, ...]
 ) -> frozenset[str]:
+    return frozenset(
+        label for labels in _candidate_labels(conn, candidates) for label in labels
+    )
+
+
+def _candidate_labels(
+    conn: Connection, candidates: tuple[Candidate, ...]
+) -> tuple[frozenset[str], ...]:
+    """Each candidate's locator labels, in candidate order (one query).
+    Used for reciprocal rank; a label list per candidate keeps rank tied
+    to the candidate position."""
     chunk_ids = [candidate.chunk_id for candidate in candidates]
     if not chunk_ids:
-        return frozenset()
+        return ()
     rows = conn.execute(
-        get("retrieval", "chunk_locator_labels"), {"chunk_ids": json_ids(chunk_ids)}
+        get("retrieval", "chunk_id_locator_labels"),
+        {"chunk_ids": json_ids(chunk_ids)},
     ).fetchall()
-    return frozenset(row["label"] for row in rows)
+    by_chunk: dict[UUID, list[str]] = {}
+    for row in rows:
+        by_chunk.setdefault(row["chunk_id"], []).append(row["label"])
+    return tuple(
+        frozenset(by_chunk.get(candidate.chunk_id, ())) for candidate in candidates
+    )
 
 
 def _top(seam: dict[UUID, Candidate], k: int) -> tuple[Candidate, ...]:
@@ -221,6 +258,19 @@ def run_eval(
             per_seam_hits[seam_name] = _hit(case.expected_labels, labels)
 
         fused_labels = _labels_for_candidates(conn, fused_candidates)
+        expected = set(case.expected_labels)
+        precision = (
+            len(expected & fused_labels) / len(fused_labels) if fused_labels else 0.0
+        )
+        # Reciprocal rank of the first relevant candidate in the fused
+        # order (a multi-label chunk counts at its position).
+        rank_hit = 0.0
+        for position, labels in enumerate(
+            _candidate_labels(conn, fused_candidates), start=1
+        ):
+            if labels & expected:
+                rank_hit = 1.0 / position
+                break
         results.append(
             EvalResult(
                 question=case.question,
@@ -229,6 +279,8 @@ def run_eval(
                 retrieved_labels=tuple(sorted(fused_labels)),
                 layer_contribution=layer_contribution,
                 per_seam_hits=per_seam_hits,
+                precision=precision,
+                reciprocal_rank=rank_hit,
             )
         )
 
@@ -241,6 +293,17 @@ def run_eval(
     )
     best_seam = max(seam_recall, key=lambda seam: seam_recall[seam])
     best_recall = seam_recall[best_seam]
+    mean_precision = (
+        sum(result.precision for result in resolved_results) / len(resolved_results)
+        if resolved_results
+        else 0.0
+    )
+    mean_mrr = (
+        sum(result.reciprocal_rank for result in resolved_results)
+        / len(resolved_results)
+        if resolved_results
+        else 0.0
+    )
     return EvalSummary(
         cases=tuple(results),
         unresolved_cases=tuple(unresolved),
@@ -249,4 +312,6 @@ def run_eval(
         best_single_seam=best_seam,
         best_single_recall=best_recall,
         fusion_beats_best_single=fused_recall > best_recall,
+        mean_precision=mean_precision,
+        mean_reciprocal_rank=mean_mrr,
     )

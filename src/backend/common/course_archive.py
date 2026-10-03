@@ -97,10 +97,14 @@ def _safe_filename(name: str) -> str:
 def _unique_path(directory: Path, stem: str) -> Path:
     candidate = directory / f"{stem}{EXTENSION}"
     counter = 2
-    while candidate.exists():
-        candidate = directory / f"{stem} ({counter}){EXTENSION}"
-        counter += 1
-    return candidate
+    while True:
+        try:
+            with candidate.open("xb"):
+                pass
+            return candidate
+        except FileExistsError:
+            candidate = directory / f"{stem} ({counter}){EXTENSION}"
+            counter += 1
 
 
 def export_course(course_id: UUID, directory: Path) -> ExportResult:
@@ -123,18 +127,21 @@ def export_course(course_id: UUID, directory: Path) -> ExportResult:
             for index, row in enumerate(rows, start=1):
                 filename = storage.sanitize_display_name(row["filename"])
                 path = f"sources/{index:04d}-{_safe_filename(filename)}"
-                data = storage.read_stored(
-                    course_id,
-                    row["source_id"],
-                    row["stored_encoding"],
-                    max_decompressed_bytes=policy.max_decompressed_bytes,
-                )
                 compression = (
                     zipfile.ZIP_DEFLATED
                     if storage.is_compressible(row["mime_type"])
                     else zipfile.ZIP_STORED
                 )
-                archive.writestr(path, data, compress_type=compression)
+                member = zipfile.ZipInfo(path)
+                member.compress_type = compression
+                with archive.open(member, "w", force_zip64=True) as output:
+                    for block in storage.iter_stored(
+                        course_id,
+                        row["source_id"],
+                        row["stored_encoding"],
+                        max_decompressed_bytes=policy.max_decompressed_bytes,
+                    ):
+                        output.write(block)
                 entries.append(
                     ArchiveSource(
                         path=path,
@@ -166,6 +173,7 @@ def export_course(course_id: UUID, directory: Path) -> ExportResult:
         partial.replace(target)
     except BaseException:
         partial.unlink(missing_ok=True)
+        target.unlink(missing_ok=True)
         raise
     return ExportResult(
         path=target, source_count=len(entries), size_bytes=target.stat().st_size
@@ -180,7 +188,11 @@ def _read_manifest(archive: zipfile.ZipFile) -> Manifest:
     if info.file_size > MAX_MANIFEST_BYTES:
         raise InvalidArchiveError("the manifest is too large")
     try:
-        raw = json.loads(archive.read(info))
+        with archive.open(info) as stream:
+            data = stream.read(MAX_MANIFEST_BYTES + 1)
+        if len(data) > MAX_MANIFEST_BYTES:
+            raise InvalidArchiveError("the manifest is too large")
+        raw = json.loads(data)
     except (ValueError, zipfile.BadZipFile) as err:
         raise InvalidArchiveError("the manifest is not valid JSON") from err
     if isinstance(raw, dict) and raw.get("format_version", 1) not in (1, 2):
@@ -267,11 +279,11 @@ def _checked_members(
 def _discard(course_id: UUID) -> None:
     """Remove a half-imported course completely, keepsake included: it
     never existed as far as the user is concerned."""
-    courses_repo.move_to_trash(course_id)
-    courses_repo.purge_course(course_id)
     with connection() as conn:
+        conn.execute(get("courses", "discard_import_course"), {"course_id": course_id})
         conn.execute(get("course_memory", "delete_memory"), {"course_id": course_id})
         conn.commit()
+    storage.remove_course_directory(course_id)
 
 
 def import_course(archive_path: Path) -> ImportResult:

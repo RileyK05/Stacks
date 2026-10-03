@@ -7,10 +7,10 @@ with the backend.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import socket
 import threading
+import time
 from pathlib import Path
 
 import uvicorn
@@ -29,6 +29,7 @@ class AddinHost:
         self._lock = threading.Lock()
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
+        self._sockets: list[socket.socket] = []
         self.port: int | None = None
 
     @property
@@ -56,8 +57,22 @@ class AddinHost:
                 name="office-addin-host",
                 daemon=True,
             )
-            thread.start()
             self._server, self._thread, self.port = server, thread, port
+            self._sockets = sockets
+            try:
+                thread.start()
+                deadline = time.monotonic() + _STOP_TIMEOUT
+                while (
+                    thread.is_alive()
+                    and not server.started
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+                if not server.started:
+                    raise OSError("the Office HTTPS host did not become ready")
+            except BaseException:
+                self._stop_locked()
+                raise
             _logger.info("Office add-in served on https://localhost:%s", port)
 
     def stop(self) -> None:
@@ -68,7 +83,15 @@ class AddinHost:
         if self._server is not None:
             self._server.should_exit = True
         if self._thread is not None:
-            self._thread.join(_STOP_TIMEOUT)
+            if self._thread.ident is not None:
+                self._thread.join(_STOP_TIMEOUT)
+            if self._thread.is_alive():
+                raise OSError(
+                    "the Office HTTPS host has not stopped; try again shortly"
+                )
+        for sock in self._sockets:
+            sock.close()
+        self._sockets = []
         self._server, self._thread, self.port = None, None, None
 
 
@@ -81,8 +104,10 @@ def _bind(port: int) -> list[socket.socket]:
         raise PortInUseError(
             f"port {port} is already in use (is another copy of Stacks running?)"
         ) from err
-    with contextlib.suppress(OSError):
+    try:
         sockets.append(_listen(socket.AF_INET6, "::1", port))
+    except OSError as err:
+        _logger.warning("Office IPv6 loopback is unavailable: %s", err)
     return sockets
 
 

@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -68,24 +69,24 @@ class ModelReport:
 
 
 def _seed_harness_course() -> None:
-    """The course + chunk that data/eval/answer/cases.json resolves."""
-    from tests.factories import add_chunk, make_course
+    """The course + chunks that data/eval/answer/cases.json resolves.
+    Seeding is production eval tooling (`evals/seed.py`), not a test
+    import (T-15)."""
+    from src.backend.evals.seed import seed_harness_course
 
-    course = make_course("harness-course")
-    add_chunk(
-        course.course_id,
-        "A linear transformation preserves addition and scalar multiplication.",
-        label="page 1",
-    )
-    add_chunk(
-        course.course_id,
-        "Scalar multiplication multiplies each vector coordinate by a scalar: "
-        "2(1, 3) = (2, 6). Vector addition adds corresponding coordinates. "
-        "For linearity, check T(u+v)=T(u)+T(v) and T(cu)=cT(u). "
-        "Practice idea: compute 3(2, -1), then check both properties for T(x)=2x. "
-        "Use a fresh vector to check your work independently.",
-        label="page 2",
-    )
+    seed_harness_course()
+
+
+def _model_dir_name(model: str) -> str:
+    """A filesystem-safe per-model folder name (T-14).
+
+    Model ids are endpoint identifiers, not paths: a documented cloud
+    example contains `/` and `:` (`inclusionai/ling-3.0-tiny:free`), and
+    `:` is illegal in a Windows path. Replace every character outside a
+    conservative allowlist so the report directory is creatable on all
+    three CI platforms."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", model).strip("._") or "model"
+    return safe[:120]
 
 
 def _seed_course(spec: str) -> None:
@@ -94,11 +95,11 @@ def _seed_course(spec: str) -> None:
 
     from src.backend.common import sources_repo
     from src.backend.common.schemas.base import SourceType
+    from src.backend.evals.seed import seed_course
     from src.backend.ingest import worker
-    from tests.factories import make_course
 
     name, _, paths = spec.partition("=")
-    course = make_course(name.strip())
+    course = seed_course(name.strip())
     for raw_path in paths.split(","):
         path = Path(raw_path.strip())
         mime = mimetypes.guess_type(path.name)[0] or "text/plain"
@@ -143,13 +144,19 @@ def _run_model(args: argparse.Namespace, model: str, run_dir: Path) -> ModelRepo
         report.output_tokens += output_tokens
         return text
 
+    judge = None
+    if args.semantic:
+        from src.backend.evals.judge import make_judge
+
+        judge = make_judge()
     with connection() as conn:
         summary = run_answer_eval(
             conn,
             generate=generate,
             cases_path=Path(args.cases) if args.cases else None,
-            log_dir=run_dir / model.replace("/", "_"),
+            log_dir=run_dir / _model_dir_name(model),
             answer_mode=args.answer_mode,
+            judge=judge,
         )
     for result in summary.cases:
         kind = report.by_kind.setdefault(result.kind, {"passed": 0, "total": 0})
@@ -188,6 +195,14 @@ def main(argv: list[str] | None = None) -> int:
         choices=["plain", "quotes"],
         default="plain",
         help="plain [n] citations, or verified quotes first (plan §6.2)",
+    )
+    parser.add_argument(
+        "--semantic",
+        action="store_true",
+        help=(
+            "also run the independently reviewed semantic cases, scored by "
+            "a model judge (B-06); off by default so a run is deterministic"
+        ),
     )
     args = parser.parse_args(argv)
     if bool(args.model) == bool(args.runtime_model):

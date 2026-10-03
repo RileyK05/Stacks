@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "test": "tsx --test --test-concurrency=1 src/lib/stores/artifactDrafts.test.ts src/lib/stores/workspaceRecovery.behavior.test.mjs src/lib/stores/artifactRecovery.behavior.test.mjs src/lib/stores/practice.behavior.test.mjs src/lib/stores/mindMap.test.ts src/lib/stores/mapStudy.behavior.test.mjs",
+    "test": "tsx --test --test-concurrency=1 src/lib/utils/render.test.ts src/lib/stores/artifactDrafts.test.ts src/lib/stores/workspaceRecovery.behavior.test.mjs src/lib/stores/artifactRecovery.behavior.test.mjs src/lib/stores/practice.behavior.test.mjs src/lib/stores/mindMap.test.ts src/lib/stores/mapStudy.behavior.test.mjs",
     "gen:api": "tsx scripts/gen-api.ts",
     "tauri": "tauri",
     "desktop": "tauri dev"

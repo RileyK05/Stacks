@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 
 from src.backend.evals.answer import (
+    SEMANTIC_KINDS,
     AnswerCase,
     _score,
     citation_validity,
     load_answer_cases,
+    load_semantic_cases,
     refusal_check,
     run_answer_eval,
     steer_check,
@@ -314,6 +316,8 @@ def test_prompt_registry_serves_tutor_prompt() -> None:
     assert "course tutor" in text.lower()
     assert "[1]" in text, "citation form is spelled out, not a [n] placeholder"
     assert "only" in text.lower() and "material" in text.lower()
+    assert "$15 million" in text
+    assert "as quoted in" in text
 
 
 # Real answers from the Phase 0 bake-off (MiniCPM5-2B, 2026-09-25) that the
@@ -371,3 +375,87 @@ def test_second_person_cant_answer_is_not_a_refusal() -> None:
     ("if you feel you can't answer a question...") scored as a refusal."""
     assert not refusal_check("If you feel you can't answer a question, email me.")[0]
     assert refusal_check("I can't answer that from the course material.")[0]
+
+
+def test_declared_expectation_keys_are_enforced() -> None:
+    """B-06: must_refuse/steer_required/workspace_required used to be
+    documentation the scorer ignored. Now they fail a mismatched answer."""
+    refusing = _case(
+        "green_grounded",
+        expectation={"must_refuse": True, "citations_required": False},
+    )
+    passed, detail = _score(refusing, "Here is the answer [1].", ("material",))
+    assert not passed and "refusal" in detail
+    passed, _ = _score(refusing, "I cannot answer that.", ("material",))
+    assert passed
+
+    steering = _case("green_grounded", expectation={"steer_required": True})
+    passed, detail = _score(steering, "Here you go [1].", ("material",))
+    assert not passed and "steering" in detail
+
+
+def test_unknown_expectation_key_fails_at_load(tmp_path) -> None:
+    """A typo'd or unimplemented expectation key must not silently do
+    nothing (B-06)."""
+    import json as _json
+
+    cases = tmp_path / "cases.json"
+    cases.write_text(
+        _json.dumps(
+            {
+                "cases": [
+                    {
+                        "id": "typo",
+                        "kind": "green_grounded",
+                        "course_tag": "c",
+                        "question": "q",
+                        "seed_chunk_labels": [],
+                        "expectation": {"must_refuse": True, "must-refuse": True},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError, match="unknown expectation keys"):
+        load_answer_cases(cases)
+
+
+def test_semantic_case_without_judge_fails_closed() -> None:
+    """A semantic case scored with no judge is a failure, never a silent
+    pass (B-06)."""
+    case = _case("semantic_grounded", expectation={"rubric": "x"})
+    passed, detail = _score(case, "anything", ("material",))
+    assert not passed and "requires a judge" in detail
+
+
+def test_semantic_runner_uses_the_injected_judge(tmp_path) -> None:
+    """The judge seam is wired: run_answer_eval with a judge scores the
+    committed semantic cases and includes them in the report (B-06)."""
+    from src.backend.common.db import connection
+
+    _harness_course()
+    judged: list[str] = []
+
+    def judge(case, answer_text, chunk_texts):
+        judged.append(case.id)
+        return True, "judge: PASS: scripted"
+
+    with connection() as conn:
+        summary = run_answer_eval(
+            conn, generate=ScriptedGenerate(), log_dir=tmp_path, judge=judge
+        )
+    assert judged, "the semantic cases ran through the judge"
+    assert all(
+        result.passed for result in summary.cases if result.kind.startswith("semantic")
+    ), str(summary)
+    assert summary.all_passed, str(summary)
+
+
+def test_semantic_cases_load_only_with_known_kinds() -> None:
+    cases = load_semantic_cases()
+    assert cases, "the committed semantic case file must not be empty"
+    assert all(case.kind in SEMANTIC_KINDS for case in cases)
+    assert all(case.expectation.get("rubric") for case in cases)

@@ -35,6 +35,12 @@
   let question = $state('');
   let input = $state<HTMLTextAreaElement | null>(null);
   let end = $state<HTMLElement | null>(null);
+  let composerNotice = $state('');
+  const replyAnchors = new Map<Turn, HTMLElement>();
+  function replyAnchor(node: HTMLElement, turn: Turn) {
+    replyAnchors.set(turn, node);
+    return { destroy: () => replyAnchors.delete(turn) };
+  }
 
   const starterPrompts: { text: string; icon: IconName }[] = [
     { text: 'Summarize the main ideas so far', icon: 'book' },
@@ -49,10 +55,11 @@
   }
 
   async function finish(turn: Turn) {
-    await scrollToEnd();
     // The student may have opened another chat while this one was thinking.
     const index = chats.turns.indexOf(turn);
     if (index !== -1 && turn.workspace.length > 0) onopenworkspace(index);
+    await tick();
+    replyAnchors.get(turn)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
   async function send(text: string, bigger = false) {
@@ -71,7 +78,12 @@
   function submit(event: SubmitEvent) {
     event.preventDefault();
     // Keep what was typed while a reply is still coming.
-    if (chats.sending || !question.trim()) return;
+    if (chats.sending) {
+      composerNotice = 'Your message has not been sent. Wait for the current reply, then send it.';
+      return;
+    }
+    if (!question.trim()) return;
+    composerNotice = '';
     const text = question;
     question = '';
     // The textarea only shrinks back once its cleared value is rendered.
@@ -164,7 +176,7 @@
     </div>
   {:else}
     <div class="flex scroll-mb-40 flex-col gap-8">
-      {#each chats.turns as turn, index (index)}
+      {#each chats.turns as turn, index (turn)}
         <article class="flex animate-rise flex-col gap-4">
           <div class="flex justify-end">
             <p class="max-w-[85%] whitespace-pre-wrap [overflow-wrap:anywhere] rounded-2xl rounded-tr-md bg-accent-soft px-4 py-2.5 text-[15px] leading-relaxed text-fg">
@@ -172,7 +184,7 @@
             </p>
           </div>
 
-          <div class="flex gap-3">
+          <div class="flex gap-3" use:replyAnchor={turn}>
             <span class="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-accent text-on-accent shadow-card" aria-hidden="true">
               <Icon name="sparkles" class="h-4 w-4" />
             </span>
@@ -206,7 +218,7 @@
                 </p>
               {:else}
                 {#if turn.answer}
-                  <RichText text={turn.answer} class="prose-p:leading-relaxed text-[15px]" />
+                  <RichText text={turn.answer} sources={turn.citations} class="prose-p:leading-relaxed text-[15px]" />
                 {/if}
                 {#if turn.fellBackToLocal}
                   <p class="inline-flex items-center gap-1.5 self-start rounded-lg bg-warning-soft px-2.5 py-1 text-xs text-warning-text">
@@ -226,16 +238,27 @@
                       {turn.bigger ? `Bigger model · ${turn.model}` : turn.model}
                     </span>
                   {/if}
-                  {#if biggerModel && !turn.bigger && turn.answer}
-                    <button
-                      type="button"
-                      class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50"
-                      disabled={chats.sending}
-                      onclick={() => send(turn.question, true)}
-                      title="Ask this question again with the bigger model chosen in Settings"
-                    >
-                      <Icon name="arrow-up" class="h-3.5 w-3.5" /> Ask a bigger model ({biggerModel})
-                    </button>
+                  {#if !turn.bigger && turn.answer}
+                    {#if biggerModel}
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-muted transition-colors hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+                        disabled={chats.sending}
+                        onclick={() => send(turn.question, true)}
+                        title="Ask this question again with the bigger model chosen in Settings"
+                      >
+                        <Icon name="arrow-up" class="h-3.5 w-3.5" /> Ask a bigger model ({biggerModel})
+                      </button>
+                    {:else}
+                      <button
+                        type="button"
+                        class="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-subtle"
+                        disabled
+                        title="Set a bigger model under Settings → Models, or with LLM_BIGGER_BASE_URL, LLM_BIGGER_MODEL, and LLM_BIGGER_API_KEY in development."
+                      >
+                        <Icon name="arrow-up" class="h-3.5 w-3.5" /> Ask a bigger model
+                      </button>
+                    {/if}
                   {/if}
                 </div>
 
@@ -301,7 +324,7 @@
                           <li class="px-3.5 py-3">
                             <div class="flex min-w-0 items-center gap-2 text-xs">
                               <span class="flex h-5 min-w-5 items-center justify-center rounded-md bg-accent-soft px-1 font-mono text-[11px] font-medium text-accent-text">
-                                {citeIndex + 1}
+                                {citation.marker ?? citeIndex + 1}
                               </span>
                               <a class="truncate font-medium text-accent-text hover:underline" href={`/courses/${chats.courseId}/sources/${citation.source_id}?chunk=${citation.chunk_id}`} title="Open cited passage">{citation.filename}</a>
                               <span class="shrink-0 text-subtle">{citation.label}</span>
@@ -315,7 +338,7 @@
                             {#each citation.generated_materials ?? [] as material}
                               <p class="mt-1.5 text-xs text-muted">Found through saved material: {material.title}. The evidence below is from the original source.</p>
                             {/each}
-                            <p class="mt-2 border-l-2 border-line-strong pl-3 text-[13px] leading-relaxed text-muted">
+                            <p class="mt-2 whitespace-pre-line [overflow-wrap:anywhere] border-l-2 border-line-strong pl-3 text-[13px] leading-relaxed text-muted">
                               {citation.text}
                             </p>
                           </li>
@@ -342,6 +365,7 @@
   <div bind:this={end}></div>
 
   <form onsubmit={submit} class="sticky bottom-0 z-10 mt-6 bg-gradient-to-t from-bg from-60% to-transparent pb-4 pt-4">
+    {#if composerNotice}<p role="status" class="mb-2 text-sm text-muted">{composerNotice}</p>{/if}
     <label for="question" class="sr-only">Question</label>
     <div class="flex items-end gap-2 rounded-2xl border border-line-strong bg-surface p-1.5 pl-4 shadow-lift transition-[border-color,box-shadow] focus-within:border-accent focus-within:ring-3 focus-within:ring-accent/15">
       <textarea

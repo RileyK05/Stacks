@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from src.backend.common import provider, providers
 from src.backend.common.conversations_repo import Conversation, Message
+from src.backend.common.db import connection
 from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.tutor import chat
 from src.backend.tutor.compose import (
@@ -252,11 +253,48 @@ def test_what_is_this_course_about_reads_a_spread_of_every_source(
     prompt = str(calls[0]["prompt"])
     assert all(name in prompt for name in ("alpha source", "beta source", "gamma"))
     answer = turn.json()["reply"]["answer"]
-    assert len(answer["chunk_ids"]) == 3 and answer["trace_id"]
+    assert answer["trace_id"]
     citations = client.get(
         f"/courses/{course_id}/traces/{answer['trace_id']}/citations"
     ).json()
-    assert len(citations) == 3
+    # The reply cites [1] only. The trace still kept every source it read.
+    assert len(citations) == 1 and citations[0]["marker"] == 1
+    assert answer["chunk_ids"] == [citations[0]["chunk_id"]]
+    with connection() as conn:
+        payload = conn.execute(
+            "SELECT retrieved_chunk_ids FROM retrieval_traces WHERE trace_id = ?",
+            (answer["trace_id"],),
+        ).fetchone()["retrieved_chunk_ids"]
+    assert len(payload["chunk_ids"]) == 3
+
+
+def test_cited_marker_is_kept_when_other_passages_were_retrieved(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course_id = _course(
+        client,
+        *(f"passage {index} states the variance formula." for index in range(1, 5)),
+    )
+    configure_test_provider(monkeypatch, "Only the second passage [2].")
+    chat_id = _chat(client, course_id)
+    turn = _send(client, course_id, chat_id, "What is the variance formula?")
+    assert turn.status_code == 200, turn.text
+    answer = turn.json()["reply"]["answer"]
+    citations = client.get(
+        f"/courses/{course_id}/traces/{answer['trace_id']}/citations"
+    ).json()
+    with connection() as conn:
+        payload = conn.execute(
+            "SELECT retrieved_chunk_ids FROM retrieval_traces WHERE trace_id = ?",
+            (answer["trace_id"],),
+        ).fetchone()["retrieved_chunk_ids"]
+    assert len(payload["chunk_ids"]) >= 2
+    assert payload["citation_markers"] == [2]
+    assert payload["cited_chunk_ids"] == [payload["chunk_ids"][1]]
+    assert answer["chunk_ids"] == payload["cited_chunk_ids"]
+    assert len(citations) == 1
+    assert citations[0]["marker"] == 2
+    assert citations[0]["chunk_id"] == payload["chunk_ids"][1]
 
 
 def test_a_study_guide_with_no_subject_is_built_from_the_whole_course(

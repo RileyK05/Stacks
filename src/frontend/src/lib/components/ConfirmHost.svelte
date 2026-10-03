@@ -9,7 +9,29 @@
   // Focus lands on the dialog, so Enter cannot re-press the button that
   // opened it, and Tab stays inside.
   function focusDialog(node: HTMLElement) {
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    function trapTab(event: KeyboardEvent) {
+      if (event.key !== 'Tab') return;
+      const controls = [...node.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')]
+        .filter((control) => control.getClientRects().length > 0);
+      const first = controls[0], last = controls.at(-1);
+      if (!first || !last) {
+        event.preventDefault();
+        node.focus();
+      } else if (event.shiftKey && (document.activeElement === first || document.activeElement === node)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === node)) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    node.addEventListener('keydown', trapTab);
     node.focus();
+    return { destroy() {
+      node.removeEventListener('keydown', trapTab);
+      if (previous?.isConnected) previous.focus();
+    } };
   }
 </script>
 

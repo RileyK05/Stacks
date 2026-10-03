@@ -15,7 +15,9 @@ ORDER BY conversation.updated_at DESC;
 -- name: get
 SELECT conversation.conversation_id, conversation.course_id, conversation.title,
        conversation.model_choice, conversation.source_ids, conversation.summary,
-       conversation.summary_through, conversation.created_at, conversation.updated_at,
+       conversation.summary_through, conversation.scope_revised_seq,
+       conversation.scope_revised_ids, conversation.created_at,
+       conversation.updated_at,
        (SELECT COUNT(*) FROM messages AS message
         WHERE message.conversation_id = conversation.conversation_id) AS message_count
 FROM conversations AS conversation
@@ -27,10 +29,21 @@ INSERT INTO conversations (conversation_id, course_id, title)
 VALUES (:conversation_id, :course_id, :title);
 
 -- name: update
+-- `:scope_changed` is decided by the caller (it can compare parsed UUIDs,
+-- not just JSON text): when set, record a scope revision at the current
+-- message seq so turns before it are summarized as topic-only (B-02).
 UPDATE conversations
 SET title = :title,
     model_choice = :model_choice,
     source_ids = :source_ids,
+    scope_revised_seq = CASE
+        WHEN :scope_changed THEN
+            (SELECT COALESCE(MAX(seq), 0) FROM messages
+             WHERE conversation_id = :conversation_id)
+        ELSE scope_revised_seq END,
+    scope_revised_ids = CASE
+        WHEN :scope_changed THEN :source_ids
+        ELSE scope_revised_ids END,
     updated_at = now_utc()
 WHERE conversation_id = :conversation_id AND course_id = :course_id;
 
@@ -63,7 +76,8 @@ FROM messages WHERE conversation_id = :conversation_id;
 
 -- name: add_message
 INSERT INTO messages (message_id, conversation_id, seq, role, text, trace_id, payload)
-VALUES (:message_id, :conversation_id, :seq, :role, :text, :trace_id, :payload);
+VALUES (:message_id, :conversation_id, :seq, :role, :text, :trace_id, :payload)
+RETURNING message_id, conversation_id, seq, role, text, trace_id, payload, created_at;
 
 -- name: message_in_course
 SELECT message.message_id, message.conversation_id, message.seq, message.role,

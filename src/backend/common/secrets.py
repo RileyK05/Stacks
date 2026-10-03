@@ -5,11 +5,19 @@ or a plaintext file. One entry per provider preset."""
 from __future__ import annotations
 
 import logging
-from contextlib import suppress
 
 logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "course-assistant"
+
+
+class CredentialStoreUnavailableError(RuntimeError):
+    def __init__(self) -> None:
+        super().__init__(
+            "The OS credential store is unavailable. "
+            "Unlock or enable your system keychain, then retry. "
+            "Your saved keys have not been reported as missing."
+        )
 
 
 def get_api_key(provider: str) -> str | None:
@@ -17,20 +25,26 @@ def get_api_key(provider: str) -> str | None:
         import keyring
 
         return keyring.get_password(SERVICE_NAME, provider)
-    except Exception:
+    except Exception as err:
         logger.exception("could not read the %s key from the OS keyring", provider)
-        return None
+        raise CredentialStoreUnavailableError() from err
 
 
 def set_api_key(provider: str, key: str) -> None:
-    import keyring
+    try:
+        import keyring
 
-    keyring.set_password(SERVICE_NAME, provider, key)
+        keyring.set_password(SERVICE_NAME, provider, key)
+    except Exception as err:
+        raise CredentialStoreUnavailableError() from err
 
 
 def delete_api_key(provider: str) -> None:
-    import keyring
-    from keyring.errors import PasswordDeleteError
+    if get_api_key(provider) is None:
+        return
+    try:
+        import keyring
 
-    with suppress(PasswordDeleteError):
         keyring.delete_password(SERVICE_NAME, provider)
+    except Exception as err:
+        raise CredentialStoreUnavailableError() from err

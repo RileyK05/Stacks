@@ -199,6 +199,151 @@ def test_trace_citations_happy_path(
     assert citation["chunk_index"] == 0
 
 
+def test_new_quiz_cannot_attribute_success_to_teaching_in_another_chat(
+    client, monkeypatch
+):
+    import json
+    from uuid import uuid4
+
+    from src.backend.common.db import connection
+    from src.backend.common.queries import get
+    from src.backend.student_model import learning
+
+    course_id = _seeded_course(client)
+    with connection() as conn:
+        source = conn.execute("SELECT source_id FROM sources").fetchone()["source_id"]
+        conn.execute(
+            get("learning", "teach"),
+            {
+                "event_id": uuid4(),
+                "course_id": course_id,
+                "method": "analogy",
+                "source_ids": json.dumps([str(source)]),
+                "trace_ref": str(uuid4()),
+                "excerpt": "An unrelated conversation about the same source.",
+            },
+        )
+        conn.commit()
+    configure_test_provider(
+        monkeypatch,
+        (
+            'Practice [1].\n```workspace\n{"type":"quiz","questions":[{"prompt":'
+            '"Which property is preserved?","options":["Addition","Lengths"],'
+            '"answer":0,"sources":[1]}]}\n```'
+        ),
+    )
+    response = _ask(client, course_id)
+    assert response.status_code == 200, response.text
+    suite_id = response.json()["workspace"][0]["practice_id"]
+    with connection() as conn:
+        test = learning.suite(conn, course_id, suite_id)
+    assert test.method is None
+    assert test.origin["teaching_context"] is None
+
+
+def test_citation_label_follows_the_window_not_the_first_page(
+    client: TestClient,
+) -> None:
+    """A chunk that spans three pages is labeled by the window that was read."""
+    import json
+    from uuid import uuid4
+
+    from src.backend.retrieval.labels import label_for_window
+
+    course_id = _course(client)
+    source_id, chunk_id = uuid4(), uuid4()
+    pages = [uuid4() for _ in range(3)]
+    text = ("one" * 16)[:16] + ("two" * 16)[:16] + ("three" * 16)[:16]
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO sources (source_id, course_id, filename, mime_type,"
+            " source_type, uri, status, file_hash, size_bytes, stored_encoding)"
+            " VALUES (?, ?, 'week6.pdf', 'application/pdf', 'notes', 'disk://x',"
+            " 'indexed', ?, 10, 'identity')",
+            (source_id, course_id, uuid4().hex),
+        )
+        for index, locator_id in enumerate(pages):
+            conn.execute(
+                "INSERT INTO locators (locator_id, source_id, locator_type, start,"
+                " end_value, label) VALUES (?, ?, 'page', ?, ?, ?)",
+                (
+                    locator_id,
+                    source_id,
+                    str(index * 16),
+                    str((index + 1) * 16),
+                    f"page {index + 1}",
+                ),
+            )
+        conn.execute(
+            "INSERT INTO chunks (chunk_id, source_id, locator_id, chunk_index, text,"
+            " char_start, char_end) VALUES (?, ?, ?, 0, ?, 0, ?)",
+            (chunk_id, source_id, pages[0], text, len(text)),
+        )
+        conn.executemany(
+            "INSERT INTO chunk_locators (chunk_id, locator_id) VALUES (?, ?)",
+            [(chunk_id, locator_id) for locator_id in pages],
+        )
+        spans = (
+            (index * 16, (index + 1) * 16, f"page {index + 1}") for index in range(3)
+        )
+        assert (
+            label_for_window(
+                tuple(spans),
+                chunk_start=0,
+                chunk_end=len(text),
+                window_start=32,
+                window_end=48,
+                partial=True,
+                fallback="page 1",
+            )
+            == "page 3"
+        )
+        assert (
+            label_for_window(
+                tuple(
+                    (index * 16, (index + 1) * 16, f"page {index + 1}")
+                    for index in range(3)
+                ),
+                chunk_start=0,
+                chunk_end=len(text),
+                window_start=0,
+                window_end=16,
+                partial=True,
+                fallback="page 1",
+            )
+            == "page 1"
+        )
+        trace_id = uuid4()
+        conn.execute(
+            "INSERT INTO retrieval_traces"
+            " (trace_id, course_id, query, retrieved_chunk_ids)"
+            " VALUES (?, ?, 'q5', ?)",
+            (
+                trace_id,
+                course_id,
+                json.dumps(
+                    {
+                        "chunk_ids": [str(chunk_id)],
+                        "per_chunk_layers": [
+                            {
+                                "chunk_id": str(chunk_id),
+                                "partial": True,
+                                "char_start": 32,
+                                "char_end": 48,
+                            }
+                        ],
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+    response = client.get(f"/courses/{course_id}/traces/{trace_id}/citations")
+    assert response.status_code == 200, response.text
+    [citation] = response.json()
+    assert citation["label"] == "page 3"
+    assert citation["text"] == text[32:48]
+
+
 def test_trace_citations_rejects_foreign_trace(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

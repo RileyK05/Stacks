@@ -8,6 +8,7 @@ remembered (keyed by path, size and mtime) so it never re-hashes."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -27,10 +28,16 @@ from src.backend.runtime.downloads import (
 logger = logging.getLogger(__name__)
 
 VERIFIED_SETTING = "runtime.verified_external_models"
+_verification_lock = threading.RLock()
 
 
 def models_dir() -> Path:
     return Path(get_settings().data_dir) / "models"
+
+
+def owned_path(model: CatalogModel) -> Path:
+    identity = hashlib.sha256(model.id.encode()).hexdigest()[:16]
+    return models_dir() / f"{identity}-{model.sha256}" / Path(model.file).name
 
 
 def _external_roots() -> list[Path]:
@@ -43,7 +50,7 @@ def _external_roots() -> list[Path]:
 
 def _fingerprint(path: Path) -> str:
     stat = path.stat()
-    return f"{stat.st_size}:{int(stat.st_mtime)}"
+    return f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}"
 
 
 def _external_candidates(model: CatalogModel) -> list[Path]:
@@ -66,10 +73,21 @@ def locate(model: CatalogModel, *, verify: bool) -> tuple[Path | None, str]:
     `verify=False` stays instant, for listings. A model the user added from
     a file on this computer is used where it is, if it is unchanged."""
     if model.local_path is not None:
-        return _added_local_file(model)
-    own = models_dir() / Path(model.file).name
-    if own.is_file() and own.stat().st_size == model.size_bytes:
+        return _added_local_file(model, verify=verify)
+    own = owned_path(model)
+    if (
+        own.is_file()
+        and own.stat().st_size == model.size_bytes
+        and (not verify or _verified(own, model))
+    ):
         return own, "app"
+    legacy = models_dir() / Path(model.file).name
+    if (
+        legacy.is_file()
+        and legacy.stat().st_size == model.size_bytes
+        and (not verify or _verified(legacy, model))
+    ):
+        return legacy, "app"
     remembered: dict[str, Any] = settings_repo.get_setting(VERIFIED_SETTING, {}) or {}
     unverified: Path | None = None
     for candidate in _external_candidates(model):
@@ -81,17 +99,39 @@ def locate(model: CatalogModel, *, verify: bool) -> tuple[Path | None, str]:
             continue
         if sha256_of(candidate) == model.sha256:
             remembered[str(candidate)] = record
-            settings_repo.put_setting(VERIFIED_SETTING, remembered)
+            with _verification_lock:
+                latest = settings_repo.get_setting(VERIFIED_SETTING, {}) or {}
+                latest[str(candidate)] = record
+                settings_repo.put_setting(VERIFIED_SETTING, latest)
             return candidate, "external"
     if unverified is not None:
         return unverified, "external-unverified"
     return None, "missing"
 
 
-def _added_local_file(model: CatalogModel) -> tuple[Path | None, str]:
+def _verified(path: Path, model: CatalogModel) -> bool:
+    before = _fingerprint(path)
+    record = {"sha256": model.sha256, "fingerprint": before}
+    remembered = settings_repo.get_setting(VERIFIED_SETTING, {}) or {}
+    if remembered.get(str(path)) == record:
+        return True
+    if sha256_of(path) != model.sha256 or _fingerprint(path) != before:
+        return False
+    with _verification_lock:
+        latest = settings_repo.get_setting(VERIFIED_SETTING, {}) or {}
+        latest[str(path)] = record
+        settings_repo.put_setting(VERIFIED_SETTING, latest)
+    return True
+
+
+def _added_local_file(model: CatalogModel, *, verify: bool) -> tuple[Path | None, str]:
     assert model.local_path is not None
     path = Path(model.local_path)
-    if path.is_file() and path.stat().st_size == model.size_bytes:
+    if (
+        path.is_file()
+        and path.stat().st_size == model.size_bytes
+        and (not verify or _verified(path, model))
+    ):
         return path, "external"
     return None, "missing"
 
@@ -158,7 +198,7 @@ def _run_download(model: CatalogModel, state: DownloadState) -> None:
     try:
         download_verified(
             model.download_url,
-            models_dir() / Path(model.file).name,
+            owned_path(model),
             sha256=model.sha256,
             size_bytes=model.size_bytes,
             progress=progress,
@@ -176,9 +216,18 @@ def _run_download(model: CatalogModel, state: DownloadState) -> None:
 
 def delete_model(model: CatalogModel) -> bool:
     """Delete the app's own copy (never a file in another app's folder)."""
-    own = models_dir() / Path(model.file).name
+    own = owned_path(model)
+    legacy = models_dir() / Path(model.file).name
     removed = False
-    for path in (own, own.with_name(own.name + ".part")):
+    paths = [own, own.with_name(own.name + ".part")]
+    if legacy.is_file() and sha256_of(legacy) == model.sha256:
+        paths.append(legacy)
+    with _lock:
+        state = _downloads.get(model.id)
+        if state is not None and state.status in ("downloading", "verifying"):
+            raise ValueError("Cancel the download before removing this model.")
+        _downloads.pop(model.id, None)
+    for path in paths:
         if path.exists():
             path.unlink()
             removed = True

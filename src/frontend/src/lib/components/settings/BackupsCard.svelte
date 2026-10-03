@@ -1,5 +1,7 @@
 <script lang="ts">
+  import { isTauri } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
+  import { activateBackup } from '$lib/api/backend';
   import { api } from '$lib/api/client';
   import type { components } from '$lib/api/schema';
   import Button from '$lib/components/Button.svelte';
@@ -15,6 +17,10 @@
   let busy = $state(false);
   let error = $state<unknown>(null);
   let recovered = $state<components['schemas']['RecoverView'] | null>(null);
+  let activating = $state(false);
+  let notice = $state('');
+  let activeBackupId = $state('');
+  const isTauriApp = isTauri();
 
   onMount(() => { void load(); });
 
@@ -64,9 +70,27 @@
       const result = await api.POST('/settings/backups/recover', { body: { backup_id: backupId } });
       if (result.error || !result.data) throw result.error ?? new Error('Could not recover this backup.');
       recovered = result.data;
+      activeBackupId = backupId;
       error = null;
     } catch (caught) { error = caught; }
     finally { busy = false; }
+  }
+
+  async function activate(backupId: string) {
+    if (activating) return;
+    activating = true;
+    notice = '';
+    try {
+      const outcome = await activateBackup(backupId);
+      notice = outcome.message;
+      if (outcome.ok) {
+        toast('Backup activated. Reloading…');
+        // The backend restarted against the recovered library; reload so
+        // every view fetches data from the new library.
+        setTimeout(() => window.location.reload(), 800);
+      }
+    } catch (caught) { error = caught; }
+    finally { activating = false; }
   }
 
   async function reveal(path: string) {
@@ -124,14 +148,28 @@
         <p>Recovered files are ready in a separate folder. Your current library is still active.</p>
         <p class="mt-2 break-all">{recovered.data_dir}</p>
         <p class="mt-2">{recovered.instructions}</p>
-        <Button variant="secondary" size="sm" onclick={() => recovered && reveal(recovered.data_dir)}>Open recovered folder</Button>
+        <div class="mt-3 flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onclick={() => recovered && reveal(recovered.data_dir)}>Open recovered folder</Button>
+          <Button size="sm" disabled={activating} onclick={() => activate(activeBackupId)}>
+            {activating ? 'Activating…' : 'Activate this recovered backup'}
+          </Button>
+        </div>
+        {#if !isTauriApp}
+          <p class="mt-2 text-xs text-subtle">Activation restarts the desktop app's backend against the recovered library; it is unavailable in a browser.</p>
+        {/if}
       </div>
     {/if}
+    {#if notice}<p class="mt-3 rounded-lg border border-line p-3 text-sm text-muted" role="status">{notice}</p>{/if}
     <ul class="mt-4 divide-y divide-line">
       {#each archives as backup (backup.id)}
         <li class="flex flex-wrap items-center justify-between gap-2 py-2 text-sm">
           <span class="text-muted">{new Date(backup.created_at).toLocaleString()} · {backup.tier} · {formatBytes(backup.size_bytes)}</span>
-          <Button variant="ghost" size="sm" disabled={busy} onclick={() => recover(backup.id)}>Recover to folder</Button>
+          <div class="flex gap-2">
+            <Button variant="ghost" size="sm" disabled={busy} onclick={() => recover(backup.id)}>Recover to folder</Button>
+            {#if isTauriApp}
+              <Button variant="ghost" size="sm" disabled={activating} onclick={() => activate(backup.id)}>Activate</Button>
+            {/if}
+          </div>
         </li>
       {/each}
     </ul>

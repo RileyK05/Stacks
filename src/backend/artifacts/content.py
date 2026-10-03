@@ -16,6 +16,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+from src.backend.common.citations import CITATION_RE, marker_numbers, prose_transform
 from src.backend.common.schemas.learning import Capability
 from src.backend.common.schemas.mind_map import MindMapContent
 from src.backend.tutor.workspace import (
@@ -52,7 +53,6 @@ KINDS: tuple[ArtifactKind, ...] = (
 MAX_TEXT = 200_000
 MAX_CELL = 5_000
 
-CITATION_RE = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
 _ESCAPED_CITATION = re.compile(r"\\\[(\d+(?:\s*,\s*\d+)*)\\\]")
 
 
@@ -64,7 +64,9 @@ class DocContent(BaseModel):
     @model_validator(mode="after")
     def _citations_unescaped(self) -> DocContent:
         # Markdown writers escape "[" ("\[1\]"); a citation stays "[1]".
-        self.markdown = _ESCAPED_CITATION.sub(r"[\1]", self.markdown)
+        self.markdown = prose_transform(
+            self.markdown, lambda text: _ESCAPED_CITATION.sub(r"[\1]", text)
+        )
         return self
 
 
@@ -184,8 +186,16 @@ def _walk(
     if isinstance(value, dict):
         walked: dict[str, Any] = {}
         for key, item in value.items():
+            if key in {"code", "html", "language"}:
+                walked[key] = item
+                continue
             if key == "sources" and isinstance(item, list):
-                walked[key] = on_numbers([int(n) for n in item])
+                try:
+                    walked[key] = on_numbers([int(n) for n in item])
+                except (TypeError, ValueError) as err:
+                    raise UnknownCitationError(
+                        "sources must contain valid citation numbers"
+                    ) from err
             else:
                 walked[key] = _walk(item, on_text, on_numbers)
         return walked
@@ -196,8 +206,9 @@ def cited_numbers(content: Any) -> set[int]:
     found: set[int] = set()
 
     def text(value: str) -> str:
-        for match in CITATION_RE.finditer(value):
-            found.update(int(n) for n in re.split(r"\s*,\s*", match.group(1)))
+        from src.backend.common.citations import cited_numbers as scan
+
+        found.update(scan(value))
         return value
 
     def numbers(values: list[int]) -> list[int]:
@@ -223,10 +234,10 @@ def renumber(content: Any, mapping: Mapping[int, int]) -> Any:
 
     def text(value: str) -> str:
         def replace(match: re.Match[str]) -> str:
-            numbers = [lookup(int(n)) for n in re.split(r"\s*,\s*", match.group(1))]
+            numbers = [lookup(n) for n in marker_numbers(match.group(1))]
             return "[" + ", ".join(str(n) for n in dict.fromkeys(numbers)) + "]"
 
-        return CITATION_RE.sub(replace, value)
+        return prose_transform(value, lambda prose: CITATION_RE.sub(replace, prose))
 
     def numbers(values: list[int]) -> list[int]:
         return list(dict.fromkeys(lookup(n) for n in values))

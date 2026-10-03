@@ -150,7 +150,8 @@ def test_empty_provider_output_fails_closed(monkeypatch: pytest.MonkeyPatch) -> 
     configure_test_provider(monkeypatch, "   ")
     with pytest.raises(provider.EmptyModelError):
         provider.generate("tutor_answer", "prompt")
-    assert usage_repo.ledger_page() == []
+    assert len(usage_repo.ledger_page()) == 1
+    assert usage_repo.ledger_page()[0].output_tokens == 5
 
 
 def test_cloud_budget_blocks_before_the_call_local_is_exempt(
@@ -213,6 +214,25 @@ def test_bigger_slot_resolves_only_from_its_own_choice(
     bigger = providers.resolve(TaskClass.BIGGER)
     assert bigger is not None and bigger.name == "openrouter"
     assert providers.resolve(TaskClass.INTERACTIVE) == _endpoint()
+
+
+def test_bigger_env_fills_only_an_empty_slot(
+    monkeypatch: pytest.MonkeyPatch, _memory_keyring: dict[str, str]
+) -> None:
+    assert providers.resolve(TaskClass.BIGGER) is None
+    monkeypatch.setenv("LLM_BIGGER_MODEL", "env-bigger")
+    assert providers.resolve(TaskClass.BIGGER) is None
+    monkeypatch.setenv("LLM_BIGGER_BASE_URL", "http://127.0.0.1:9/v1")
+    monkeypatch.setenv("LLM_BIGGER_API_KEY", "test-key")
+    bigger = providers.resolve(TaskClass.BIGGER)
+    assert bigger is not None
+    assert bigger.model == "env-bigger"
+    assert bigger.base_url == "http://127.0.0.1:9/v1"
+    assert bigger.api_key == "test-key"
+    providers.save_choice(TaskClass.BIGGER, ProviderChoice(preset="local"))
+    chosen = providers.resolve(TaskClass.BIGGER)
+    assert chosen is not None and chosen.name == "local"
+    assert chosen.model != "env-bigger"
 
 
 def test_bigger_model_routes_and_never_falls_back(
@@ -340,6 +360,41 @@ def test_transport_returns_only_visible_text(
     assert REAL_CALL("tutor_answer", _endpoint(), "prompt")[0] == expected
 
 
+def test_longcat_profile_requests_a_reasoning_budget() -> None:
+    body = provider.request_body(
+        "tutor_answer",
+        _endpoint(name="custom", is_local=False, model="LongCat-2.5-Preview"),
+        "prompt",
+    )
+    assert body["max_tokens"] == 16384
+
+
+def test_null_content_with_stop_is_reasoning_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {"choices": [{"message": {"content": None}, "finish_reason": "stop"}]}
+    _capture_post(monkeypatch, _Response(200, payload))
+    with pytest.raises(provider.ModelReasoningOnlyError, match="only reasoning"):
+        REAL_CALL("tutor_answer", _endpoint(), "prompt")
+
+
+def test_length_with_reasoning_tokens_retries_once_with_a_larger_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    length = {
+        "choices": [{"message": {"content": None}, "finish_reason": "length"}],
+        "usage": {"completion_tokens_details": {"reasoning_tokens": 1800}},
+    }
+    done = {
+        "choices": [{"message": {"content": "the deck"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 9},
+    }
+    captured = _sequence_post(monkeypatch, _Response(200, length), _Response(200, done))
+    assert REAL_CALL("tutor_answer", _endpoint(), "prompt")[0] == "the deck"
+    assert captured[0]["max_tokens"] == 2048
+    assert captured[1]["max_tokens"] == 8192
+
+
 def test_transport_rejects_truncated_output(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = {
         "choices": [{"message": {"content": '{"partial":'}, "finish_reason": "length"}]
@@ -347,6 +402,45 @@ def test_transport_rejects_truncated_output(monkeypatch: pytest.MonkeyPatch) -> 
     _capture_post(monkeypatch, _Response(200, payload))
     with pytest.raises(provider.ModelOutputTruncatedError, match="output limit"):
         REAL_CALL("tutor_answer", _endpoint(), "prompt")
+
+
+def test_generate_records_truncated_and_reasoning_retry_usage(monkeypatch) -> None:
+    endpoint = _endpoint(name="custom", is_local=False)
+    monkeypatch.setattr(provider, "_call_provider", REAL_CALL)
+    monkeypatch.setattr(providers, "resolve", lambda *_: endpoint)
+    cut_off = {
+        "choices": [{"message": {"content": None}, "finish_reason": "length"}],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "completion_tokens_details": {"reasoning_tokens": 20},
+        },
+    }
+    completed = {
+        "choices": [{"message": {"content": "Answer"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
+    calls = _sequence_post(
+        monkeypatch, _Response(200, cut_off), _Response(200, completed)
+    )
+    assert provider.generate("tutor_answer", "prompt").text == "Answer"
+    assert len(calls) == 2
+    assert usage_repo.cloud_tokens_this_month() == 45
+    _sequence_post(
+        monkeypatch,
+        _Response(
+            200,
+            completed
+            | {
+                "choices": [
+                    {"message": {"content": "Partial"}, "finish_reason": "length"}
+                ]
+            },
+        ),
+    )
+    with pytest.raises(provider.ModelOutputTruncatedError):
+        provider.generate("tutor_answer", "prompt")
+    assert usage_repo.cloud_tokens_this_month() == 60
 
 
 @pytest.mark.parametrize(

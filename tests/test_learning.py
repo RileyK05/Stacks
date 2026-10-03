@@ -348,6 +348,30 @@ def test_preference_changes_cached_presentation_and_research_failure_keeps_answe
     )
 
 
+def test_empty_learner_scaffolds_practice_only(client):
+    course = make_course()
+    with connection() as conn:
+        assert (
+            learning.adaptation(conn, course.course_id, "What is linearity?")[2]
+            != "step_by_step"
+        )
+        assert (
+            learning.adaptation(conn, course.course_id, "quiz me on linearity")[2]
+            == "step_by_step"
+        )
+    assert (
+        client.put(
+            "/learning/core", json={"preferred_method": "visual_structure"}
+        ).status_code
+        == 200
+    )
+    with connection() as conn:
+        assert (
+            learning.adaptation(conn, course.course_id, "What is linearity?")[2]
+            == "visual_structure"
+        )
+
+
 def test_assisted_new_answers_remain_tentative_for_course_and_core(client):
     course = make_course()
     chunk = add_chunk(course.course_id, "Linearity preserves addition and scaling.")
@@ -360,6 +384,82 @@ def test_assisted_new_answers_remain_tentative_for_course_and_core(client):
     method = client.get("/learning/core").json()["methods"][0]
     assert method["checks"] == method["successes"] == 0
     assert method["evidence"][0]["helped"] is True
+
+
+@pytest.mark.parametrize("same_chat", [False, True])
+def test_upgrade_keeps_capability_history_and_only_valid_method_associations(
+    tmp_path, monkeypatch, client, same_chat
+):
+    from src.backend.common import conversations_repo
+    from src.backend.common import migrate as migrations
+    from src.backend.common.queries import get
+
+    path = tmp_path / "old-learning.db"
+    pending = migrations._pending_migrations
+    with monkeypatch.context() as scope:
+        scope.setattr(
+            migrations,
+            "_pending_migrations",
+            lambda: [
+                (version, file) for version, file in pending() if int(version) <= 20
+            ],
+        )
+        migrations.migrate(path)
+    monkeypatch.setenv("DATABASE_PATH", str(path))
+    course = make_course()
+    chunk = add_chunk(course.course_id, "Linearity preserves addition and scaling.")
+    suite_id = _suite(course.course_id, chunk, method="analogy")
+    conversation = conversations_repo.create(course.course_id)
+    teaching_trace, quiz_trace = uuid4(), uuid4()
+    with connection() as conn:
+        origin = {
+            "trace_id": str(quiz_trace),
+            "teaching_context": {"trace_ref": str(teaching_trace), "method": "analogy"},
+        }
+        if same_chat:
+            for trace_id in (teaching_trace, quiz_trace):
+                conn.execute(
+                    get("retrieval_traces", "insert_trace"),
+                    {
+                        "trace_id": trace_id,
+                        "course_id": course.course_id,
+                        "query": "Practice",
+                        "chunk_ids": json.dumps({"chunk_ids": [str(chunk)]}),
+                        "model": "test",
+                    },
+                )
+                conversations_repo.add_turn(
+                    conn,
+                    conversation.conversation_id,
+                    question="Practice",
+                    answer="Practice [1]",
+                    trace_id=trace_id,
+                    payload={},
+                )
+        conn.execute(
+            "UPDATE practice_suites SET origin=? WHERE suite_id=?",
+            (json.dumps(origin), suite_id),
+        )
+        conn.commit()
+    assert _submit(client, course.course_id, suite_id, [0, 1]).status_code == 200
+    with connection() as conn:
+        assert len(inspection.rows(conn, "core_observations")) == 2
+    assert migrations.migrate(path) == ["021"]
+    with connection() as conn:
+        observations = inspection.rows(conn, "observations", course_id=course.course_id)
+        assert len(observations) == 2 and all(row["correct"] for row in observations)
+        assert all(
+            row["method"] == ("analogy" if same_chat else None) for row in observations
+        )
+        assert len(inspection.rows(conn, "core_observations")) == (
+            2 if same_chat else 0
+        )
+        test = learning.suite(conn, course.course_id, suite_id)
+        if not same_chat:
+            assert (
+                test.origin["discarded_teaching_context"] == origin["teaching_context"]
+            )
+        assert test.method == ("analogy" if same_chat else None)
 
 
 def test_automatic_focus_has_cooldown_and_quota_but_explicit_request_overrides(client):

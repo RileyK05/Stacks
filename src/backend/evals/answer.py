@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,6 +33,36 @@ from src.backend.tutor.workspace import extract_workspace_items
 ANSWER_EVAL_DIR = Path(__file__).resolve().parents[3] / "data" / "eval" / "answer"
 
 DEFAULT_CASES_PATH = ANSWER_EVAL_DIR / "cases.json"
+# Independently reviewed semantic cases (B-06). Separate file so the
+# deterministic mechanical suite and the judge-scored suite can run (and
+# be trusted) separately.
+SEMANTIC_CASES_PATH = ANSWER_EVAL_DIR / "semantic_cases.json"
+
+# Expectation keys this harness actually reads. A typo or a well-meant but
+# unimplemented key ("must_refuse" before it was wired) silently did
+# nothing (B-06); loading now fails closed on an unknown key.
+KNOWN_EXPECTATION_KEYS = frozenset(
+    {
+        "required_patterns",
+        "forbidden_patterns",
+        "citations_required",
+        "must_refuse",
+        "must_decline",
+        "steer_required",
+        "workspace_required",
+        # Semantic cases: a rubric the injected judge callable evaluates.
+        "rubric",
+    }
+)
+
+# Kinds scored with an injected judge rather than mechanical regexes.
+SEMANTIC_KINDS = frozenset(
+    {
+        "semantic_grounded",
+        "semantic_quiz_key",
+        "semantic_explanation",
+    }
+)
 
 CITATION_RE = re.compile(r"\[(\d+)\]")
 
@@ -197,24 +228,43 @@ class AnswerEvalSummary:
         return "\n".join(lines)
 
 
-def load_answer_cases(
-    path: Path | None = None,
-) -> list[AnswerCase]:
-    case_path = path or DEFAULT_CASES_PATH
+def _load_case_file(case_path: Path) -> list[AnswerCase]:
     if not case_path.exists():
         return []
     raw = json.loads(case_path.read_text(encoding="utf-8"))
-    return [
-        AnswerCase(
-            id=case["id"],
-            kind=case["kind"],
-            course_tag=case["course_tag"],
-            question=case["question"],
-            seed_chunk_labels=tuple(case.get("seed_chunk_labels", ())),
-            expectation=dict(case.get("expectation", {})),
+    cases: list[AnswerCase] = []
+    for case in raw["cases"]:
+        expectation = dict(case.get("expectation", {}))
+        unknown = set(expectation) - KNOWN_EXPECTATION_KEYS
+        if unknown:
+            raise ValueError(
+                f"case {case.get('id')!r} has unknown expectation keys "
+                f"{sorted(unknown)}; the scorer would ignore them"
+            )
+        cases.append(
+            AnswerCase(
+                id=case["id"],
+                kind=case["kind"],
+                course_tag=case["course_tag"],
+                question=case["question"],
+                seed_chunk_labels=tuple(case.get("seed_chunk_labels", ())),
+                expectation=expectation,
+            )
         )
-        for case in raw["cases"]
-    ]
+    return cases
+
+
+def load_answer_cases(
+    path: Path | None = None,
+) -> list[AnswerCase]:
+    """The deterministic mechanical suite. `path` overrides the file."""
+    return _load_case_file(path or DEFAULT_CASES_PATH)
+
+
+def load_semantic_cases(path: Path | None = None) -> list[AnswerCase]:
+    """Independently reviewed cases scored with an injected judge (B-06).
+    Absent file returns [] so the mechanical suite is unaffected."""
+    return _load_case_file(path or SEMANTIC_CASES_PATH)
 
 
 def citation_validity(answer_text: str, provided: int) -> tuple[bool, str]:
@@ -302,12 +352,18 @@ def workspace_check(answer_text: str, provided: int) -> tuple[bool, str]:
 
 
 GenerationFn = Generate
+# A judge scores a semantic case against its rubric and the material.
+# Injected so the deterministic unit suite can pass a scripted one; a
+# real run passes the configured provider. Returns (passed, reason).
+JudgeFn = Callable[[AnswerCase, str, tuple[str, ...]], tuple[bool, str]]
 
 
 def _score(
     case: AnswerCase,
     answer_text: str,
     chunk_texts: tuple[str, ...],
+    *,
+    judge: JudgeFn | None = None,
 ) -> tuple[bool, str]:
     """Kind-dispatched scorers. Each is mechanical on the answer text
     plus the seeded chunk texts (refusal fabrication check needs the
@@ -327,6 +383,21 @@ def _score(
                 return False, f"invalid evaluation pattern: {pattern!r}"
             if matched != must_match:
                 return False, f"content check failed ({key}): {pattern!r}"
+    # These expectation keys used to be documentation the scorer ignored
+    # (B-06): a case could assert `must_refuse` and still pass. Enforce
+    # them so a mismatched kind/expecation fails loudly.
+    requires_refusal = case.expectation.get("must_refuse") or case.expectation.get(
+        "must_decline"
+    )
+    if requires_refusal and not refusal_check(answer_text, chunk_texts)[0]:
+        return False, "expectation requires a refusal"
+    if case.expectation.get("steer_required") and not steer_check(answer_text)[0]:
+        return False, "expectation requires steering"
+    if (
+        case.expectation.get("workspace_required")
+        and not workspace_check(answer_text, len(chunk_texts))[0]
+    ):
+        return False, "expectation requires a workspace block"
     kind = case.kind
     if kind == "green_grounded":
         if not case.expectation.get("citations_required", True):
@@ -348,6 +419,12 @@ def _score(
     if kind == "workspace_grounded":
         ok, why = workspace_check(answer_text, len(chunk_texts))
         return ok, f"workspace: {why}"
+    if kind in SEMANTIC_KINDS:
+        if judge is None:
+            # Never a silent pass: a semantic case with no judge is
+            # UNRESOLVED-able, not green.
+            return False, f"semantic case requires a judge callable (kind {kind})"
+        return judge(case, answer_text, chunk_texts)
     return False, f"unknown case kind: {kind}"
 
 
@@ -410,6 +487,28 @@ def _seed_candidates(
     )
 
 
+def run_semantic_eval(
+    conn: Connection,
+    *,
+    generate: GenerationFn,
+    judge: JudgeFn,
+    cases_path: Path | None = None,
+    log_dir: Path | None = None,
+    answer_mode: str = "plain",
+) -> AnswerEvalSummary:
+    """The independently reviewed suite (B-06), scored by `judge`. Same
+    runner/report shape as the mechanical suite; kept separate so a
+    deterministic gate never depends on a model-judged score."""
+    return _run_eval(
+        conn,
+        generate=generate,
+        cases_path=cases_path,
+        log_dir=log_dir,
+        answer_mode=answer_mode,
+        judge=judge,
+    )
+
+
 def run_answer_eval(
     conn: Connection,
     *,
@@ -417,6 +516,26 @@ def run_answer_eval(
     cases_path: Path | None = None,
     log_dir: Path | None = None,
     answer_mode: str = "plain",
+    judge: JudgeFn | None = None,
+) -> AnswerEvalSummary:
+    return _run_eval(
+        conn,
+        generate=generate,
+        cases_path=cases_path,
+        log_dir=log_dir,
+        answer_mode=answer_mode,
+        judge=judge,
+    )
+
+
+def _run_eval(
+    conn: Connection,
+    *,
+    generate: GenerationFn,
+    cases_path: Path | None = None,
+    log_dir: Path | None = None,
+    answer_mode: str = "plain",
+    judge: JudgeFn | None = None,
 ) -> AnswerEvalSummary:
     """Run every case: build the numbered-material prompt via the tutor's
     real prompt builder, call `generate`, score by kind. `generate(task,
@@ -431,7 +550,15 @@ def run_answer_eval(
     )
 
     prompt_policy = load_prompt_policy()
-    cases = load_answer_cases(cases_path)
+    if cases_path is not None:
+        cases = _load_case_file(cases_path)
+    else:
+        # The mechanical file always; the semantic file only when a judge
+        # is supplied, so a deterministic run never sees judge-requiring
+        # cases (they would fail closed).
+        cases = load_answer_cases()
+        if judge is not None:
+            cases = [*cases, *load_semantic_cases()]
     records: list[CaseRecord] = []
     results: list[AnswerResult] = []
     unresolved: list[str] = []
@@ -495,7 +622,9 @@ def run_answer_eval(
         candidates = composed.candidates
         answer_text = composed.text
         prompt = "\n\n".join(attempts)
-        passed, detail = _score(case, answer_text, tuple(c.text for c in candidates))
+        passed, detail = _score(
+            case, answer_text, tuple(c.text for c in candidates), judge=judge
+        )
         records.append(
             CaseRecord(
                 case_id=case.id,

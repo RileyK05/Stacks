@@ -46,12 +46,17 @@ def installed_apps() -> list[OfficeApp]:
     found: list[OfficeApp] = []
     for app, exe in EXECUTABLES.items():
         for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-            try:
-                with winreg.OpenKey(hive, rf"{APP_PATHS_KEY}\{exe}"):
-                    found.append(app)
-                    break
-            except OSError:
-                continue
+            for view in (winreg.KEY_WOW64_64KEY, winreg.KEY_WOW64_32KEY):
+                try:
+                    with winreg.OpenKey(
+                        hive, rf"{APP_PATHS_KEY}\{exe}", 0, winreg.KEY_READ | view
+                    ):
+                        found.append(app)
+                        break
+                except OSError:
+                    continue
+            if app in found:
+                break
     return found
 
 
@@ -83,12 +88,14 @@ def untrust(thumbprint: str) -> None:
     """Remove the CA from the user's trusted roots (Windows confirms)."""
     if sys.platform != "win32":
         return
-    subprocess.run(
+    result = subprocess.run(
         ["certutil", "-user", "-delstore", "Root", thumbprint],
         capture_output=True,
         creationflags=_NO_WINDOW,
         check=False,
     )
+    if result.returncode != 0:
+        raise OSError("Windows could not remove the Stacks certificate trust.")
 
 
 def register(addin_id: str, manifest: Path) -> None:

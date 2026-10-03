@@ -75,7 +75,7 @@ def test_screenshot_upload_uses_only_explicit_image_bytes_and_is_partial(
     payload = image_bytes(image_format)
     seen: list[tuple[list[bytes], str]] = []
 
-    def transcribe(conn, images, *, host="", course_id=None):
+    def transcribe(images, *, host="", course_id=None):
         seen.append((list(images), host))
         return DocumentRead(
             method=OCR,
@@ -174,7 +174,7 @@ def test_blank_ocr_text_fails_without_replacing_snapshot(
     monkeypatch.setattr(
         work_screenshot,
         "read_screens",
-        lambda conn, images, **kwargs: DocumentRead(
+        lambda images, **kwargs: DocumentRead(
             method=OCR,
             host="Uploaded screenshot",
             units=(TextUnit(label="image 1", text="  \n  "),),
@@ -195,7 +195,7 @@ def test_unavailable_ocr_returns_503_and_keeps_saved_snapshot(
 ) -> None:
     _course_id, path, before = make_work(client)
 
-    def unavailable(conn, images, **kwargs):
+    def unavailable(images, **kwargs):
         raise OcrUnavailableError("OCR model unavailable")
 
     monkeypatch.setattr(work_screenshot, "read_screens", unavailable)
@@ -234,7 +234,7 @@ def test_document_changed_during_ocr_rejects_capture_without_overwriting(
 ) -> None:
     course_id, path, before = make_work(client)
 
-    def transcribe(conn, images, **kwargs):
+    def transcribe(images, **kwargs):
         with connection() as other_conn:
             changed = work_repo.update_document(
                 other_conn,

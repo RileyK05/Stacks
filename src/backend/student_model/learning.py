@@ -425,7 +425,14 @@ def adaptation(
     now = now or utc_now()
     policy = load_learning_policy()
     root = core(conn)
-    method = root.preferred_method or ("step_by_step" if not root.methods else None)
+    # A saved preference wins. With no history, scaffold only a practice
+    # request; a direct question stays unset so the answer is complete.
+    method: TeachingMethod | None = root.preferred_method
+    if method is None and not root.methods:
+        from src.backend.tutor.compose import Intent, classify_intent
+
+        if classify_intent(question) is Intent.QUIZ:
+            method = "step_by_step"
     if method is None and root.methods:
         # Explore less-tested methods occasionally; successes remain observations,
         # not a claim that the method caused the outcome.

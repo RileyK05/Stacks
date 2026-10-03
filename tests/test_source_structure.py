@@ -33,6 +33,55 @@ def test_page_without_larger_text_has_no_headings() -> None:
     assert structure._page_headings([]) == []
 
 
+def test_same_baseline_fragments_are_one_heading_at_a_line_start() -> None:
+    """Small-caps runs are one title. A fragment must not open a container
+    in the middle of that word."""
+    merged = structure._merge_baseline_runs(
+        [
+            (18.0, "C", 700.0),
+            (18.0, "OMMUNITY B", 700.0),
+            (18.0, "UILDING IN L", 700.0),
+            (18.0, "ATINO AMERICA", 700.0),
+            (11.0, "Body text that explains the idea at length. " * 4, 680.0),
+        ]
+    )
+    assert structure._page_headings(merged) == ["COMMUNITY BUILDING IN LATINO AMERICA"]
+    text = "COMMUNITY BUILDING IN LATINO AMERICA\nBody of the chapter is here."
+    extracted = ExtractedSource(text=text, locators=_pdf_locators([text]))
+    pages = [loc for loc in extracted.locators if loc.locator_type == "page"]
+    titles = (
+        "C",
+        "OMMUNITY B",
+        "UILDING IN L",
+        "COMMUNITY BUILDING IN LATINO AMERICA",
+    )
+    starts = [
+        structure._heading_start(
+            extracted.text,
+            pages[0].start,
+            pages[0].end,
+            title,
+            allow_page_start=False,
+        )
+        for title in titles
+    ]
+    assert starts[:3] == [None, None, None]
+    assert starts[3] == 0
+    assert text[0].isupper()
+
+
+def test_running_head_repeated_across_pages_is_dropped() -> None:
+    title = "COMMUNITY BUILDING IN LATINO AMERICA"
+    headings = [
+        structure._Heading(0, title),
+        structure._Heading(1, title),
+        structure._Heading(2, "Chapter Two Latinos"),
+        structure._Heading(3, title),
+    ]
+    kept = structure._drop_running_heads(headings, page_count=4)
+    assert [heading.title for heading in kept] == ["Chapter Two Latinos"]
+
+
 def _pdf_with_bookmarks() -> bytes:
     writer = pypdf.PdfWriter()
     for _ in range(3):

@@ -1,0 +1,44 @@
+# Pinned, cross-platform Python dependency set (T-03).
+#
+# pyproject.toml keeps the intentional lower bounds and platform markers;
+# this file freezes the exact versions CI and development install from so
+# a release cannot drift silently. It intentionally contains only
+# platform-independent pins (no environment markers), because CI installs
+# the same file on Windows, macOS, and Linux.
+#
+# Regenerate with:
+#   .venv/Scripts/python -m scripts.freeze_constraints
+# then run the test/lint/type gates before committing.
+#
+# Install (CI and local):
+#   python -m pip install -e ".[dev]" -c constraints.txt
+
+cryptography==50.0.1
+fastapi==0.141.1
+fonttools==4.66.0
+httpx==0.28.1
+keyring==25.7.0
+lxml==6.1.3
+markdown-it-py==4.2.0
+numpy==2.5.3
+onnxruntime==1.30.0
+openpyxl==3.1.5
+Pillow==12.3.0
+pydantic==2.13.4
+pypdf==6.18.1
+pypdfium2==5.13.0
+python-docx==1.2.0
+python-multipart==0.0.32
+python-pptx==1.0.2
+tokenizers==0.23.2
+uvicorn==0.52.4
+
+# Optional extras, pinned too so `.[dev]`, `.[desktop]`, `.[parity]`
+# resolve identically everywhere.
+lxml-stubs==0.5.1
+mypy==2.3.1
+pyinstaller==6.22.3
+pytest==9.1.1
+ruff==0.16.3
+sentence-transformers==6.1.0
+types-openpyxl==3.1.5.20260827

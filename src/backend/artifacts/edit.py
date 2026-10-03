@@ -390,7 +390,7 @@ def _material(
         else ()
     )
     chunk_ids = list(dict.fromkeys([*cited, *(c.chunk_id for c in chosen)]))[
-        :MAX_MATERIAL
+        : max(MAX_MATERIAL, len(set(cited)))
     ]
     rows = conn.execute(
         get("retrieval_traces", "chunks_with_locators_by_ids"),
@@ -454,7 +454,7 @@ def _combine(kind: str, shown: Any, added: dict[str, Any]) -> dict[str, Any]:
         new = str(added.get("markdown", "")).strip()
         joined = f"{current}\n\n{new}" if current else new
         return {"markdown": joined + "\n"}
-    existing = [s for s in shown.get("slides", []) if s.get("title") or s.get("body")]
+    existing = shown.get("slides", [])
     return {"slides": [*existing, *added.get("slides", [])]}
 
 
@@ -491,7 +491,13 @@ def propose_edit(
         if 1 <= n <= len(artifact.sources)
         and artifact.sources[n - 1] in material.chunk_ids
     }
-    shown = artifact_content.renumber(target, to_material)
+    try:
+        shown = artifact_content.renumber(target, to_material)
+    except UnknownCitationError as err:
+        raise EditFailedError(
+            f"the current content has an unavailable citation ({err}); "
+            "nothing was changed"
+        ) from err
     numbered = "\n\n".join(
         f"[{index + 1}] "
         + (
@@ -568,7 +574,10 @@ def propose_edit(
     )
     used = result.__class__(
         candidates=material.candidates,
-        layer_contribution=result.layer_contribution,
+        layer_contribution={
+            layer: sum(layer in c.layers for c in material.candidates)
+            for layer in result.layer_contribution
+        },
     )
     stored = trace.record_trace(
         conn,

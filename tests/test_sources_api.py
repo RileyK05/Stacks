@@ -396,3 +396,121 @@ def test_deleting_a_source_does_not_widen_a_narrowed_chat(client: TestClient) ->
     assert selection(only_dropped) == []
     assert selection(everything) is None
     assert selection(elsewhere, other_course) == [str(foreign)]
+
+
+def test_omitted_source_type_is_inferred_and_can_be_changed(client: TestClient) -> None:
+    course_id = _course(client)
+    pptx = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    deck = client.post(
+        f"/courses/{course_id}/sources",
+        files={"file": ("Week1.pptx", b"PK\x03\x04 not a real deck", pptx)},
+    )
+    assert deck.status_code == 201, deck.text
+    assert deck.json()["source_type"] == "slides"
+    syllabus = client.post(
+        f"/courses/{course_id}/sources",
+        files={"file": ("POLS347_Syllabus.txt", b"welcome to class", "text/plain")},
+    )
+    assert syllabus.status_code == 201, syllabus.text
+    assert syllabus.json()["source_type"] == "syllabus"
+    notes = client.post(
+        f"/courses/{course_id}/sources",
+        files={"file": ("week2.txt", b"ordinary notes", "text/plain")},
+    )
+    assert notes.json()["source_type"] == "notes"
+    forced = client.post(
+        f"/courses/{course_id}/sources",
+        data={"source_type": "textbook"},
+        files={"file": ("Syllabus.txt", b"still a textbook", "text/plain")},
+    )
+    assert forced.json()["source_type"] == "textbook"
+    changed = client.patch(
+        f"/courses/{course_id}/sources/{notes.json()['source_id']}",
+        json={"source_type": "exam"},
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["source_type"] == "exam"
+    assert (
+        client.patch(
+            f"/courses/{course_id}/sources/{uuid4()}",
+            json={"source_type": "notes"},
+        ).status_code
+        == 404
+    )
+
+
+def test_sources_list_is_oldest_first_and_reports_coverage(client: TestClient) -> None:
+    from src.backend.rag.config import load_policy
+    from src.backend.rag.store import EXTRACTION_VERSION
+
+    course_id = _course(client)
+    names = ("week6.txt", "week1.txt", "week3.txt")
+    uploaded = [
+        UUID(
+            _upload(client, course_id, name, f"body {name}".encode()).json()[
+                "source_id"
+            ]
+        )
+        for name in names
+    ]
+    oldest = uploaded[0]
+    with connection() as conn:
+        for source_id, _name, stamp in zip(
+            uploaded, names, ("2026-01-01", "2026-01-02", "2026-01-03"), strict=True
+        ):
+            conn.execute(
+                "UPDATE sources SET created_at = ? WHERE source_id = ?",
+                (f"{stamp}T00:00:00.000000Z", source_id),
+            )
+        conn.execute(
+            "INSERT INTO source_indexes (source_id, revision, file_hash,"
+            " extraction_version, segmentation_version, semantic_used,"
+            " pages_total, pages_empty, pages_low_quality, pages_ocr)"
+            " VALUES (?, 'rev', 'hash', 'legacy', 'legacy', 0, 150, 11, 2, 0)",
+            (oldest,),
+        )
+        locator_id, chunk_id = uuid4(), uuid4()
+        conn.execute(
+            "INSERT INTO locators (locator_id, source_id, locator_type, start, label)"
+            " VALUES (?, ?, 'page', '0', 'page 1')",
+            (locator_id, oldest),
+        )
+        conn.execute(
+            "INSERT INTO chunks (chunk_id, source_id, locator_id, chunk_index, text)"
+            " VALUES (?, ?, ?, 0, 'a passage')",
+            (chunk_id, oldest, locator_id),
+        )
+        run_id, stage_id = uuid4(), uuid4()
+        conn.execute(
+            "INSERT INTO ingestion_runs (run_id, source_id, pipeline_version, status)"
+            " VALUES (?, ?, 'test', 'running')",
+            (run_id, uploaded[1]),
+        )
+        conn.execute(
+            "INSERT INTO ingestion_stage_runs (stage_run_id, run_id, stage, position,"
+            " handler_version, status) VALUES (?, ?, 'prepare_passages', 2, 'test',"
+            " 'running')",
+            (stage_id, run_id),
+        )
+        conn.commit()
+
+    rows = client.get(f"/courses/{course_id}/sources").json()
+    assert [row["filename"] for row in rows] == ["week6.txt", "week1.txt", "week3.txt"]
+    covered = rows[0]
+    assert covered["pages_total"] == 150
+    assert covered["pages_empty"] == 11
+    assert covered["pages_low_quality"] == 2
+    assert covered["chunk_count"] == 1
+    assert covered["index_stale"] is True
+    assert rows[1]["ingestion_stage"] == "prepare_passages"
+    assert rows[1]["index_stale"] is False
+
+    with connection() as conn:
+        conn.execute(
+            "UPDATE source_indexes SET extraction_version = ?, segmentation_version = ?"
+            " WHERE source_id = ?",
+            (EXTRACTION_VERSION, load_policy().version, oldest),
+        )
+        conn.commit()
+    refreshed = client.get(f"/courses/{course_id}/sources").json()[0]
+    assert refreshed["index_stale"] is False

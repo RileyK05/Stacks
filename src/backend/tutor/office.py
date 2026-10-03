@@ -44,6 +44,7 @@ from src.backend.common.providers import ProviderChoice
 from src.backend.common.queries import get
 from src.backend.retrieval import funnel, rerank, trace
 from src.backend.retrieval.config import RetrievalPolicy
+from src.backend.retrieval.labels import attach_passage_context, candidate_label
 from src.backend.student_model import learning
 from src.backend.tutor.compose import Intent, classify_intent, numbered_passages
 
@@ -170,7 +171,7 @@ def _citations(
                 chunk_id=str(chunk_id),
                 source_id=str(row["source_id"]),
                 filename=row["filename"],
-                label=row["label"]
+                label=(candidate_label(candidate, row["label"] or "") or row["label"])
                 + (" · partial passage" if candidate.partial else ""),
                 text=candidate.text,
             )
@@ -219,6 +220,9 @@ def answer(
         raise NothingRelevantFoundError(
             "nothing in this course's materials matches what you selected"
         )
+    result = dataclasses.replace(
+        result, candidates=attach_passage_context(conn, result.candidates)
+    )
     candidates = rerank.select_for_generation(query, result.candidates)
     numbered = numbered_passages(candidates)
     host_label = host.strip() or "the document"

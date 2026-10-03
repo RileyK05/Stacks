@@ -1,0 +1,47 @@
+{
+  "version": "1",
+  "_comment": "Independently reviewed semantic cases (B-06). Scored by evals/judge.py against the material and the rubric, not by regex. Kept separate from cases.json so the deterministic gate never depends on a judge.",
+  "cases": [
+    {
+      "id": "semantic-entailment-linear",
+      "kind": "semantic_grounded",
+      "course_tag": "harness-course",
+      "question": "What must a transformation preserve to be linear?",
+      "seed_chunk_labels": ["page 1"],
+      "expectation": {
+        "rubric": "The answer states that a linear transformation preserves both vector addition and scalar multiplication, and does not claim it preserves anything else."
+      }
+    },
+    {
+      "id": "semantic-false-detail-rejected",
+      "kind": "semantic_grounded",
+      "course_tag": "harness-course",
+      "question": "What must a transformation preserve to be linear?",
+      "seed_chunk_labels": ["page 1"],
+      "expectation": {
+        "rubric": "FAIL if the answer claims a linear transformation preserves length, angle, or orthogonality — the passage does not say that. It may only claim addition and scalar multiplication."
+      }
+    },
+    {
+      "id": "semantic-quiz-key-linear",
+      "kind": "semantic_quiz_key",
+      "course_tag": "harness-course",
+      "question": "Quiz me on what linearity preserves.",
+      "seed_chunk_labels": ["page 1"],
+      "expectation": {
+        "rubric": "Every multiple-choice question has exactly one option that the passage supports as the correct answer, the marked answer key matches that option, and no distractor is also a correct statement about linearity."
+      }
+    },
+    {
+      "id": "semantic-explanation-artifact-routing",
+      "kind": "semantic_explanation",
+      "course_tag": "harness-course",
+      "question": "Explain what linear means, and show me a worked example.",
+      "seed_chunk_labels": ["page 1"],
+      "expectation": {
+        "citations_required": true,
+        "rubric": "The prose explanation is faithful to the passage. Any worked example is arithmetically correct if it computes anything, or is clearly marked as a general illustration rather than a claimed passage fact."
+      }
+    }
+  ]
+}

@@ -18,7 +18,6 @@ from collections.abc import Sequence
 from uuid import UUID
 
 from src.backend.common import provider
-from src.backend.common.db import Connection
 from src.backend.common.prompt_registry import load_prompt
 from src.backend.ingest.ocr_pages import split_ocr_pages
 from src.backend.office_reader.models import OCR, DocumentRead, TextUnit
@@ -31,7 +30,6 @@ class OcrUnavailableError(RuntimeError):
 
 
 def read_screens(
-    conn: Connection,
     images: Sequence[bytes],
     *,
     host: str = "",
@@ -41,9 +39,8 @@ def read_screens(
 
     One image is one labelled unit ("image 1", "image 2", …) in order, so
     the pane can line each transcript up with the render it came from. The
-    caller commits; this does no database work itself beyond what
+    This does no database work itself beyond what
     ``provider.generate`` records in the usage ledger."""
-    del conn  # the OCR seam needs no database; kept for a uniform reader API
     if not images:
         return DocumentRead(
             method=OCR, host=host or "image", warnings=("no images to read",)
@@ -62,7 +59,10 @@ def read_screens(
             "reading screenshots needs a model that can see images; "
             "configure one in Settings to use this method"
         ) from err
-    page_texts = split_ocr_pages(result.text, len(images))
+    try:
+        page_texts = split_ocr_pages(result.text, len(images))
+    except ValueError as err:
+        raise OcrUnavailableError(str(err)) from err
     units = tuple(
         TextUnit(label=f"image {index + 1}", text=text.strip())
         for index, text in enumerate(page_texts)

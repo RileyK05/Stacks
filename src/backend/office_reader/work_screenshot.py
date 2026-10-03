@@ -3,7 +3,6 @@ from pathlib import PurePath
 
 from PIL import Image, UnidentifiedImageError
 from src.backend.common.companion_config import load_companion_policy
-from src.backend.common.db import connection
 from src.backend.common.schemas.work import DocumentInput
 from src.backend.office_reader.screens import read_screens
 
@@ -23,8 +22,7 @@ def read_work_screenshot(filename: str, data: bytes) -> DocumentInput:
         raise ValueError(
             "This screenshot is not a readable PNG or JPEG image."
         ) from err
-    with connection() as conn:
-        result = read_screens(conn, [data], host="Uploaded screenshot")
+    result = read_screens([data], host="Uploaded screenshot")
     text = "\n\n".join(unit.text for unit in result.units)
     if not text.strip():
         raise ValueError("No readable text was found in this screenshot.")

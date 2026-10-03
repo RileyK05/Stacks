@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from src.backend.api import office
+from src.backend.common.body_limits import install_body_limits
+from src.backend.common.secrets import CredentialStoreUnavailableError
 from src.backend.office_addin.manifest import ADDIN_DIR
 
 
@@ -17,6 +20,14 @@ def create_office() -> FastAPI:
     loads and cannot hold the desktop shell's per-launch token. It reads and
     returns text only; Office owns the document."""
     bridge = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+    install_body_limits(bridge)
+
+    @bridge.exception_handler(CredentialStoreUnavailableError)
+    async def credential_failure(
+        request: Request, err: CredentialStoreUnavailableError
+    ) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(err)})
+
     bridge.include_router(office.router)
     return bridge
 
