@@ -1,4 +1,5 @@
-from src.backend.common.schemas import TutorProfile, TutorVerbosity
+from src.backend.common.schemas.base import TutorVerbosity
+from src.backend.common.schemas.tutor import TutorProfile
 from src.backend.tutor.profile import (
     load_generic_tutor_profile,
     select_tutor_profile,

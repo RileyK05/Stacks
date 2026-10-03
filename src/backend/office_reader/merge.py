@@ -56,11 +56,7 @@ def _similar(left: str, right: str) -> bool:
 
 
 def _distinct(read: DocumentRead) -> list[tuple[str, TextUnit]]:
-    return [
-        (normalize(unit.text), unit)
-        for unit in read.units
-        if not unit.empty
-    ]
+    return [(normalize(unit.text), unit) for unit in read.units if not unit.empty]
 
 
 def merge_reads(reads: Iterable[DocumentRead]) -> MergedRead:

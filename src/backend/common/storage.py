@@ -207,9 +207,7 @@ def write_stored(course_id: UUID, source_id: UUID, data: bytes) -> Path:
     return path
 
 
-def write_stored_from_temp(
-    course_id: UUID, source_id: UUID, temp_path: Path
-) -> Path:
+def write_stored_from_temp(course_id: UUID, source_id: UUID, temp_path: Path) -> Path:
     path = source_disk_path(course_id, source_id)
     with temp_path.open("rb") as source:
         _atomic_write(path, source)

@@ -1,12 +1,4 @@
-"""Retrieval trace persistence (golden rule 2: show what was retrieved).
-
-Every retrieval stores one trace row. The `retrieved_chunk_ids` jsonb
-holds the full inspectable payload: the ordered cited chunk ids plus the
-layer attribution (which seams contributed each chunk) and the matched
-concept ids. The `retrieved_toc_entry_ids` jsonb holds the TOC entries
-that matched. Auditors can see WHY a chunk was retrieved, not just that
-it was.
-"""
+"""Persist passage identities and retrieval-layer attribution."""
 
 from __future__ import annotations
 
@@ -38,23 +30,32 @@ def record_trace(
     result: RetrievalResult,
     *,
     embedding_model: str | None = None,
-    toc_entry_ids: tuple[UUID, ...] = (),
 ) -> StoredTrace:
-    """The trace stores the WHY, not just the WHAT: per-chunk layer
-    attribution (each cited chunk with the seams that surfaced it),
-    matched concept ids, and the TOC entries that matched."""
+    """Retain the retrieval path, related context and exact coverage read."""
     per_chunk = [
         {
             "chunk_id": str(candidate.chunk_id),
             "layers": sorted(candidate.layers),
+            "partial": candidate.partial,
+            "char_start": candidate.window_start if candidate.partial else None,
+            "char_end": candidate.window_end if candidate.partial else None,
+            "text_length": candidate.text_length,
+            "context_for": sorted(str(identity) for identity in candidate.context_for),
+            "generated_materials": [
+                {"artifact_id": identity, "title": title, "version": version}
+                for identity, title, version in candidate.generated_materials
+            ],
         }
         for candidate in result.candidates
     ]
+    contribution: dict[str, int] = {}
+    for candidate in result.candidates:
+        for layer in candidate.layers:
+            contribution[layer] = contribution.get(layer, 0) + 1
     chunk_payload = {
         "chunk_ids": [entry["chunk_id"] for entry in per_chunk],
         "per_chunk_layers": per_chunk,
-        "layer_contribution": result.layer_contribution,
-        "matched_concept_ids": [str(cid) for cid in result.matched_concept_ids],
+        "layer_contribution": contribution,
     }
     row = conn.execute(
         get(_FILE, "insert_trace"),
@@ -63,7 +64,6 @@ def record_trace(
             "course_id": course_id,
             "query": query,
             "chunk_ids": json.dumps(chunk_payload),
-            "toc_entry_ids": json.dumps([str(cid) for cid in toc_entry_ids]),
             "model": embedding_model,
         },
     ).fetchone()
@@ -73,6 +73,6 @@ def record_trace(
         trace_id=row["trace_id"],
         query=query,
         chunk_ids=chunk_uuids,
-        layer_contribution=result.layer_contribution,
+        layer_contribution=contribution,
         created_at=row["created_at"],
     )

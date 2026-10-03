@@ -91,8 +91,8 @@ def test_work_is_saved_but_never_becomes_learning_evidence(
             "core_method_observations",
             "learning_teaching_events",
             "practice_runs",
-            "concepts",
-            "memory_objects",
+            "source_indexes",
+            "passage_windows",
         ):
             assert (
                 conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"] == 0

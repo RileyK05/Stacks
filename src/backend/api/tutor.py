@@ -11,7 +11,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from src.backend.api.deps import require_course
 from src.backend.common import provider, usage_repo
 from src.backend.common.db import connection, json_ids
@@ -90,6 +90,20 @@ class CitationView(BaseModel):
     label: str
     description: str | None
     filename: str
+    partial: bool = False
+    char_start: int | None = None
+    char_end: int | None = None
+    text_length: int | None = None
+    generated_materials: list[dict[str, str | int]] = Field(default_factory=list)
+
+
+class _Coverage(BaseModel):
+    chunk_id: str
+    partial: bool = False
+    char_start: int | None = Field(default=None, ge=0)
+    char_end: int | None = Field(default=None, ge=0)
+    text_length: int | None = Field(default=None, ge=0)
+    generated_materials: list[dict[str, str | int]] = Field(default_factory=list)
 
 
 @router.post("/{course_id}/ask", response_model=AnswerView)
@@ -150,16 +164,38 @@ def trace_citations(course_id: UUID, trace_id: UUID) -> list[CitationView]:
             get("retrieval_traces", "chunks_with_locators_by_ids"),
             {"chunk_ids": json_ids(chunk_ids)},
         ).fetchall()
-    return [
-        CitationView(
-            chunk_id=str(row["chunk_id"]),
-            source_id=str(row["source_id"]),
-            chunk_index=row["chunk_index"],
-            text=row["text"],
-            locator_type=row["locator_type"],
-            label=row["label"],
-            description=row["description"],
-            filename=row["filename"],
+    coverage = {}
+    for item in payload.get("per_chunk_layers", []) or []:
+        try:
+            parsed = _Coverage.model_validate(item)
+        except ValidationError:
+            continue
+        coverage[parsed.chunk_id] = parsed
+    result = []
+    for row in rows:
+        detail = coverage.get(str(row["chunk_id"]), _Coverage(chunk_id=""))
+        start, end = detail.char_start, detail.char_end
+        partial = (
+            detail.partial
+            and start is not None
+            and end is not None
+            and 0 <= start < end <= len(row["text"])
         )
-        for row in rows
-    ]
+        result.append(
+            CitationView(
+                chunk_id=str(row["chunk_id"]),
+                source_id=str(row["source_id"]),
+                chunk_index=row["chunk_index"],
+                text=row["text"][start:end] if partial else row["text"],
+                locator_type=row["locator_type"],
+                label=row["label"],
+                description=row["description"],
+                filename=row["filename"],
+                partial=partial,
+                char_start=start if partial else None,
+                char_end=end if partial else None,
+                text_length=len(row["text"]),
+                generated_materials=detail.generated_materials,
+            )
+        )
+    return result

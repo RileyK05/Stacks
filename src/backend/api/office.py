@@ -65,8 +65,7 @@ from src.backend.common.schemas.work import (
     WorkPublish,
     WorkSession,
 )
-from src.backend.office_addin import live
-from src.backend.office_addin import service as office_service
+from src.backend.office_addin import live, preferences
 from src.backend.office_reader.work_files import read_work_file
 from src.backend.retrieval.config import load_retrieval_policy
 from src.backend.tutor import answer as tutor_answer
@@ -219,7 +218,7 @@ def office_health() -> OfficeHealth:
 def list_courses() -> list[CourseSummary]:
     """The courses Stacks knows about, so the pane can let the student pick
     the one the document belongs to."""
-    suggested = office_service.last_course()
+    suggested = preferences.last_course()
     return [
         CourseSummary(
             course_id=str(course.course_id),

@@ -27,9 +27,8 @@ VALUES (:chunk_id, :course_id, :source_id, :chunk_index, :text,
 
 -- name: insert_trace
 INSERT INTO retrieval_traces
-    (trace_id, course_id, query, retrieved_chunk_ids,
-     retrieved_toc_entry_ids, model)
-VALUES (:trace_id, :course_id, :query, :chunk_ids, '[]', :model);
+    (trace_id, course_id, query, retrieved_chunk_ids, model)
+VALUES (:trace_id, :course_id, :query, :chunk_ids, :model);
 
 -- name: insert_conversation
 INSERT INTO conversations

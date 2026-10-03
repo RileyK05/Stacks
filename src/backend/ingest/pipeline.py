@@ -9,11 +9,8 @@ from src.backend.common.schemas.base import IngestionStage, IngestionStatus
 PIPELINE_STAGES = (
     IngestionStage.EXTRACT_TEXT,
     IngestionStage.OCR,
-    IngestionStage.BUILD_LOCATORS,
-    IngestionStage.BUILD_CHUNKS,
-    IngestionStage.EMBED_CHUNKS,
-    IngestionStage.UPDATE_TOC,
-    IngestionStage.EXTRACT_KNOWLEDGE,
+    IngestionStage.PREPARE_PASSAGES,
+    IngestionStage.PUBLISH_INDEX,
 )
 
 StageHandler = Callable[[], None]

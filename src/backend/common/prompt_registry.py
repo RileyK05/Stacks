@@ -6,7 +6,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, model_validator
 from src.backend.common.config import PROJECT_ROOT
-from src.backend.common.schemas.base import KNOWN_GENERATION_TASKS
 
 # Prompts that are not generation tasks of their own: the per-kind
 # workspace prompts share the `artifact_generation` task for routing and
@@ -21,7 +20,7 @@ OFFICE_PROMPTS = frozenset(
     f"office_{action}" for action in ("explain", "find", "quiz", "summarize")
 )
 KNOWN_PROMPTS = (
-    KNOWN_GENERATION_TASKS
+    {"tutor_answer", "ocr", "conversation_summary", "learning_research"}
     | WORKSPACE_PROMPTS
     | OFFICE_PROMPTS
     | {
@@ -36,8 +35,9 @@ KNOWN_PROMPTS = (
         "practice_hint",
         "practice_explain",
         "practice_explain_flagged",
-    "map_explain",
-    "map_quiz",
+        "map_explain",
+        "map_quiz",
+        "background_review",
     }
 )
 
@@ -107,7 +107,7 @@ class PromptPolicy(BaseModel):
         missing = KNOWN_PROMPTS.difference(self.prompts)
         if missing:
             raise ValueError(
-                f"prompts.toml must cover the known generation tasks "
+                f"prompts.toml must cover the known prompts "
                 f"(missing: {sorted(missing)})"
             )
         return self

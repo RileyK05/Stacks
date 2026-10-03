@@ -54,9 +54,7 @@ def test_refusal_catches_fabricated_specifics() -> None:
         material,
     )
     assert not ok and "fabricated" in why
-    ok, why = refusal_check(
-        "I can't answer that from the material provided.", material
-    )
+    ok, why = refusal_check("I can't answer that from the material provided.", material)
     assert ok, why
     # Digits that DO appear in the material are not fabrication.
     ok, why = refusal_check(
@@ -81,9 +79,7 @@ def test_steer_check_rejects_fillin_and_accepts_redirect() -> None:
         "Let's work through why [1] applies, and I'll set up practice."
     )
     assert ok, why
-    ok, why = steer_check(
-        "Here's your completed answers:\n1. 42\n2. 7"
-    )
+    ok, why = steer_check("Here's your completed answers:\n1. 42\n2. 7")
     assert not ok and "fill-in" in why
 
 
@@ -120,9 +116,7 @@ def test_score_dispatches_by_kind() -> None:
 
 def test_green_citations_optional_expectation_is_wired() -> None:
     """Review catch #13: expectation.citations_required=false opts out."""
-    case = _case(
-        "green_grounded", expectation={"citations_required": False}
-    )
+    case = _case("green_grounded", expectation={"citations_required": False})
     passed, detail = _score(case, "The material says nothing.", ("chunk",))
     assert passed, detail
     required = _case("green_grounded")
@@ -159,12 +153,18 @@ def test_unknown_kind_fails_closed() -> None:
 
 
 def test_factual_expectations_reject_cited_but_content_free_answers() -> None:
-    case = _case("green_grounded", expectation={
-        "required_patterns": [r"\baddition\b", r"scalar multiplication|scaling"],
-        "forbidden_patterns": ["preserves nothing"],
-    })
-    for text in ("Here is your answer [1].", "Preserves addition [1].",
-                 "Preserves nothing, addition, scaling [1]."):
+    case = _case(
+        "green_grounded",
+        expectation={
+            "required_patterns": [r"\baddition\b", r"scalar multiplication|scaling"],
+            "forbidden_patterns": ["preserves nothing"],
+        },
+    )
+    for text in (
+        "Here is your answer [1].",
+        "Preserves addition [1].",
+        "Preserves nothing, addition, scaling [1].",
+    ):
         passed, detail = _score(case, text, ("material",))
         assert not passed and "content check failed" in detail
     passed, detail = _score(case, "Preserves addition and scaling [1].", ("material",))
@@ -263,9 +263,7 @@ def test_run_answer_eval_end_to_end(tmp_path) -> None:
             generate=ScriptedGenerate(),
             log_dir=tmp_path,
         )
-    assert summary.unresolved == (), (
-        "harness course must resolve: " + str(summary)
-    )
+    assert summary.unresolved == (), "harness course must resolve: " + str(summary)
     assert summary.all_passed, str(summary)
     kinds = set(summary.per_kind_pass_rate)
     assert kinds == {
@@ -306,10 +304,7 @@ def test_seed_label_typo_is_unresolved_not_a_model_failure(tmp_path) -> None:
     assert not summary.all_passed, (
         "unresolved cases must fail the suite loudly: " + str(summary)
     )
-    assert any(
-        "matched no chunks" in result.detail
-        for result in summary.cases
-    )
+    assert any("matched no chunks" in result.detail for result in summary.cases)
 
 
 def test_prompt_registry_serves_tutor_prompt() -> None:

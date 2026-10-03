@@ -1,24 +1,25 @@
+import { createStoreRuntime, installApiMock, jsonResponse as json } from '../../../tests/helpers/storeRuntime.mjs';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
 
-let vite, PracticeSession, originalRequest, originalFetch, respond;
+let vite, PracticeSession, restoreApi, respond;
 const questions = [{ prompt: 'Which operation?', options: ['A', 'B'], answer: 0, sources: [1], explanation: '', topic: 'Operations', capability: 'recognition' }];
 const suite = { suite_id: 'suite', questions, evidence: [{ filename: 'Lecture', label: 'page 2', text: 'Source passage' }] };
 const hint = { help_id: 'hint-1', question_index: 0, kind: 'hint', content: { text: 'Consider the operation [1].', sources: [1] } };
 const run = { run_id: 'submitted-run', answers: [0], helped: [true], results: [true], correct_answers: [0] };
-function json(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } }); }
 
 before(async () => {
-  vite = await createServer({ configFile: fileURLToPath(new URL('../../../vite.config.ts', import.meta.url)), optimizeDeps: { entries: ['src/lib/stores/practice.svelte.ts'], noDiscovery: true, include: [] }, server: { middlewareMode: true, hmr: false }, appType: 'custom' });
-  originalRequest = globalThis.Request;
-  originalFetch = globalThis.fetch;
-  globalThis.Request = class extends originalRequest { constructor(input, init) { super(typeof input === 'string' && input.startsWith('/') ? new URL(input, 'http://localhost') : input, init); } };
-  globalThis.fetch = async (request, init) => respond(request instanceof globalThis.Request ? request : new globalThis.Request(request, init));
+  vite = await createStoreRuntime(['src/lib/stores/practice.svelte.ts']);
+  restoreApi = installApiMock((request) => respond(request));
   ({ PracticeSession } = await vite.ssrLoadModule('/src/lib/stores/practice.svelte.ts'));
 });
-after(async () => { await vite?.close(); globalThis.Request = originalRequest; globalThis.fetch = originalFetch; });
+after(async () => {
+  try {
+    await vite?.close();
+  } finally {
+    restoreApi?.();
+  }
+});
 
 test('hint blocks submission and reset while pending, then records assistance', async () => {
   let release, submitted = 0;

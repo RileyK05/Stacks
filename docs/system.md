@@ -1,6 +1,6 @@
 # System design
 
-Updated 2026-09-30. This document describes the current local-first desktop
+Updated 2026-10-02. This document describes the current local-first desktop
 system. Hosted accounts, Postgres, enrollment, tiers, and shared courses were
 retired and remain only in git history.
 
@@ -71,8 +71,7 @@ The data directory contains:
 - model/runtime downloads managed by the runtime subsystem.
 - Office add-in certificate and manifest state after the user connects Office.
 
-Original sources are retained whole. Derived text, chunks, embeddings, table of
-contents entries, and course knowledge can be rebuilt. Deleting a course moves
+Original sources are retained whole. Passage boundaries, search windows, embeddings, and similarity links can be rebuilt. Deleting a course moves
 it to a 30-day trash; a bounded course-memory keepsake survives purge.
 
 Course export creates a `.course` archive containing source files and portable
@@ -107,43 +106,66 @@ Settings yet (B-14); preparing files is not a completed desktop restore.
 
 ## 4. Ingestion
 
-Uploads stream to a temporary file under a byte ceiling, then become a stored
-source and a queued ingestion run. The pipeline is ordered and versioned:
+The version-5 pipeline runs extraction, OCR when required, passage preparation,
+and atomic index publication. Parsing and encoding run outside the write
+transaction. Publication checks the live source/course and previous revision,
+then replaces locators, parents, passages and window vectors together. A failed
+replacement leaves the previous usable index and saved citations intact.
+Each prepared publication has a unique revision, even on unchanged text, so an
+older preparation cannot overwrite a newer result. Passage IDs remain stable.
+The source picker exposes the prior usable index during a failed/pending refresh;
+deleting the last explicitly selected source leaves an empty scope until the
+student chooses again. Cache fingerprints follow active index revisions.
+Historical ingestion stages remain readable as ledger strings.
 
-```text
-extract -> OCR when needed -> locators -> chunks -> embeddings
-        -> table of contents -> course-knowledge extraction
-```
+`chunks` is the authoritative original-passage table, preserving historical
+citation IDs. Containers represent a document and its authored chapters,
+sections, slides or sheets. PDF font-based heading guesses are marked inferred.
+Passages retain exact character spans, natural locators and original order.
+No source text is discarded, including transitions and qualifications. Explicit
+proofs/marked examples, introduced lists, Markdown tables, and display equations
+with their definitions stay logical units across paragraph boundaries.
+Unmarked or ambiguous structures still need evaluation on real materials.
 
-The final course-knowledge extraction stage currently records an explicit skip;
-successful indexing establishes searchable material, not a complete concept model.
-
-PDF, Markdown, text, and Office package readers preserve natural locators such
-as page, slide, heading, and cell range. Chunks are token bounded and can point
-to several locators. The ingestion worker records stage state and errors in the
-run ledger so failures are inspectable.
-
-ONNX Runtime runs embeddings and reranking in process. The reference Torch
-stack is a development-only parity check and is excluded from the desktop
-bundle.
+`configs/passages.toml` owns structural/semantic boundaries and token limits.
+The installed encoder can propose breaks between ordinary paragraphs; failure
+falls back to structure with a recorded warning. Long logical units retain one
+identity while overlapping bounded windows provide searchable vectors. Window
+encoding uses the encoder's untruncated tokenizer, never a character-to-token
+estimate. ONNX embeddings and reranking run in process; Torch remains a
+development-only parity tool.
 
 ## 5. Retrieval and grounding
 
-Retrieval uses four candidate seams:
+Keyword, vector and one-hop similarity retrieval resolve to the same eligible
+original passage IDs. Course/source filters apply before candidate limits;
+an explicit empty source selection stays empty. Multiple window hits deduplicate
+to their owning passage. Nearby context stays within the same source parent,
+uses encoder continuity when available, and preserves explicit qualifications.
+Reranking chooses anchors; their related context travels with them rather than
+competing independently against the question.
 
-1. SQLite FTS5 keyword matches.
-2. Course table-of-contents routing.
-3. Concept dependency expansion.
-4. Dense embedding similarity.
+The generation material budget and per-passage limit are separate from logical
+passage size. A long unit is read from its best matching window and labeled
+partial. Traces/citations retain exact character coverage, related anchors,
+retrieval layers, and saved-material provenance. The source viewer exposes
+ordered continuation and the stored parent/similarity outline. These material
+budgets use the embedding tokenizer; they do not guarantee that an arbitrarily
+configured generation model can fit its entire prompt and conversation history.
 
-The funnel normalizes and combines candidates, then a cross-encoder reranker
-chooses the passages sent to generation. Retrieval traces record the candidate
-path and selected chunks.
+Course settings offer **Also search saved study materials**, off by default.
+Only saved artifacts with model/legacy-annotation provenance are eligible;
+search reads their latest saved version. They are lower-weight keyword lookup
+aids that return original supporting passages, never a replacement factual
+index. Every support passage must still be eligible under the selected sources.
+Missing/excluded support suppresses the whole aid. Toggle/version changes take
+effect on the next request; generated lookup disables answer-cache reuse.
+Student-memory panels and work-document captures are not indexed as course facts.
 
-Substantive answers must cite the numbered material. Citation validation checks
-evidence references and withholds invalid structured output; empty retrieval is
-refused. Valid references do not prove that the generated claim follows from them. The assistance policy steers requests for graded work toward
-learning help.
+Substantive answers cite numbered original material. Empty retrieval is refused,
+and unsupported structured output is withheld. Valid citation IDs and green
+tests do not establish that a generated explanation, quiz key, or program is
+correct; independently reviewed acceptance remains B-06/B-07.
 
 ## 6. Tutor, conversations, and companion
 
@@ -332,9 +354,12 @@ build jobs and attach each platform's installers to the same release.
 
 Migration 008 stores immutable suites, complete sessions, answer-key corrections,
 distilled COURSE observations, experiments, teaching events, and CORE method
-observations. `student_model/learning.py` and `common/queries/learning.sql` own
-assessment and selection; `configs/learning.toml` versions the policy.
-`course_memory.refresh` remains the only writer of the COURSE focus node.
+observations. `student_model/learning.py` owns practice writes and selection;
+`student_model/inspection.py` derives COURSE targets and CORE observations
+without writing learning evidence. Both use `common/queries/learning.sql`;
+`configs/learning.toml` versions the policy.
+`course_memory.refresh` remains the only writer of the COURSE focus node and
+reads inspection results without importing the practice write service.
 `student_model/research.py` proposes tentative checks through the chosen provider.
 `PracticeSession` and `Quiz.svelte` handle library and artifact tests.
 
@@ -683,3 +708,33 @@ application contracts, not real Office behavior, OCR accuracy, or model quality.
 `plan-notebook.md` records the latest checks and remaining release gates;
 `docket.md` owns unresolved work. No automatic companion edit application, live
 Google connection, or automatic Mac window capture is implemented.
+
+## 15. Source graph and migration
+
+SQLite is the sole storage engine. Parent foreign keys and passage order produce
+`contains`/`next` links; `graph_edges` stores bounded inferred similarity pairs,
+with model and algorithm version. A source refresh scores only that source's
+vectors against its course, in blocks, keeping at most the configured neighbors
+per scored row. This bounds retained edges; a full rebuild still has quadratic
+scoring cost and needs larger-course measurements. No separate graph engine,
+cluster hierarchy, concept extractor, TOC store, or prerequisite graph remains.
+
+`GET /courses/{id}/graph` accepts source scope and serves the source browser.
+Generated mind maps remain versioned study artifacts with original evidence;
+Explain/Quiz use the same retrieval boundary. Their drawn positions and colored
+branches do not claim to be the stored similarity graph or exhaustive coverage.
+
+Migrations 014–017 add passage revisions/windows/parents and integrity/provenance
+guards, then retire TOC, concept, memory-object and dependency stores. Existing
+concept/note content and evidence become inspectable legacy-annotation artifacts,
+eligible for optional lookup only. Existing original passages, learner history
+and course-memory records remain. Historical TOC trace IDs survive in legacy
+trace metadata. Old sources remain searchable until replacement publication.
+Retired Office file/operation metadata is retained in artifact provenance during
+the immutable migration-012 rebuild, instead of failing on extra version columns.
+
+Indexing and graph browsing write neither COURSE proficiency nor CORE behavior
+preferences. A registry prompt offers tentative background review/practice when
+appropriate; a suggestion is not a capability judgment. No prerequisite edges
+or inferred dependency chains are stored. Reduced backups omit vectors and
+similarity edges and rebuild them after recovery; citation passages remain.

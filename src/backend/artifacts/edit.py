@@ -36,6 +36,7 @@ from src.backend.common.prompt_registry import (
 from src.backend.common.providers import ProviderChoice
 from src.backend.common.queries import get
 from src.backend.common.schemas.mind_map import MindMapContent, check_map_evidence
+from src.backend.rag.config import load_policy as load_passage_policy
 from src.backend.retrieval import funnel, rerank, trace
 from src.backend.retrieval.config import RetrievalPolicy
 from src.backend.tutor.compose import parse_json_object
@@ -91,6 +92,7 @@ class Proposal:
 class _Material:
     chunk_ids: list[UUID]
     texts: list[str]
+    candidates: tuple[funnel.Candidate, ...] = ()
 
 
 # --- the part being edited ----------------------------------------------
@@ -394,12 +396,29 @@ def _material(
         get("retrieval_traces", "chunks_with_locators_by_ids"),
         {"chunk_ids": json_ids(chunk_ids)},
     ).fetchall()
-    text_by_id = {row["chunk_id"]: row["text"] for row in rows}
+    by_id = {c.chunk_id: c for c in chosen}
+    for row in rows:
+        if row["chunk_id"] not in by_id:
+            by_id[row["chunk_id"]] = funnel.Candidate(
+                chunk_id=row["chunk_id"],
+                source_id=row["source_id"],
+                locator_id=row["locator_id"],
+                chunk_index=row["chunk_index"],
+                text=row["text"],
+                layers=frozenset({"saved_citation"}),
+                rank=1,
+            )
+    available = tuple(by_id[cid] for cid in chunk_ids if cid in by_id)
+    budget = load_passage_policy().generation_material_tokens
+    bounded = rerank.bound_passages(
+        available, max_tokens=budget // max(len(chunk_ids), 1)
+    )
+    text_by_id = {c.chunk_id: c.text for c in bounded}
     # A cited chunk whose source was removed keeps its place (so the
     # numbering the model sees still lines up with the artifact's).
     kept = [cid for cid in chunk_ids if cid in text_by_id or cid in cited]
     return (
-        _Material(kept, [text_by_id.get(cid, REMOVED_SOURCE) for cid in kept]),
+        _Material(kept, [text_by_id.get(cid, REMOVED_SOURCE) for cid in kept], bounded),
         result,
     )
 
@@ -474,7 +493,17 @@ def propose_edit(
     }
     shown = artifact_content.renumber(target, to_material)
     numbered = "\n\n".join(
-        f"[{index + 1}] {text}" for index, text in enumerate(material.texts)
+        f"[{index + 1}] "
+        + (
+            "(partial passage; original continues) "
+            if any(
+                c.chunk_id == material.chunk_ids[index] and c.partial
+                for c in material.candidates
+            )
+            else ""
+        )
+        + text
+        for index, text in enumerate(material.texts)
     )
     adding = is_addition(artifact.kind, request, target)
     if adding:
@@ -538,12 +567,8 @@ def propose_edit(
         artifact.kind, _splice(artifact, scope, merged)
     )
     used = result.__class__(
-        candidates=tuple(
-            c for c in result.candidates if c.chunk_id in material.chunk_ids
-        ),
+        candidates=material.candidates,
         layer_contribution=result.layer_contribution,
-        matched_concept_ids=result.matched_concept_ids,
-        matched_toc_entry_ids=result.matched_toc_entry_ids,
     )
     stored = trace.record_trace(
         conn,
@@ -551,7 +576,6 @@ def propose_edit(
         request,
         used,
         embedding_model=embedding_model,
-        toc_entry_ids=result.matched_toc_entry_ids,
     )
     return Proposal(
         uncited_lines=uncited,

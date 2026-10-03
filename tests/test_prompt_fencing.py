@@ -40,8 +40,6 @@ def test_grounded_prompt_puts_instruction_before_fence() -> None:
     assert prompt.index("INSTRUCTION LINE") < prompt.index(UNTRUSTED_BEGIN)
 
 
-
-
 def test_tutor_prompt_fences_question_and_chunks() -> None:
     candidate = Candidate(
         chunk_id=__import__("uuid").uuid4(),

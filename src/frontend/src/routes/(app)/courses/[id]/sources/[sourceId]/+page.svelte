@@ -2,14 +2,17 @@
   import { onMount, tick } from 'svelte';
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
+  import type { components } from '$lib/api/schema';
   import { APP_TOKEN_HEADER, apiBase, appToken } from '$lib/api/backend';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import SourceOutline from '$lib/components/course/SourceOutline.svelte';
 
   const courseId = page.params.id ?? '';
   const sourceId = page.params.sourceId ?? '';
   const chunkId = page.url.searchParams.get('chunk');
   let filename = $state('Source');
+  let previousIndex = $state(false);
   let content = $state('');
   let pageImage = $state('');
   let pageNumber = $state(1);
@@ -17,7 +20,8 @@
    * webview hides it): Next then stays on until the end is hit. */
   let pageCount = $state<number | null>(1);
   let pageLoading = $state(false);
-  let passage = $state<{ text: string; label: string; description: string | null } | null>(null);
+  let passage = $state<components['schemas']['PassageView'] | null>(null);
+  let passageLoading = $state(false);
   let markedLine = $state(0);
   let error = $state<unknown>(null);
   let loading = $state(true);
@@ -61,6 +65,32 @@
     }
   }
 
+  async function continuePassage() {
+    if (!chunkId || !passage || passage.next_start == null || passageLoading) return;
+    const start = passage.next_start;
+    passageLoading = true;
+    try {
+      const { data, error: passageError } = await api.GET(
+        '/courses/{course_id}/sources/{source_id}/chunks/{chunk_id}',
+        { params: {
+          path: { course_id: courseId, source_id: sourceId, chunk_id: chunkId },
+          query: { start, max_chars: 8192 }
+        } }
+      );
+      if (passageError) throw passageError;
+      if (alive && data && passage) {
+        if (data.char_start !== passage.char_end || data.text_length !== passage.text_length) {
+          throw new Error('The passage changed. Reopen the source to continue.');
+        }
+        passage = { ...data, char_start: 0, text: passage.text + data.text };
+      }
+    } catch (caught) {
+      if (alive) error = caught;
+    } finally {
+      if (alive) passageLoading = false;
+    }
+  }
+
   onMount(() => {
     async function load() {
       try {
@@ -71,10 +101,14 @@
         const source = sources?.find((item) => item.source_id === sourceId);
         if (!source) throw new Error('Source not found in this course.');
         filename = source.filename;
+        previousIndex = !!source.has_index && source.status !== 'indexed';
         if (chunkId) {
           const { data, error: passageError } = await api.GET(
             '/courses/{course_id}/sources/{source_id}/chunks/{chunk_id}',
-            { params: { path: { course_id: courseId, source_id: sourceId, chunk_id: chunkId } } }
+            { params: {
+              path: { course_id: courseId, source_id: sourceId, chunk_id: chunkId },
+              query: { max_chars: 8192 }
+            } }
           );
           if (passageError) throw passageError;
           passage = data ?? null;
@@ -124,14 +158,22 @@
   </a>
   <div>
     <h1 class="font-display text-2xl text-fg">{filename}</h1>
+    {#if previousIndex}<p class="mt-1 text-sm text-muted">Passages come from the last successful index while this source awaits a successful refresh.</p>{/if}
     {#if passage}<p class="mt-1 text-sm text-muted">Cited passage · {passage.label}</p>{/if}
   </div>
   {#if error}<ErrorBanner {error} />{/if}
   {#if loading}<p class="text-sm text-muted">Opening source…</p>{/if}
+  {#if !loading}<SourceOutline {courseId} {sourceId} />{/if}
   {#if passage}
     <aside class="rounded-xl border border-accent-line bg-accent-soft p-4 text-sm leading-relaxed text-fg-soft">
-      <p class="mb-2 font-semibold text-accent-text">Passage used in the answer</p>
+      <p class="mb-2 font-semibold text-accent-text">Original passage</p>
       <p class="whitespace-pre-wrap">{passage.text}</p>
+      {#if passage.next_start != null}
+        <button type="button" onclick={continuePassage} disabled={passageLoading}
+          class="mt-3 rounded-lg border border-accent-line px-3 py-1.5 disabled:opacity-40">
+          {passageLoading ? 'Loading…' : 'Continue reading'}
+        </button>
+      {/if}
     </aside>
   {/if}
   {#if pageImage}

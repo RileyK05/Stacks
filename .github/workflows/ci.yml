@@ -45,6 +45,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libgomp1
       - name: Ruff
         run: python -m ruff check .
+      - name: Python formatting
+        run: python -m ruff format --check src/backend scripts tests
       - name: Mypy
         run: python -m mypy src
       - name: Pytest

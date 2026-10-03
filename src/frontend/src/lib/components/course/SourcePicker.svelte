@@ -6,6 +6,7 @@
     source_id: string;
     filename: string;
     status: string;
+    has_index?: boolean;
   }
 
   interface Props {
@@ -14,19 +15,22 @@
     selected: string[] | null;
     disabled?: boolean;
     onchange: (selected: string[] | null) => void;
+    includeGenerated?: boolean | null;
+    generatedBusy?: boolean;
+    ongeneratedchange?: (value: boolean) => void;
   }
 
-  let { sources, selected, disabled = false, onchange }: Props = $props();
+  let { sources, selected, disabled = false, onchange,
+    includeGenerated = null, generatedBusy = false, ongeneratedchange }: Props = $props();
 
   let open = $state(false);
-  const usable = $derived(sources.filter((s) => s.status === 'indexed'));
-  // Sources removed since the choice was saved no longer count; if none of
-  // the chosen ones are left, the chat is effectively reading everything.
+  const usable = $derived(sources.filter((s) => s.status === 'indexed' || s.has_index));
+  // An emptied explicit choice stays empty until the user chooses its replacement.
   const live = $derived(
     (selected ?? []).filter((id) => usable.some((s) => s.source_id === id))
   );
   const chosen = $derived(
-    new Set(selected !== null && live.length > 0 ? live : usable.map((s) => s.source_id))
+    new Set(selected !== null ? live : usable.map((s) => s.source_id))
   );
   const count = $derived(usable.filter((s) => chosen.has(s.source_id)).length);
   const label = $derived(
@@ -87,6 +91,17 @@
         </li>
       {/each}
     </ul>
+    {#if ongeneratedchange}
+      <label class="flex items-start gap-2.5 border-t border-line px-3 py-2.5">
+        <input type="checkbox" class="mt-1 accent-[var(--accent)]"
+          checked={includeGenerated === true}
+          disabled={disabled || generatedBusy || includeGenerated === null}
+          onchange={(event) => ongeneratedchange?.(event.currentTarget.checked)} />
+        <span class="text-[13px] text-fg-soft">Also search saved study materials
+          <span class="block text-[12px] text-subtle">Applies to this course. Answers still cite the selected original sources.</span>
+        </span>
+      </label>
+    {/if}
     {#if selected !== null}
       <button
         type="button"

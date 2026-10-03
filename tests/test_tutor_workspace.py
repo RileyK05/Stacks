@@ -184,18 +184,14 @@ def test_slides_inline_citation_out_of_range_is_withheld() -> None:
 
 
 def test_uncited_question_is_withheld_not_rendered() -> None:
-    extracted = extract_workspace_items(
-        _block(_quiz(sources=[])), material_count=1
-    )
+    extracted = extract_workspace_items(_block(_quiz(sources=[])), material_count=1)
     assert extracted.items == ()
     assert len(extracted.withheld) == 1
     assert "sources" in extracted.withheld[0]
 
 
 def test_out_of_range_source_is_withheld_with_reason() -> None:
-    extracted = extract_workspace_items(
-        _block(_quiz(sources=[3])), material_count=2
-    )
+    extracted = extract_workspace_items(_block(_quiz(sources=[3])), material_count=2)
     assert extracted.items == ()
     assert "question 1 cites [3]" in extracted.withheld[0]
 
@@ -216,9 +212,7 @@ def test_document_inline_citation_out_of_range_is_withheld() -> None:
 
 
 def test_answer_index_must_be_an_option() -> None:
-    extracted = extract_workspace_items(
-        _block(_quiz(answer=5)), material_count=1
-    )
+    extracted = extract_workspace_items(_block(_quiz(answer=5)), material_count=1)
     assert extracted.items == ()
     assert "malformed" in extracted.withheld[0]
 
@@ -235,9 +229,7 @@ def test_withheld_block_never_leaks_its_answer_key_into_chat() -> None:
 def test_invalid_json_and_unknown_type_are_withheld() -> None:
     bad_json = "```workspace\n{not json}\n```"
     unknown = _block({"type": "flashcards", "cards": []})
-    extracted = extract_workspace_items(
-        f"{bad_json}\n{unknown}", material_count=1
-    )
+    extracted = extract_workspace_items(f"{bad_json}\n{unknown}", material_count=1)
     assert extracted.items == ()
     assert len(extracted.withheld) == 2
     assert "not valid JSON" in extracted.withheld[0]

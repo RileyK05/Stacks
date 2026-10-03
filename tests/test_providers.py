@@ -128,7 +128,7 @@ def test_generate_routes_by_task_class_and_records_usage(
         TaskClass.BACKGROUND, ProviderChoice(preset="local", model="background-model")
     )
     provider.generate("tutor_answer", "prompt")
-    provider.generate("course_knowledge_extraction", "prompt")
+    provider.generate("conversation_summary", "prompt")
     assert [call["endpoint"].model for call in calls] == [
         "minicpm5-2b",
         "background-model",
@@ -136,7 +136,7 @@ def test_generate_routes_by_task_class_and_records_usage(
     ledger = usage_repo.ledger_page()
     assert {(entry.task, entry.model) for entry in ledger} == {
         ("tutor_answer", "minicpm5-2b"),
-        ("course_knowledge_extraction", "background-model"),
+        ("conversation_summary", "background-model"),
     }
     assert all(e.input_tokens == 10 and e.output_tokens == 5 for e in ledger)
 

@@ -42,6 +42,30 @@
 
   let course = $state<CourseView | null>(null);
   let sources = $state<SourceView[]>([]);
+  let includeGenerated = $state<boolean | null>(null);
+  let generatedBusy = $state(false);
+
+  async function loadRetrievalSettings() {
+    const { data } = await api.GET('/courses/{course_id}/retrieval-settings', {
+      params: { path: { course_id: courseId } }
+    });
+    if (data && !destroyed) includeGenerated = data.include_generated;
+  }
+
+  async function setGeneratedSearch(value: boolean) {
+    if (generatedBusy) return;
+    generatedBusy = true;
+    try {
+      const { data } = await api.PUT('/courses/{course_id}/retrieval-settings', {
+        params: { path: { course_id: courseId } }, body: { include_generated: value }
+      });
+      if (data && !destroyed) includeGenerated = data.include_generated;
+    } catch (caught) {
+      toast(caught instanceof Error ? caught.message : 'Could not change study-material search.', 'error');
+    } finally {
+      generatedBusy = false;
+    }
+  }
   let loading = $state(true);
   let error = $state<unknown>(null);
   let actionError = $state<unknown>(null);
@@ -134,7 +158,7 @@
   let anyPending = $derived(
     sources.some((source) => source.status === 'uploaded' || source.status === 'scanned')
   );
-  let hasIndexed = $derived(sources.some((source) => source.status === 'indexed'));
+  let hasIndexed = $derived(sources.some((source) => source.status === 'indexed' || source.has_index));
 
   let destroyed = false;
 
@@ -181,7 +205,7 @@
       });
       if (err || !data) throw err ?? new Error('unexpected empty response');
       course = data;
-      await Promise.all([loadSources(), chats.loadList(), loadArtifacts()]);
+      await Promise.all([loadSources(), chats.loadList(), loadArtifacts(), loadRetrievalSettings()]);
       void loadModels();
       const wanted = page.url.searchParams.get('chat');
       if (wanted && chats.conversations.some((c) => c.conversation_id === wanted)) {
@@ -605,6 +629,9 @@
                   selected={chats.active?.source_ids ?? null}
                   disabled={chats.sending}
                   onchange={setSources}
+                  {includeGenerated}
+                  {generatedBusy}
+                  ongeneratedchange={setGeneratedSearch}
                 />
                 <ModelPicker
                   options={modelOptions}

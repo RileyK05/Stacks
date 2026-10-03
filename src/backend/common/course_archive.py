@@ -10,9 +10,9 @@ Format v2 is a zip holding:
 
 The importer also accepts source-only format v1.
 
-The full search index, embeddings, TOC, and course memory are rebuilt on
-import. Cited passages have small snapshots so old answers and artifact
-citations stay readable even after the search index is rebuilt.
+The full search index and embeddings are rebuilt on import. Student memory
+is carried separately in the archive. Cited passages have small snapshots so
+old answers and artifact citations stay readable after the search index is rebuilt.
 
 Import treats the archive as untrusted input. Only members the manifest
 names are read, by exact name (nothing is extracted by path); declared and
@@ -270,7 +270,7 @@ def _discard(course_id: UUID) -> None:
     courses_repo.move_to_trash(course_id)
     courses_repo.purge_course(course_id)
     with connection() as conn:
-        conn.execute("DELETE FROM course_memories WHERE course_id = ?", (course_id,))
+        conn.execute(get("course_memory", "delete_memory"), {"course_id": course_id})
         conn.commit()
 
 

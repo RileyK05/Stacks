@@ -17,7 +17,7 @@ from src.backend.common.schemas.learning import (
     PracticeSuite,
     TeachingMethod,
 )
-from src.backend.student_model import learning
+from src.backend.student_model import inspection, learning
 
 
 class Observation(BaseModel):
@@ -69,7 +69,7 @@ class LearningArchive(BaseModel):
 def export_learning(conn: Connection, course_id: UUID) -> LearningArchive:
     suites = [
         PracticeSuite.model_validate(r)
-        for r in learning.rows(conn, "suites", course_id=course_id)
+        for r in inspection.rows(conn, "suites", course_id=course_id)
     ]
     return LearningArchive(
         suites=suites,
@@ -87,17 +87,17 @@ def export_learning(conn: Connection, course_id: UUID) -> LearningArchive:
         ],
         runs=[
             learning.run_view(conn, r)
-            for r in learning.rows(conn, "runs", course_id=course_id)
+            for r in inspection.rows(conn, "runs", course_id=course_id)
         ],
         observations=[
             Observation.model_validate(r)
-            for r in learning.rows(conn, "observations", course_id=course_id)
+            for r in inspection.rows(conn, "observations", course_id=course_id)
         ],
-        experiments=learning.experiments(conn, course_id),
+        experiments=inspection.experiments(conn, course_id),
         assessments=[
             Assessment.model_validate(r)
             for s in suites
-            for r in learning.rows(conn, "assessments", suite_id=s.suite_id)
+            for r in inspection.rows(conn, "assessments", suite_id=s.suite_id)
         ],
     )
 

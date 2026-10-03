@@ -78,9 +78,12 @@ def test_bridge_requires_its_own_token_when_configured(
 
     client = TestClient(create_office())
     assert client.get("/health").json()["token_required"] is True
-    assert client.post(
-        "/process-selection", json={"host": "powerpoint", "text": "x"}
-    ).status_code == 401
+    assert (
+        client.post(
+            "/process-selection", json={"host": "powerpoint", "text": "x"}
+        ).status_code
+        == 401
+    )
     ok = client.post(
         "/process-selection",
         json={"host": "powerpoint", "text": "x"},
@@ -93,7 +96,7 @@ def test_courses_mark_the_one_office_was_opened_from(
     office_client: TestClient,
 ) -> None:
     from src.backend.common import courses_repo, settings_repo
-    from src.backend.office_addin.service import LAST_COURSE_SETTING
+    from src.backend.office_addin.preferences import LAST_COURSE_SETTING
 
     first = courses_repo.create_course("Econ 301")
     second = courses_repo.create_course("Stats 200")

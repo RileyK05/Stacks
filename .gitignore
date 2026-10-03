@@ -5,7 +5,7 @@ __pycache__/
 .venv/
 venv/
 .env
-.pytest_cache/
+.pytest_*/
 .mypy_cache/
 .ruff_cache/
 
@@ -28,7 +28,6 @@ node_modules/
 # OS
 .DS_Store
 Thumbs.db
-.pytest_tmp/
 
 # Desktop build output
 /dist/

@@ -123,8 +123,7 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
             remaining -= len(candidate.text)
         used = dataclasses.replace(result, candidates=tuple(kept))
         citations = [
-            WorkCitation(**dataclasses.asdict(c))
-            for c in _citations(conn, tuple(c.chunk_id for c in kept))
+            WorkCitation(**dataclasses.asdict(c)) for c in _citations(conn, kept)
         ]
         _, behavior, _ = learning.adaptation(
             conn, course_id, query, source_ids=[c.source_id for c in kept]
@@ -239,9 +238,7 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
                 "The answer contained an unsupported source reference. Try again."
             )
     with connection() as conn:
-        stored = trace.record_trace(
-            conn, course_id, search, used, toc_entry_ids=result.matched_toc_entry_ids
-        )
+        stored = trace.record_trace(conn, course_id, search, used)
         reply = WorkReply(
             text=text,
             model=model,

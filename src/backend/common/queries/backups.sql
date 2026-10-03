@@ -116,3 +116,9 @@ SELECT name FROM sqlite_master WHERE type IN ('table', 'view');
 
 -- name: schema_versions
 SELECT version FROM schema_migrations;
+
+-- name: delete_passage_windows
+DELETE FROM passage_windows;
+
+-- name: delete_graph_edges
+DELETE FROM graph_edges;

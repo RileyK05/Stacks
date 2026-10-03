@@ -3686,3 +3686,105 @@ and neutral labels. This prevents invented descriptions, not incorrect inferred
 structure: exact co-occurrence does not establish entailment. The latest map
 under-covers named examples, and Explain/quiz semantics remain B-06. Map generation
 must not turn its own output into student preferences, hypotheses, or capability.
+
+## 2026-10-01 — Course graph design: chunks are nodes, concepts annotate
+
+The mind map's underlying graph never populated: `extract_knowledge` is a
+recorded skip (`ingest/orchestrator.py:300`) and `MindMapContent` is generated
+per chat message, so `concepts`/`dependencies` have no writer and no course-wide
+structure exists. Chosen design (full plan in `plan-notebook.md`):
+
+Nodes are chunks, not concepts. Chunks are already the embedded unit and are
+L2-normalized, so similarity is real passage cosine. A separate concept
+embedding was rejected: a generated vector space lets non-concepts become
+concepts and crowds the map. Concepts are annotations over chunks and must have
+at least one chunk. Edges are weighted chunk↔chunk cosine kept by minimum
+strength, not top-k, so a hub like "derivative" retains every strong link.
+Hierarchy comes from agglomerative clustering (scipy); nested clusters are
+families and subnodes, and each family's core chunk is its medoid. TOC-preferred
+and uniform clustering are both implemented and compared on results and cost.
+
+Similarity edges, cluster membership, and labels are `hypothesis`-level and
+shown as inferred; only TOC-derived structure is grounded. Cohesion and bridge
+outlier flags surface possible misplacement for inspection but never rewrite
+the graph, and no flag claims objective wrongness. This changes product
+language in `project.md` and `system.md`, which currently say map
+position/comparison implies nothing. Tracked as docket B-15; the dependency
+seam becomes live once concept_chunks links concepts to chunks and fixes the
+concept-to-whole-source precision gap.
+
+First pass landed (same day) on `codex/full-chat-review`: migration 013
+(`graph_edges`, `concept_chunks`, `graph_clusters`, `graph_cluster_members`),
+`configs/graph.toml`, `backend/graph/` (edges, clustering, concepts, view),
+`extract_knowledge` replaced with per-chunk concept annotation, the dependency
+seam re-pointed at `concept_chunks`, prompt 36 for the extractor, and
+`GET /courses/{id}/graph` (frontend types regenerated). Gates passed: 790
+backend tests, ruff, strict mypy across 140 files. Deliberately open: the two
+clustering modes are not yet compared on a real course, cluster labels are not
+LLM-written (TOC title or null), the mind map UI still renders per-message maps,
+and the `project.md`/`system.md` similarity language is unchanged. Concept
+extraction is enrichment (a missing provider skips it); the dependency seam now
+reads `concept_chunks`, so a concept with no chunk is not retrievable.
+
+**Same day, Q1 decision.** The user chose to pull concept tagging out of the
+ingest pipeline: upload stays model-free and deterministic (extract → chunks →
+embeddings → similarity edges → clusters), and tagging runs as a separate,
+re-runnable job (`graph/jobs.py`; `POST /courses/{id}/graph/tag`, status at
+`GET /courses/{id}/graph/tag`). `extract_knowledge` is again a recorded skip.
+Rationale: hundreds of model calls must not gate uploads, and improving the
+prompt should be a re-run, not a re-ingest. The job replaces a course's concepts
+atomically, so a failure leaves the previous tagging intact. In doing so the
+same-chunk dependency bug was fixed: `depends_on` now resolves against the
+whole course vocabulary (`replace_course_concepts`), so `chain rule → derivative`
+is written even when the two are named in different chunks. Note the user's
+framing that emerged in discussion: this is a **similarity taxonomy**
+(big topic → methods, e.g. derivatives → power/chain/product rule), NOT a
+prerequisite tree; `depends_on` belongs to a separate requisites architecture and
+is not what drives the map. Remaining: cluster labels, top-level roll-up
+(connections only between big nodes, children inherit the parent's), and the
+graph as a soft fused fifth retrieval seam. Gates after Q1: 794 backend tests,
+ruff, strict mypy across 141 files.
+
+## 2026-10-01 — RAG replacement drops the prerequisite graph
+
+The user clarified that "binary graph" referred to prerequisite relationships
+and explicitly cut that architecture. The replacement keeps source containers,
+coherent passages, ordered neighbors and similarity links. The encoder selects
+nearby supporting context at retrieval time; no prerequisite or supporting-context
+dependency graph is persisted. The tutor will tentatively suggest background
+review and practice through the existing prompt registry. Suggestions alone do
+not change COURSE proficiency or CORE preferences. `plan-rag-storage.md` owns the
+active implementation plan, including retirement of existing dependency retrieval
+and `depends_on` extraction. This is a planning decision; runtime removal and
+the prompt change have not been implemented.
+
+
+## 2026-10-01 — Passage RAG implemented; old knowledge stores retired
+
+Completed the source-backed SQLite passage architecture and conversational
+prerequisite-review prompt. Original IDs/evidence, learner records and old
+annotations survive migration; indexing does not refresh student memory.
+Legacy annotations are saved study artifacts, with generated lookup opt-in and
+original-support scope checks. Parent/order and bounded inferred similarity
+replace TOC/clustering/dependency subsystems; no separate graph engine was added.
+Copied-database acceptance exposed and repaired retired Office fields during
+migration 012, preserving their metadata in exported artifact provenance.
+The temporary RAG plan and superseded graph milestone are retired. Original TOC
+candidate entries C-04/C-21/C-22/C-32, P-09/P-11/P-14, T-12 and dead-package/mapping
+entries D-12/D-15/D-16 were removed with their retired paths. Broader retrieval and generated
+answer correctness remain B-07/B-06; green mechanical checks do not close them.
+
+## 2026-10-02 — Code coherence after the rebases
+
+Removed runtime scaffolding for obsolete chat/claim/practice models, the unused
+old chunker and uncalled SQL/prompts. Existing data and migrations remain intact;
+saved HTML workspace parsing is a live compatibility path and was retained.
+Read-only student inspection is separated from practice writes, and Office course
+preferences no longer depend on setup/hosting. These remove the two deferred import
+cycles. Public API shapes and retained prompt content are unchanged. Python
+formatting now has a CI gate; frontend tests share runtime/API and draft fixtures.
+Resolved D-06/D-09/D-11/D-14/D-17/D-23 and T-11/T-31 leave the docket; D-13 was
+cleared because saved workspace HTML is parsed and rendered with citation guards.
+The lower test count reflects retired-code tests, not removal of active learning,
+archive, backup or retrieval acceptance. Remaining semantic/native quality gates
+stay open in the existing docket.

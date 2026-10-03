@@ -21,7 +21,7 @@ import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from fastapi.testclient import TestClient
-from src.backend.office_addin import certs, manifest, service, windows
+from src.backend.office_addin import certs, manifest, preferences, service, windows
 
 
 @dataclass
@@ -260,7 +260,7 @@ def test_open_new_document_remembers_the_course(
     course = courses_repo.create_course("Econ 301")
     assert service.open_document("excel", None, course.course_id) == "excel"
     assert fake_windows.launched == [("excel", None)]
-    assert service.last_course() == str(course.course_id)
+    assert preferences.last_course() == str(course.course_id)
 
 
 def test_open_file_picks_the_app_from_its_extension(

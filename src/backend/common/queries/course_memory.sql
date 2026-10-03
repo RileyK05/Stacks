@@ -1,23 +1,10 @@
 -- Course memory (decision 007): the per-course keepsake node.
 
--- name: memory_concepts
-SELECT name, definition
-FROM concepts
-WHERE course_id = :course_id
-ORDER BY name;
-
 -- name: memory_sources
 SELECT filename
 FROM sources
 WHERE course_id = :course_id
 ORDER BY created_at, filename;
-
--- name: memory_objects
-SELECT memory.kind AS kind, memory.content
-FROM memory_objects AS memory
-JOIN concepts AS concept ON concept.concept_id = memory.concept_id
-WHERE concept.course_id = :course_id
-ORDER BY memory.kind, memory.memory_id;
 
 -- name: memory_evidence
 WITH representative_chunks AS (
@@ -60,3 +47,7 @@ SELECT memory_id, course_id, course_ref, name, summary, key_concepts,
        token_budget, summary_version, created_at, updated_at
 FROM course_memories
 ORDER BY updated_at DESC;
+
+-- name: delete_memory
+-- Roll back an incomplete import; its keepsake never represented a live course.
+DELETE FROM course_memories WHERE course_id = :course_id;

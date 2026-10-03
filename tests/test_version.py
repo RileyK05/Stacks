@@ -78,6 +78,9 @@ def test_set_version_updates_every_lockfile(
     set_version.set_version("1.2.3")
 
     assert 'version = "1.2.3"' in paths["CARGO_LOCK"].read_text(encoding="utf-8")
-    assert json.loads(paths["PACKAGE_LOCK"].read_text(encoding="utf-8"))[
-        "packages"
-    ][""]["version"] == "1.2.3"
+    assert (
+        json.loads(paths["PACKAGE_LOCK"].read_text(encoding="utf-8"))["packages"][""][
+            "version"
+        ]
+        == "1.2.3"
+    )

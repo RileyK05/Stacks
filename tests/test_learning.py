@@ -8,7 +8,7 @@ import pytest
 from src.backend.common import course_memory_repo, courses_repo, provider
 from src.backend.common.db import connection, utc_now
 from src.backend.common.schemas.learning import PracticeQuestion
-from src.backend.student_model import learning, research
+from src.backend.student_model import inspection, learning, research
 from tests.conftest import configure_test_provider
 from tests.factories import add_chunk, make_course
 
@@ -447,7 +447,7 @@ def test_portable_learning_keeps_distilled_deleted_sessions_without_duplicating_
         ).fetchone()["source_id"]
         study = export_learning(conn, course.course_id)
         assert study.runs == [] and len(study.observations) == 2
-        root_before = learning.core(conn).model_dump()
+        root_before = inspection.core(conn).model_dump()
         new_source, new_chunk = uuid4(), uuid4()
         mapping = import_learning(
             conn, other.course_id, study, {source: new_source}, {chunk: new_chunk}
@@ -460,7 +460,7 @@ def test_portable_learning_keeps_distilled_deleted_sessions_without_duplicating_
         assert target.evidence[0]["sources"][0]["source_id"] == str(new_source)
         assert target.evidence[0]["suite_id"] == str(mapping[test])
         assert imported.runs == []
-        assert learning.core(conn).model_dump() == root_before
+        assert inspection.core(conn).model_dump() == root_before
         excluded = next(t for t in imported.targets if t.capability == "application")
         assert excluded.proficiency is None
     notebook = archive_notebook.export_notebook(course.course_id)

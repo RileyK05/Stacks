@@ -69,7 +69,8 @@ def test_ask_is_honest_about_missing_provider(client: TestClient) -> None:
 
 
 def test_empty_model_reply_has_actionable_error_without_saving_a_trace(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     course_id = _seeded_course(client)
     configure_test_provider(monkeypatch, "")

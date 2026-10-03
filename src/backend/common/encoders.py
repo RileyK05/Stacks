@@ -129,7 +129,15 @@ class OnnxEmbedder:
         root = ensure_files(spec)
         self._session = _session(root / spec.model.path)
         self._tokenizer = _tokenizer(root, spec, max_length)
+        from tokenizers import Tokenizer
+
+        self._count_tokenizer = Tokenizer.from_str(self._tokenizer.to_str())
+        self._count_tokenizer.no_truncation()
+        self._count_tokenizer.no_padding()
         self._dimension: int | None = None
+
+    def token_count(self, text: str) -> int:
+        return len(self._count_tokenizer.encode(text).ids)
 
     def get_embedding_dimension(self) -> int:
         if self._dimension is None:

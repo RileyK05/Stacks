@@ -1,9 +1,8 @@
 """Hybrid retrieval funnel tests (decision 008).
 
-Fixtures build one course with chunks + locators + TOC + dependency edges
-directly (retrieval reads derived rows; ingestion tests already cover how
-they get there). Asserts: each seam's contract, dormant behavior, fusion
-mixing (union + caps + quotas), layer attribution, and trace persistence.
+Fixtures build course passages, locators, vectors and similarity edges directly.
+Checks cover selected sources, fusion caps/quotas, attribution and saved traces;
+ingestion tests cover publication of these rows.
 """
 
 from uuid import uuid4
@@ -15,9 +14,6 @@ from src.backend.retrieval.config import load_retrieval_policy
 from src.backend.retrieval.funnel import RetrievalPolicy
 from tests.factories import (
     add_chunk,
-    add_concept,
-    add_memory_object,
-    add_toc_entry,
     chunk_source_locator,
     insert_chunks,
     insert_source,
@@ -62,66 +58,6 @@ def test_keyword_seam_empty_query_is_safe(course) -> None:
     add_chunk(course.course_id, "linearity everywhere")
     with connection() as conn:
         assert funnel.keyword_seam(conn, course.course_id, "   ", 20) == {}
-
-
-def test_toc_seam_static_match_and_dormancy(course) -> None:
-    policy = _policy()
-    with connection() as conn:
-        dormant, dormant_entries = funnel.toc_seam(
-            conn, course.course_id, "explain linearity", policy.toc_limit
-        )
-        assert dormant == {}, "no entries: the seam must contribute nothing"
-        assert dormant_entries == ()
-        chunk_id = add_chunk(course.course_id, "linear maps preserve structure")
-        entry_id = add_toc_entry(
-            course.course_id,
-            chunk_id,
-            "Linearity basics",
-            "definition of linearity",
-        )
-        candidates, matched_entries = funnel.toc_seam(
-            conn, course.course_id, "explain linearity", policy.toc_limit
-        )
-    assert str(chunk_id) in {str(cid) for cid in candidates}
-    assert str(entry_id) in {str(eid) for eid in matched_entries}
-
-
-def test_dependency_seam_dormant_without_edges(course) -> None:
-    concept_id = add_concept(course.course_id, "linearity", [])
-    policy = _policy()
-    with connection() as conn:
-        candidates = funnel.dependency_seam(
-            conn, course.course_id, [concept_id], policy.dependency_limit
-        )
-    assert candidates == {}, "concept without edges: dormancy, not an error"
-
-
-def test_dependency_seam_walks_edges(course) -> None:
-    prereq_concept = add_concept(course.course_id, "vector spaces", [])
-    linearity_concept = add_concept(
-        course.course_id, "linearity", [], depends_on=[prereq_concept]
-    )
-    prereq_chunk = add_chunk(course.course_id, "vector spaces have bases")
-    source_id, _locator = chunk_source_locator(prereq_chunk)
-    add_memory_object(prereq_concept, source_id, "prereq material")
-
-    policy = _policy()
-    with connection() as conn:
-        candidates = funnel.dependency_seam(
-            conn, course.course_id, [linearity_concept], policy.dependency_limit
-        )
-    assert str(prereq_chunk) in {str(cid) for cid in candidates}
-
-
-def test_concept_matches_by_synonym(course) -> None:
-    concept_id = add_concept(
-        course.course_id, "linearity", ["linear maps", "structure preserving"]
-    )
-    with connection() as conn:
-        matches = funnel.concept_matches(
-            conn, course.course_id, "how do linear maps behave", 5
-        )
-    assert str(concept_id) in {str(row["concept_id"]) for row in matches}
 
 
 def test_embedding_seam_dormant_and_active(course) -> None:
@@ -187,23 +123,6 @@ def test_source_filter_is_applied_before_candidate_limit(course) -> None:
 # --- fusion ---------------------------------------------------------------
 
 
-def test_fuse_mixes_and_attributes_layers(course) -> None:
-    keyword_hit = add_chunk(course.course_id, "linearity in chapter 5 usage")
-    toc_chunk = add_chunk(course.course_id, "linearity definition chapter")
-    add_toc_entry(course.course_id, toc_chunk, "Linearity", "about linearity")
-    policy = _policy(final_k=10)
-    with connection() as conn:
-        keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
-        toc, _entries = funnel.toc_seam(conn, course.course_id, QUERY, 20)
-        fused = funnel.fuse(keyword, toc, {}, {}, policy=policy)
-    ids = {str(candidate.chunk_id) for candidate in fused}
-    assert str(keyword_hit) in ids
-    assert str(toc_chunk) in ids
-    by_id = {str(candidate.chunk_id): candidate for candidate in fused}
-    assert "keyword" in by_id[str(keyword_hit)].layers
-    assert "toc" in by_id[str(toc_chunk)].layers
-
-
 def test_fuse_single_source_is_never_starved(course) -> None:
     """The #3 lesson, kept by construction: five keyword hits sharing ONE
     source all surface — with no competing source there is nothing to
@@ -214,7 +133,7 @@ def test_fuse_single_source_is_never_starved(course) -> None:
     policy = _policy(final_k=10)
     with connection() as conn:
         keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
-    fused = funnel.fuse(keyword, {}, {}, {}, policy=policy)
+    fused = funnel.fuse(keyword, {}, {**{}, **{}}, policy=policy)
     assert len(fused) == 5
 
 
@@ -234,8 +153,8 @@ def test_fuse_preserves_candidates_for_reuse(ranks) -> None:
         for index, rank in enumerate(ranks)
     ]
     keyword = {candidate.chunk_id: candidate for candidate in candidates}
-    first = funnel.fuse(keyword, {}, {}, {}, policy=_policy())
-    second = funnel.fuse(keyword, {}, {}, {}, policy=_policy())
+    first = funnel.fuse(keyword, {}, {**{}, **{}}, policy=_policy())
+    second = funnel.fuse(keyword, {}, {**{}, **{}}, policy=_policy())
     assert tuple(candidate.rank for candidate in candidates) == ranks
     assert first == second
     assert {candidate.chunk_id for candidate in first} == set(keyword)
@@ -251,7 +170,7 @@ def test_fuse_equal_relevance_splits_evenly(course) -> None:
     policy = _policy(final_k=6)
     with connection() as conn:
         keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
-    fused = funnel.fuse(keyword, {}, {}, {}, policy=policy)
+    fused = funnel.fuse(keyword, {}, {**{}, **{}}, policy=policy)
     assert len(fused) == 6
     counts: dict[str, int] = {}
     for candidate in fused:
@@ -271,7 +190,7 @@ def test_fuse_embedding_orders_final_set(course) -> None:
         embeddings = funnel.embedding_seam(
             conn, course.course_id, query_embedding, "test-embed", 20
         )
-        fused = funnel.fuse(keyword, {}, {}, embeddings, policy=policy)
+        fused = funnel.fuse(keyword, embeddings, {**{}, **{}}, policy=policy)
     assert [str(candidate.chunk_id) for candidate in fused][0] == str(high)
 
 
@@ -287,7 +206,7 @@ def test_fuse_keyword_orders_strongest_evidence_first(course) -> None:
     policy = _policy(final_k=10)
     with connection() as conn:
         keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
-        fused = funnel.fuse(keyword, {}, {}, {}, policy=policy)
+        fused = funnel.fuse(keyword, {}, {**{}, **{}}, policy=policy)
     ranks = {str(candidate.chunk_id): candidate.rank for candidate in fused}
     assert ranks[str(strong)] > ranks[str(weak)], (
         "highest ts_rank must normalize highest, not lowest"
@@ -295,7 +214,7 @@ def test_fuse_keyword_orders_strongest_evidence_first(course) -> None:
     assert str(fused[0].chunk_id) == str(strong)
 
 
-def test_fuse_dependency_orders_nearest_first(course) -> None:
+def test_fuse_graph_orders_strongest_first(course) -> None:
     """The dependency seam's rank is arrival position negated (best at 0,
     higher is better). Normalization must keep that direction."""
     from src.backend.retrieval.funnel import Candidate as _Candidate
@@ -303,7 +222,7 @@ def test_fuse_dependency_orders_nearest_first(course) -> None:
     best = uuid4()
     mid = uuid4()
     worst = uuid4()
-    dep = frozenset({"dependency"})
+    dep = frozenset({"graph"})
 
     def _c(chunk_id, idx, text, rank):
         return _Candidate(chunk_id, uuid4(), uuid4(), idx, text, dep, rank)
@@ -314,7 +233,7 @@ def test_fuse_dependency_orders_nearest_first(course) -> None:
         worst: _c(worst, 2, "worst", -2.0),
     }
     policy = _policy(final_k=10)
-    fused = funnel.fuse({}, {}, seam, {}, policy=policy)
+    fused = funnel.fuse({}, {}, {**{}, **seam}, policy=policy)
     order = [str(candidate.chunk_id) for candidate in fused]
     assert order == [str(best), str(mid), str(worst)]
 
@@ -334,7 +253,7 @@ def test_fuse_embedding_only_quota(course) -> None:
         embeddings = funnel.embedding_seam(
             conn, course.course_id, query_embedding, "test-embed", 20
         )
-        fused = funnel.fuse(keyword, {}, {}, embeddings, policy=policy)
+        fused = funnel.fuse(keyword, embeddings, {**{}, **{}}, policy=policy)
     ids = {str(candidate.chunk_id) for candidate in fused}
     assert str(keyword_hit) in ids
     semantic_ids = (str(semantic_only_1), str(semantic_only_2))
@@ -361,20 +280,21 @@ def test_retrieval_dormant_seams_contribute_nothing(course) -> None:
         result = funnel.retrieve(conn, course.course_id, QUERY, policy)
     assert result.candidates == ()
     assert result.layer_contribution == {}
-    assert result.matched_concept_ids == ()
 
 
 # --- review-fix regressions (2026-09-13 external review) -----------------
 
 
 def test_keyword_seam_survives_math_syntax(course) -> None:
-    """f(x) = x^2 must not crash to_tsquery — operator characters are
+    """Math notation must not crash FTS5 — operator characters are
     stripped before SQL sees them. This is the flagship seam; a math
     question is the target domain's most normal query."""
-    add_chunk(course.course_id, "the function f of x equals x squared")
+    chunk = add_chunk(course.course_id, "the function f of x equals x squared")
     with connection() as conn:
-        candidates = funnel.keyword_seam(conn, course.course_id, "f(x) = x^2 ?", 20)
-    assert candidates is not None
+        candidates = funnel.keyword_seam(
+            conn, course.course_id, "function f(x) = x^2 ?", 20
+        )
+    assert set(candidates) == {chunk}
 
 
 def test_keyword_seam_handles_operator_heavy_queries(course) -> None:
@@ -393,77 +313,7 @@ def test_keyword_seam_handles_operator_heavy_queries(course) -> None:
             "   ",
             "x",
         ]:
-            funnel.keyword_seam(conn, course.course_id, hostile, 20)
-
-
-def test_concept_matches_word_boundary_not_substring(course) -> None:
-    """A concept named 'rat' must not match 'iteration'; single-letter
-    concepts must never match (defense in depth on both sides)."""
-    rat_concept = add_concept(course.course_id, "rat", [])
-    add_concept(course.course_id, "f", [])
-    with connection() as conn:
-        matches = funnel.concept_matches(
-            conn, course.course_id, "explain the iteration process", 10
-        )
-    assert str(rat_concept) not in {str(r["concept_id"]) for r in matches}
-
-
-def test_concept_matches_survives_regex_metacharacters(course) -> None:
-    """Concept names are model-extracted, so regex metacharacters in them
-    must be escaped before they reach the regex engine. Unescaped, 'f(x'
-    raises InvalidRegularExpression and takes down the whole retrieve()
-    call — a single bad extracted name would break every question on the
-    course. 'O(n)' and 'f(x)' are the common case in a maths/CS course."""
-    for broken_name in ("f(x", "a**b", "x{2,", "set A [unclosed"):
-        add_concept(course.course_id, broken_name, [])
-    add_concept(course.course_id, "bad synonym holder", ["g(y"])
-    on_concept = add_concept(course.course_id, "O(n)", [])
-    with connection() as conn:
-        matches = funnel.concept_matches(
-            conn, course.course_id, "what is o(n) complexity here", 10
-        )
-    assert str(on_concept) in {str(row["concept_id"]) for row in matches}
-
-
-def test_concept_matches_metacharacters_are_literal(course) -> None:
-    """Escaped metacharacters match literally, not as regex operators: a
-    concept named 'a+b' must match 'a+b' and must NOT match 'aaab'."""
-    plus_concept = add_concept(course.course_id, "a+b", [])
-    with connection() as conn:
-        literal = funnel.concept_matches(
-            conn, course.course_id, "why does a+b hold", 10
-        )
-        quantifier = funnel.concept_matches(
-            conn, course.course_id, "we saw aaab today", 10
-        )
-    assert str(plus_concept) in {str(row["concept_id"]) for row in literal}
-    assert str(plus_concept) not in {str(row["concept_id"]) for row in quantifier}
-
-
-def test_retrieve_survives_malformed_concept_names(course) -> None:
-    """End to end: one malformed extracted concept name must not break
-    retrieval for the whole course — the keyword seam still answers."""
-    hit = add_chunk(course.course_id, "linearity of transformations")
-    add_concept(course.course_id, "f(x", [])
-    policy = _policy()
-    with connection() as conn:
-        result = funnel.retrieve(conn, course.course_id, QUERY, policy)
-    assert str(hit) in {str(c.chunk_id) for c in result.candidates}
-
-
-def test_toc_seam_word_boundary_not_substring(course) -> None:
-    """Entry 'Week 1 overview' must not match query word 'we' via raw
-    substring ILIKE — the seam full-text matches now."""
-    chunk_id = add_chunk(course.course_id, "week one course overview text")
-    add_toc_entry(course.course_id, chunk_id, "Week 1 overview", "course intro")
-    other = add_chunk(course.course_id, "totally unrelated content about proofs")
-    add_toc_entry(course.course_id, other, "Proof techniques", "about proofs")
-    with connection() as conn:
-        candidates, _entries = funnel.toc_seam(
-            conn, course.course_id, "when did we use induction", 20
-        )
-    ids = {str(cid) for cid in candidates}
-    assert str(other) not in ids, "'we' must not substring-match 'Week'"
+            assert funnel.keyword_seam(conn, course.course_id, hostile, 20) == {}
 
 
 def test_embedding_dimension_mismatch_is_excluded(course) -> None:
@@ -480,20 +330,6 @@ def test_embedding_dimension_mismatch_is_excluded(course) -> None:
             conn, course.course_id, [1.0, 0.0], "test-embed", 20
         )
     assert list(candidates) == [matching]
-
-
-def test_dependency_seam_is_deterministic(course) -> None:
-    """Same inputs → same candidate order (ORDER BY in the UNION)."""
-    prereq = add_concept(course.course_id, "vector spaces", [])
-    target = add_concept(course.course_id, "linearity", [], depends_on=[prereq])
-    source_id, _locator = chunk_source_locator(
-        add_chunk(course.course_id, "vector spaces have bases")
-    )
-    add_memory_object(prereq, source_id, "prereq material")
-    with connection() as conn:
-        first = funnel.dependency_seam(conn, course.course_id, [target], 20)
-        second = funnel.dependency_seam(conn, course.course_id, [target], 20)
-    assert list(first) == list(second)
 
 
 def test_trace_records_per_chunk_layers(course) -> None:
@@ -617,7 +453,7 @@ def test_fuse_allocates_slots_by_relevance(course) -> None:
         embeddings = funnel.embedding_seam(
             conn, course.course_id, [1.0, 0.0], "test-embed", 20
         )
-        fused = funnel.fuse({}, {}, {}, embeddings, policy=policy)
+        fused = funnel.fuse({}, embeddings, {**{}, **{}}, policy=policy)
     counts: dict[str, int] = {}
     for candidate in fused:
         counts[str(candidate.source_id)] = counts.get(str(candidate.source_id), 0) + 1
@@ -660,7 +496,7 @@ def test_fuse_allocation_floor_and_availability(course) -> None:
         embeddings = funnel.embedding_seam(
             conn, course.course_id, [1.0, 0.0], "test-embed", 20
         )
-        fused = funnel.fuse({}, {}, {}, embeddings, policy=policy)
+        fused = funnel.fuse({}, embeddings, {**{}, **{}}, policy=policy)
     counts: dict[str, int] = {}
     for candidate in fused:
         counts[str(candidate.source_id)] = counts.get(str(candidate.source_id), 0) + 1
@@ -681,7 +517,7 @@ def test_fuse_single_source_fills_naturally(course) -> None:
     policy = _policy(final_k=10)
     with connection() as conn:
         keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
-    fused = funnel.fuse(keyword, {}, {}, {}, policy=policy)
+    fused = funnel.fuse(keyword, {}, {**{}, **{}}, policy=policy)
     assert len(fused) == 10
 
 
@@ -711,7 +547,7 @@ def test_fuse_multi_seam_relevance_is_cross_seam_max(course) -> None:
         embeddings = funnel.embedding_seam(
             conn, course.course_id, [1.0, 0.0], "test-embed", 20
         )
-        fused = funnel.fuse(keyword, {}, {}, embeddings, policy=policy)
+        fused = funnel.fuse(keyword, embeddings, {**{}, **{}}, policy=policy)
     # Both sources have exactly one chunk, so both must appear (2 slots,
     # 2 available) — the point is no crash from cross-seam comparison and
     # both are admitted rather than one seam's unit silently dominating.
@@ -733,7 +569,7 @@ def test_failed_sources_are_never_citable(course) -> None:
     with connection() as conn:
         keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
         emb = funnel.embedding_seam(conn, course.course_id, None, "test-embed", 20)
-    assert funnel.fuse(keyword, {}, {}, emb, policy=policy) == ()
+    assert funnel.fuse(keyword, emb, {**{}, **{}}, policy=policy) == ()
 
 
 def test_pending_sources_are_never_citable(course) -> None:

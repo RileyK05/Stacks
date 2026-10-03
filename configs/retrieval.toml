@@ -1,11 +1,11 @@
 [version]
-retrieval_config_version = "2"
+retrieval_config_version = "3"
 
 [funnel]
 # Per-seam candidate limits before fusion.
 keyword_limit = 20
-toc_limit = 20
-dependency_limit = 15
+graph_limit = 10
+generated_lookup_weight = 0.35
 embedding_limit = 15
 # Final cited set size after fusion.
 final_k = 10

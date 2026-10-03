@@ -8,9 +8,36 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, ConfigDict, StringConstraints
 from src.backend.api.deps import require_course
 from src.backend.common import course_memory_repo, courses_repo
+from src.backend.common.db import connection
 from src.backend.common.schemas.identity import Course, CourseMemory
+from src.backend.rag import generated
 
 router = APIRouter(tags=["courses"])
+
+
+@router.get(
+    "/courses/{course_id}/retrieval-settings",
+    response_model=generated.RetrievalSettings,
+)
+def retrieval_settings(course_id: UUID) -> generated.RetrievalSettings:
+    require_course(course_id)
+    with connection() as conn:
+        return generated.settings(conn, course_id)
+
+
+@router.put(
+    "/courses/{course_id}/retrieval-settings",
+    response_model=generated.RetrievalSettings,
+)
+def update_retrieval_settings(
+    course_id: UUID, payload: generated.RetrievalSettings
+) -> generated.RetrievalSettings:
+    require_course(course_id)
+    with connection() as conn:
+        generated.save_settings(conn, course_id, payload)
+        conn.commit()
+    return payload
+
 
 # Trimmed before the length check: "   " used to pass min_length=1 and made a
 # course with no visible name (nothing to click, nothing to rename).

@@ -100,8 +100,7 @@ def test_purge_removes_every_derived_row_and_the_files() -> None:
     course_id = _course("Everything")
     source_id = _source(course_id, "lecture.pdf", file_hash="a" * 64)
     locator_id, chunk_id = uuid4(), uuid4()
-    concept_a, concept_b = uuid4(), uuid4()
-    memory_id, toc_id, run_id = uuid4(), uuid4(), uuid4()
+    run_id = uuid4()
     with connection() as conn:
         conn.execute(
             "INSERT INTO locators (locator_id, source_id, locator_type, start, label)"
@@ -142,36 +141,11 @@ def test_purge_removes_every_derived_row_and_the_files() -> None:
             " reason, queued_at) VALUES (?, ?, ?, 'x', ?)",
             (uuid4(), source_id, course_id, datetime.now(UTC)),
         )
-        for concept in (concept_a, concept_b):
-            conn.execute(
-                "INSERT INTO concepts (concept_id, course_id, name, definition)"
-                " VALUES (?, ?, ?, 'd')",
-                (concept, course_id, f"c{concept}"),
-            )
         conn.execute(
-            "INSERT INTO dependencies (dep_id, prereq_id, dependent_id)"
-            " VALUES (?, ?, ?)",
-            (uuid4(), concept_a, concept_b),
-        )
-        conn.execute(
-            "INSERT INTO memory_objects (memory_id, concept_id, source_id, kind,"
-            " content) VALUES (?, ?, ?, 'concept', 'x')",
-            (memory_id, concept_a, source_id),
-        )
-        conn.execute(
-            "INSERT INTO memory_object_evidence (evidence_id, memory_id, chunk_id)"
-            " VALUES (?, ?, ?)",
-            (uuid4(), memory_id, chunk_id),
-        )
-        conn.execute(
-            "INSERT INTO tables_of_contents (toc_id, course_id, version)"
-            " VALUES (?, ?, 1)",
-            (toc_id, course_id),
-        )
-        conn.execute(
-            "INSERT INTO toc_entries (entry_id, toc_id, source_id, locator_id,"
-            " title, description) VALUES (?, ?, ?, ?, 'Eigen', 'values')",
-            (uuid4(), toc_id, source_id, locator_id),
+            "INSERT INTO source_indexes (source_id, revision, file_hash,"
+            " extraction_version, segmentation_version, semantic_used)"
+            " VALUES (?, 'v1', 'hash', 'v1', 'v1', 0)",
+            (source_id,),
         )
         conn.execute(
             "INSERT INTO retrieval_traces (trace_id, course_id, query)"
@@ -276,7 +250,6 @@ def test_memory_summary_keeps_evidence_within_tight_budget(
     source_ids = [
         _source(course_id, f"notes-{i:02}.txt", file_hash=f"{i:064x}") for i in range(3)
     ]
-    long_definition = "a very long course-specific definition " * 30
     with connection() as conn:
         for source_id in source_ids:
             locator_id = uuid4()
@@ -289,12 +262,6 @@ def test_memory_summary_keeps_evidence_within_tight_budget(
                 "INSERT INTO chunks (chunk_id, source_id, locator_id, chunk_index,"
                 " text) VALUES (?, ?, ?, 0, 'representative excerpt text')",
                 (uuid4(), source_id, locator_id),
-            )
-        for i in range(40):
-            conn.execute(
-                "INSERT INTO concepts (concept_id, course_id, name, definition)"
-                " VALUES (?, ?, ?, ?)",
-                (uuid4(), course_id, f"Concept {i}", long_definition),
             )
         conn.commit()
 
@@ -312,7 +279,9 @@ def test_memory_summary_keeps_evidence_within_tight_budget(
     assert "notes-00.txt" in evidence and "sha256=" in evidence
     for piece in evidence.split("- ")[1:]:
         assert not piece.rstrip().endswith("sha256=")
-    assert "Concept 0" in memory["key_concepts"]
+    assert memory["key_concepts"] == [], (
+        "ingested facts do not imply student capability"
+    )
 
 
 def test_course_memory_refresh_updates_updated_at_not_created_at() -> None:

@@ -51,7 +51,9 @@ def test_migrations_apply_to_a_fresh_file_and_are_idempotent(tmp_path: Path) -> 
         "chunk_embeddings",
         "ingestion_runs",
         "pending_ingestion",
-        "toc_entries_fts",
+        "passage_windows",
+        "passage_containers",
+        "source_indexes",
         "retrieval_traces",
         "usage_ledger",
         "course_memories",
@@ -64,9 +66,7 @@ def test_migrations_apply_to_a_fresh_file_and_are_idempotent(tmp_path: Path) -> 
 
 
 def test_no_migration_reuses_a_retired_number() -> None:
-    numbers = {
-        path.name[:3] for path in migrate_module.MIGRATIONS_DIR.glob("*.sql")
-    }
+    numbers = {path.name[:3] for path in migrate_module.MIGRATIONS_DIR.glob("*.sql")}
     assert not numbers & migrate_module.RETIRED_VERSIONS
 
 
@@ -183,16 +183,20 @@ def test_json_columns_reject_invalid_json() -> None:
         course_id = _course(conn)
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
-                "INSERT INTO concepts (concept_id, course_id, name, definition,"
-                " synonyms) VALUES (?, ?, 'n', 'd', 'not json')",
+                "INSERT INTO conversations"
+                " (conversation_id, course_id, title, source_ids)"
+                " VALUES (?, ?, 'n', 'not json')",
                 (uuid4(), course_id),
             )
         conn.execute(
-            "INSERT INTO concepts (concept_id, course_id, name, definition, synonyms)"
-            " VALUES (?, ?, 'n', 'd', '[\"alias\"]')",
+            "INSERT INTO conversations"
+            " (conversation_id, course_id, title, source_ids)"
+            " VALUES (?, ?, 'n', '[\"alias\"]')",
             (uuid4(), course_id),
         )
-        row = conn.execute("SELECT synonyms FROM concepts").fetchone()
+        row = conn.execute(
+            "SELECT source_ids AS synonyms FROM conversations"
+        ).fetchone()
     assert row["synonyms"] == ["alias"]
 
 

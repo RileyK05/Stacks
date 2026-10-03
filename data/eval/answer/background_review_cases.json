@@ -1,0 +1,29 @@
+{
+  "version": "1",
+  "cases": [
+    {
+      "id": "tentative-background-review",
+      "kind": "green_grounded",
+      "course_tag": "harness-course",
+      "question": "I am confused about scalar multiplication. How could I practice that before trying to understand linear transformations?",
+      "seed_chunk_labels": ["page 1", "page 2"],
+      "expectation": {
+        "citations_required": true,
+        "required_patterns": ["(?i)compute|calculate|try", "(?i)scalar|scaling"],
+        "forbidden_patterns": ["(?i)you (?:clearly|definitely) (?:lack|cannot|do not understand)"]
+      }
+    },
+    {
+      "id": "demonstrated-background-no-detour",
+      "kind": "green_grounded",
+      "course_tag": "harness-course",
+      "question": "I understand vector addition and scalar multiplication already. Explain what makes a transformation linear without sending me back to those basics.",
+      "seed_chunk_labels": ["page 1", "page 2"],
+      "expectation": {
+        "citations_required": true,
+        "required_patterns": ["(?i)addition|additivity", "(?i)scalar|scaling"],
+        "forbidden_patterns": ["(?i)\\breview\\b|\\brevisit\\b|if you are struggling"]
+      }
+    }
+  ]
+}

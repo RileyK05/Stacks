@@ -7,7 +7,6 @@ from uuid import UUID
 from pydantic import Field, model_validator
 from src.backend.common.schemas.base import (
     BaseRecord,
-    IngestionStage,
     IngestionStatus,
     _new_id,
     _now,
@@ -29,7 +28,7 @@ class IngestionRun(BaseRecord):
 class IngestionStageRun(BaseRecord):
     stage_run_id: UUID = Field(default_factory=_new_id)
     run_id: UUID
-    stage: IngestionStage
+    stage: str
     position: int
     depends_on_stage_id: UUID | None = None
     status: IngestionStatus = IngestionStatus.PENDING

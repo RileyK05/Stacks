@@ -1,6 +1,5 @@
-pipeline_version = "4"
+pipeline_version = "5"
 max_attempts = 2
-chunk_max_tokens = 512
 # The ingestion worker's own poll interval (review catch #7: it was
 # sharing lifecycle's maintenance_interval_seconds = 3600, so uploads
 # waited up to an hour). This knob is the ingestion loop's; the worker
@@ -25,21 +24,9 @@ name = "ocr"
 handler_version = "1"
 
 [[stages]]
-name = "build_locators"
+name = "prepare_passages"
 handler_version = "1"
 
 [[stages]]
-name = "build_chunks"
-handler_version = "1"
-
-[[stages]]
-name = "embed_chunks"
-handler_version = "1"
-
-[[stages]]
-name = "update_toc"
-handler_version = "1"
-
-[[stages]]
-name = "extract_knowledge"
+name = "publish_index"
 handler_version = "1"

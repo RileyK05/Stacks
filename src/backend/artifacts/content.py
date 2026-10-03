@@ -358,8 +358,10 @@ def from_workspace_item(
         )
     if isinstance(item, WorkspaceMindMap):
         return (
-            "mind_map", title or "Mind map",
-            item.model_dump(include={"nodes", "edges"}), [],
+            "mind_map",
+            title or "Mind map",
+            item.model_dump(include={"nodes", "edges"}),
+            [],
         )
     if isinstance(item, WorkspaceCode):
         return (

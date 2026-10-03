@@ -79,11 +79,6 @@ def _seed_data() -> tuple[str, str, bytes]:
             ),
         )
         conn.execute(
-            """INSERT INTO concepts(concept_id,course_id,name,definition)
-               VALUES(?,?,?,?)""",
-            (str(uuid4()), course_id, "Derivative", "Rate of change"),
-        )
-        conn.execute(
             """INSERT INTO course_memories(memory_id,course_id,course_ref,name,
                summary,summary_version) VALUES(?,?,?,?,?,?)""",
             (str(uuid4()), course_id, course_id, "Calculus", "Course focus", "v1"),
@@ -433,12 +428,9 @@ def test_tiers_preserve_actual_data_and_restore_exact_sources(
             ).fetchone()["summary"]
             assert "Course: Calculus" in summary
             assert "Evidence snapshot:" not in summary
-            assert (
-                restored_db.execute(
-                    "SELECT name FROM concepts WHERE course_id = ?", (course_id,)
-                ).fetchone()["name"]
-                == "Derivative"
-            )
+            assert restored_db.execute(
+                "SELECT content FROM artifacts WHERE course_id = ?", (course_id,)
+            ).fetchone()["content"] == {"text": "kept text"}
         finally:
             restored_db.close()
 

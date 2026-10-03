@@ -1,19 +1,4 @@
-"""Table of contents from the author's own structure (plan §10a step 1).
-
-No chat model: a TOC entry is a heading the author wrote, mapped to the
-locator it sits in, so every entry is grounded by construction.
-
-- Markdown: each `#` section locator is an entry.
-- PDF with bookmarks: each outline item is an entry on its page.
-- PDF without bookmarks: headings are detected from typography — text
-  runs set noticeably larger than the page's body text (≥ 1.12×; bold at
-  body size is inline emphasis, not a heading). A heading that wraps onto
-  a second line is merged; drop caps and page furniture are ignored.
-
-Sources with no detectable structure (plain text, flat PDFs) get no
-entries; the stage records that as a skip. Encoder-based boundaries for
-those (§10a step 2) come later.
-"""
+"""Recover document structure for passage parents, without a separate TOC store."""
 
 from __future__ import annotations
 
@@ -21,66 +6,33 @@ import io
 import re
 from dataclasses import dataclass
 from typing import Any
-from uuid import UUID
 
-from src.backend.ingest.extract import ExtractedSource, LocatorSpan
+from src.backend.ingest.extract import ExtractedSource
+from src.backend.rag.segment import ContainerSpan, containers
 
 HEADING_SIZE_RATIO = 1.12
 MAX_HEADING_WORDS = 14
-DESCRIPTION_CHARS = 240
 _LETTERS = re.compile(r"[A-Za-z].*[A-Za-z]")
-
-
-@dataclass(frozen=True)
-class TocDraft:
-    title: str
-    locator_id: UUID
-    description: str
 
 
 @dataclass(frozen=True)
 class _Heading:
     page: int  # 0-based
     title: str
+    level: int = 1
 
 
 def _clean(text: str) -> str:
     return " ".join(text.split())
 
 
-def _description(text: str, start: int, end: int, title: str) -> str:
-    """The text right after the heading inside its locator — what the TOC
-    seam matches on besides the title."""
-    body = text[start:end]
-    at = body.find(title) if title else -1
-    if at >= 0:
-        body = body[at + len(title) :]
-    return _clean(body)[:DESCRIPTION_CHARS]
-
-
-def markdown_entries(extracted: ExtractedSource) -> list[TocDraft]:
-    drafts: list[TocDraft] = []
-    for span in extracted.locators:
-        if span.locator_type != "section":
-            continue
-        title = span.label.removeprefix("§ ").strip()
-        drafts.append(
-            TocDraft(
-                title=title,
-                locator_id=span.locator_id,
-                description=_description(extracted.text, span.start, span.end, title),
-            )
-        )
-    return drafts
-
-
 def _outline_headings(reader: Any) -> list[_Heading]:
     headings: list[_Heading] = []
 
-    def walk(items: list[Any]) -> None:
+    def walk(items: list[Any], level: int = 1) -> None:
         for item in items:
             if isinstance(item, list):
-                walk(item)
+                walk(item, level + 1)
                 continue
             try:
                 page = reader.get_destination_page_number(item)
@@ -88,7 +40,7 @@ def _outline_headings(reader: Any) -> list[_Heading]:
                 continue
             title = _clean(str(getattr(item, "title", "")))
             if title and page is not None and page >= 0:
-                headings.append(_Heading(page=page, title=title))
+                headings.append(_Heading(page=page, title=title, level=level))
 
     walk(list(reader.outline or []))
     return headings
@@ -155,28 +107,61 @@ def _typographic_headings(reader: Any) -> list[_Heading]:
     ]
 
 
-def pdf_entries(extracted: ExtractedSource, pdf_bytes: bytes) -> list[TocDraft]:
+def pdf_containers(
+    extracted: ExtractedSource, pdf_bytes: bytes
+) -> tuple[ContainerSpan, ...]:
     import pypdf
 
     reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-    headings = _outline_headings(reader) or _typographic_headings(reader)
-    pages: list[LocatorSpan] = [
-        span for span in extracted.locators if span.locator_type == "page"
-    ]
-    drafts: list[TocDraft] = []
-    seen: set[tuple[int, str]] = set()
+    headings = _outline_headings(reader)
+    origin = "source"
+    if not headings:
+        headings = _typographic_headings(reader)
+        origin = "inference"
+    pages = [loc for loc in extracted.locators if loc.locator_type == "page"]
+    positioned = []
+    seen = set()
     for heading in headings:
-        if heading.page >= len(pages) or (heading.page, heading.title) in seen:
+        if heading.page >= len(pages):
             continue
-        seen.add((heading.page, heading.title))
-        span = pages[heading.page]
-        drafts.append(
-            TocDraft(
-                title=heading.title,
-                locator_id=span.locator_id,
-                description=_description(
-                    extracted.text, span.start, span.end, heading.title
-                ),
+        page = pages[heading.page]
+        at = extracted.text.find(heading.title, page.start, page.end)
+        start = at if at >= 0 else page.start
+        key = (start, heading.level)
+        if key not in seen:
+            positioned.append((start, heading.level, heading.title))
+            seen.add(key)
+    positioned.sort()
+    if not positioned:
+        return containers(extracted.text)
+    result: list[ContainerSpan] = []
+    stack: list[int] = []
+    for i, (start, level, title) in enumerate(positioned):
+        while stack and result[stack[-1]].level >= level:
+            stack.pop()
+        end = next(
+            (a for a, depth, _ in positioned[i + 1 :] if depth <= level),
+            len(extracted.text),
+        )
+        if end <= start:
+            continue
+        result.append(
+            ContainerSpan(
+                start, end, title, level, stack[-1] if stack else None, origin
             )
         )
-    return drafts
+        stack.append(len(result) - 1)
+    return tuple(result)
+
+
+def office_containers(extracted: ExtractedSource) -> tuple[ContainerSpan, ...] | None:
+    located = [
+        span
+        for span in extracted.locators
+        if span.locator_type in ("slide", "sheet") and span.end > span.start
+    ]
+    if not located:
+        return None
+    return tuple(
+        ContainerSpan(span.start, span.end, span.label, 1, None) for span in located
+    )

@@ -1,0 +1,38 @@
+{
+  "version": "1",
+  "budget_tokens": 512,
+  "documents": [
+    {
+      "id": "mixed-notes",
+      "text": "# Collected notes\n\nA limit describes the value a function approaches as the input approaches a point. The value at the point itself can differ from the limit.\n\nThe grape boycott was a labor campaign connected with farmworker organizing. It used consumer pressure to support agricultural workers.\n\nAn Excel formula begins with an equals sign. A cell reference identifies a worksheet cell by its column and row.",
+      "checks": [
+        {"query": "Can the value at a point differ from the limit?", "evidence": "A limit describes the value a function approaches as the input approaches a point. The value at the point itself can differ from the limit."},
+        {"query": "How did the grape boycott support farmworkers?", "evidence": "The grape boycott was a labor campaign connected with farmworker organizing. It used consumer pressure to support agricultural workers."},
+        {"query": "What does an Excel cell reference identify?", "evidence": "An Excel formula begins with an equals sign. A cell reference identifies a worksheet cell by its column and row."}
+      ]
+    },
+    {
+      "id": "qualification",
+      "text": "# Sampling\n\nThe variance of a sum equals the sum of the component variances.\n\nHowever, this shortcut assumes independent components. Otherwise the covariance terms must also be included.\n\nA bar chart represents categories with separate bars. It differs from a histogram, whose bins represent numerical intervals.",
+      "checks": [
+        {"query": "When can we add the variances?", "evidence": "However, this shortcut assumes independent components. Otherwise the covariance terms must also be included."}
+      ]
+    },
+    {
+      "id": "proof",
+      "text": "# Linear maps\n\nTheorem. The map T(x)=2x is linear.\n\nProof. For any vectors u and v, T(u+v)=2(u+v)=2u+2v=T(u)+T(v).\n\nFor a scalar c, T(cu)=2cu=c(2u)=cT(u). Both required properties hold. QED\n\nLength preservation is not a requirement for linearity. This map doubles vector lengths.",
+      "checks": [
+        {"query": "Prove that multiplying a vector by two is linear.", "evidence": "Theorem. The map T(x)=2x is linear.\n\nProof. For any vectors u and v, T(u+v)=2(u+v)=2u+2v=T(u)+T(v).\n\nFor a scalar c, T(cu)=2cu=c(2u)=cT(u). Both required properties hold. QED"},
+        {"query": "Must linear maps preserve vector lengths?", "evidence": "Length preservation is not a requirement for linearity. This map doubles vector lengths."}
+      ]
+    },
+    {
+      "id": "structured",
+      "text": "# Results\n\nThe campaign roles are:\n\n- Student walkouts: school reform.\n\n- Grape boycott: labor organizing.\n\nCampaign totals:\n\n| Campaign | Count |\n| Walkout | 12 |\n| Boycott | 8 |\n\n$$ y = mx + b $$\n\nwhere m is slope and b is the intercept.",
+      "checks": [
+        {"query": "What does m represent in y equals mx plus b?", "evidence": "$$ y = mx + b $$\n\nwhere m is slope and b is the intercept."},
+        {"query": "How many walkout campaigns are listed?", "evidence": "Campaign totals:\n\n| Campaign | Count |\n| Walkout | 12 |\n| Boycott | 8 |"}
+      ]
+    }
+  ]
+}

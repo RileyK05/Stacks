@@ -17,7 +17,7 @@ from uuid import UUID
 
 from src.backend.common import settings_repo
 from src.backend.common.config import get_settings
-from src.backend.office_addin import certs, live, macos, manifest, windows
+from src.backend.office_addin import certs, live, macos, manifest, preferences, windows
 from src.backend.office_addin.host import HOST, PortInUseError
 from src.backend.office_addin.windows import OfficeApp
 from src.backend.version import __version__
@@ -25,7 +25,6 @@ from src.backend.version import __version__
 _logger = logging.getLogger(__name__)
 
 CONNECTED_SETTING = "office.connected"
-LAST_COURSE_SETTING = "office.last_course"
 
 DOCUMENT_APPS: dict[str, OfficeApp] = {
     ".docx": "word",
@@ -217,7 +216,7 @@ def open_document(
     if app is None:
         raise OfficeSetupError("Choose Word, Excel or PowerPoint, or a file.")
     if course_id is not None:
-        settings_repo.put_setting(LAST_COURSE_SETTING, str(course_id))
+        preferences.select_course(course_id)
     try:
         _platform().launch(app, document)
     except OSError as err:
@@ -226,8 +225,3 @@ def open_document(
             f"installed? ({err})"
         ) from err
     return app
-
-
-def last_course() -> str | None:
-    value = settings_repo.get_setting(LAST_COURSE_SETTING)
-    return str(value) if value else None

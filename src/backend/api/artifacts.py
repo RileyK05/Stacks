@@ -456,9 +456,7 @@ def restore_version(
     return _view(saved)
 
 
-def _citations(
-    course_id: UUID, sources: tuple[UUID, ...]
-) -> list[ArtifactCitationView]:
+def _citations(sources: tuple[UUID, ...]) -> list[ArtifactCitationView]:
     with connection() as conn:
         rows = conn.execute(
             get("retrieval_traces", "chunks_with_locators_by_ids"),
@@ -495,7 +493,7 @@ def artifact_citations(
 ) -> list[ArtifactCitationView]:
     """The artifact's sources in citation order: [n] is the n-th entry."""
     artifact = _require_artifact(course_id, artifact_id)
-    return _citations(course_id, artifact.sources)
+    return _citations(artifact.sources)
 
 
 @router.post("/{artifact_id}/propose-edit", response_model=ProposalView)
@@ -570,7 +568,7 @@ def export_artifact(
             filename=view.citation.filename if view.citation else "(removed source)",
             label=view.citation.label if view.citation else "",
         )
-        for view in _citations(course_id, artifact.sources)
+        for view in _citations(artifact.sources)
     ]
     data = artifact_export.render(
         artifact.kind, fmt, artifact.title, artifact.content, labels

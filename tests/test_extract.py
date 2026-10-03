@@ -10,7 +10,6 @@ from uuid import UUID, uuid4
 
 import pytest
 from src.backend.common import storage
-from src.backend.ingest import chunking
 from src.backend.ingest.extract import (
     EmptyExtractionError,
     ScannedPdfNeedsOcrError,
@@ -269,15 +268,11 @@ def test_pdf_roundtrip_pages_and_text() -> None:
 
 
 def test_markdown_without_headings_is_still_grounded() -> None:
-    """A .md of notes with no '#' headings yielded ZERO locators, so every
-    chunk mapped to none and build_chunks failed the whole ingestion. Plain
-    notes are ordinary input, not an edge case."""
+    """Plain notes need a source location even without authored headings."""
     text = "Just notes with no markdown headings.\nA second line of notes.\n"
     locators = _markdown_locators(text)
-    assert locators
-    spans = chunking.chunk_text(text, locators, max_tokens=64)
-    assert spans
-    assert all(span.locator_ids for span in spans)
+    assert len(locators) == 1
+    assert (locators[0].start, locators[0].end) == (0, len(text))
 
 
 def test_markdown_preamble_is_covered_and_not_miscited() -> None:
@@ -287,17 +282,12 @@ def test_markdown_preamble_is_covered_and_not_miscited() -> None:
     preamble = "Lecture notes week one, covering linearity. " * 12
     text = preamble + "\n\n# Chapter 1\n\n" + ("Content under the heading. " * 12)
     locators = _markdown_locators(text)
-    spans = chunking.chunk_text(text, locators, max_tokens=64)
-    assert all(span.locator_ids for span in spans)
-
-    label_of = {loc.locator_id: loc.label for loc in locators}
     heading_start = text.index("# Chapter 1")
-    for span in spans:
-        if span.end <= heading_start:
-            labels = [label_of[i] for i in span.locator_ids]
-            assert all(not label.startswith("§") for label in labels), (
-                f"preamble chunk cited as a section it is not in: {labels}"
-            )
+    assert locators[0].start == 0
+    assert locators[0].end == heading_start
+    assert not locators[0].label.startswith("§")
+    assert locators[1].start == heading_start
+    assert locators[-1].end == len(text)
 
 
 def test_pdf_identity_path_reads_through_the_capped_seam() -> None:

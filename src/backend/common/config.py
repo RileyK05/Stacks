@@ -32,9 +32,7 @@ def _load_dotenv(path: Path) -> None:
 
 
 class Settings(BaseModel):
-    app_env: Literal["development", "test", "production"] = Field(
-        default="development"
-    )
+    app_env: Literal["development", "test", "production"] = Field(default="development")
     data_dir: str = Field(default=str(DEFAULT_DATA_DIR))
     database_path: str = Field(default=str(DEFAULT_DATA_DIR / DATABASE_FILENAME))
     storage_root: str = Field(default=str(DEFAULT_DATA_DIR / "raw"))
@@ -68,9 +66,7 @@ def get_settings() -> Settings:
             os.getenv("APP_ENV", "development"),
         ),
         data_dir=str(data_dir),
-        database_path=os.getenv(
-            "DATABASE_PATH", str(data_dir / DATABASE_FILENAME)
-        ),
+        database_path=os.getenv("DATABASE_PATH", str(data_dir / DATABASE_FILENAME)),
         storage_root=os.getenv("STORAGE_ROOT", str(data_dir / "raw")),
         llm_api_key=os.getenv("LLM_API_KEY", ""),
         llm_base_url=os.getenv("LLM_BASE_URL", ""),

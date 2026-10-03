@@ -15,8 +15,8 @@ class RetrievalPolicy(BaseModel):
 
     retrieval_config_version: str
     keyword_limit: int = Field(ge=1)
-    toc_limit: int = Field(ge=1)
-    dependency_limit: int = Field(ge=1)
+    graph_limit: int = Field(ge=0)
+    generated_lookup_weight: float = Field(ge=0, le=1)
     embedding_limit: int = Field(ge=1)
     final_k: int = Field(ge=1)
     embedding_only_quota: int = Field(ge=0)

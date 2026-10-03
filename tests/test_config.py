@@ -5,7 +5,7 @@ from pydantic import ValidationError
 from src.backend.common.config import get_settings
 from src.backend.common.lifecycle_config import LifecyclePolicy, load_lifecycle_policy
 from src.backend.common.providers import TaskClass, load_models_config, task_class
-from src.backend.common.schemas.base import INGESTION_TASKS, KNOWN_GENERATION_TASKS
+from src.backend.common.schemas.base import BACKGROUND_TASKS, KNOWN_GENERATION_TASKS
 from src.backend.ingest.config import load_ingestion_config
 from src.backend.ingest.pipeline import PIPELINE_STAGES
 
@@ -61,7 +61,7 @@ def test_lifecycle_config_requires_decompression_section(tmp_path: Path) -> None
 def test_every_task_has_a_task_class() -> None:
     for task in KNOWN_GENERATION_TASKS:
         expected = (
-            TaskClass.BACKGROUND if task in INGESTION_TASKS else TaskClass.INTERACTIVE
+            TaskClass.BACKGROUND if task in BACKGROUND_TASKS else TaskClass.INTERACTIVE
         )
         assert task_class(task) == expected
     with pytest.raises(ValueError, match="unknown generation task"):

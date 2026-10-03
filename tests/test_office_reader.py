@@ -38,9 +38,7 @@ def _zip(parts: dict[str, str]) -> bytes:
 
 
 def _docx(*paragraphs: str) -> bytes:
-    body = "".join(
-        f'<w:p><w:r><w:t>{text}</w:t></w:r></w:p>' for text in paragraphs
-    )
+    body = "".join(f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>" for text in paragraphs)
     return _zip(
         {
             "word/document.xml": (
@@ -55,7 +53,7 @@ def _xlsx(rows: list[list[str]]) -> bytes:
     for row_index, row in enumerate(rows, start=1):
         row_cells = "".join(
             f'<c r="{chr(65 + col)}{row_index}" t="inlineStr">'
-            f'<is><t>{value}</t></is></c>'
+            f"<is><t>{value}</t></is></c>"
             for col, value in enumerate(row)
         )
         cells += f'<row r="{row_index}">{row_cells}</row>'

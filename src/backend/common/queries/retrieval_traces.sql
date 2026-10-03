@@ -1,8 +1,7 @@
 -- name: insert_trace
 INSERT INTO retrieval_traces
-    (trace_id, course_id, query, retrieved_chunk_ids, retrieved_toc_entry_ids,
-     model)
-VALUES (:trace_id, :course_id, :query, :chunk_ids, :toc_entry_ids, :model)
+    (trace_id, course_id, query, retrieved_chunk_ids, model)
+VALUES (:trace_id, :course_id, :query, :chunk_ids, :model)
 RETURNING trace_id, course_id, query, created_at;
 
 -- name: trace_for_course
@@ -18,10 +17,10 @@ WHERE trace_id = :trace_id AND course_id = :course_id;
 -- its source's filename — enough to say "page 3 of lecture2.pdf" and
 -- show the excerpt. Rows come back in the order of :chunk_ids — the order
 -- the model numbered the material — so citation n is the n-th row.
-SELECT chunk_id, source_id, chunk_index, text, locator_type, label,
+SELECT chunk_id, source_id, locator_id, chunk_index, text, locator_type, label,
        description, filename
 FROM (
-    SELECT wanted.key AS position, chunk.chunk_id, source.source_id,
+    SELECT wanted.key AS position, chunk.chunk_id, source.source_id, locator.locator_id,
            chunk.chunk_index, chunk.text, locator.locator_type,
            locator.label, locator.description, source.filename
     FROM json_each(:chunk_ids) AS wanted
@@ -29,7 +28,7 @@ FROM (
     JOIN locators AS locator ON locator.locator_id = chunk.locator_id
     JOIN sources AS source ON source.source_id = chunk.source_id
     UNION ALL
-    SELECT wanted.key, snapshot.chunk_id, snapshot.source_id,
+    SELECT wanted.key, snapshot.chunk_id, snapshot.source_id, NULL,
            snapshot.chunk_index, snapshot.text, snapshot.locator_type,
            snapshot.label, snapshot.description, source.filename
     FROM json_each(:chunk_ids) AS wanted

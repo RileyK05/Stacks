@@ -29,9 +29,7 @@ from src.backend.retrieval.funnel import Candidate
 from src.backend.tutor.compose import Generate
 from src.backend.tutor.workspace import extract_workspace_items
 
-ANSWER_EVAL_DIR = (
-    Path(__file__).resolve().parents[3] / "data" / "eval" / "answer"
-)
+ANSWER_EVAL_DIR = Path(__file__).resolve().parents[3] / "data" / "eval" / "answer"
 
 DEFAULT_CASES_PATH = ANSWER_EVAL_DIR / "cases.json"
 
@@ -353,9 +351,7 @@ def _score(
     return False, f"unknown case kind: {kind}"
 
 
-def _resolve_course(
-    conn: Connection, course_tag: str
-) -> tuple[str, UUID] | None:
+def _resolve_course(conn: Connection, course_tag: str) -> tuple[str, UUID] | None:
     """Deterministic resolution (review catch #3): reuse the retrieval
     eval's `course_by_tag` block — exact-name match first, then oldest
     course_id; never an undefined pick between duplicate names."""
@@ -433,6 +429,7 @@ def run_answer_eval(
         AnswerMode,
         compose_answer,
     )
+
     prompt_policy = load_prompt_policy()
     cases = load_answer_cases(cases_path)
     records: list[CaseRecord] = []
@@ -454,9 +451,7 @@ def run_answer_eval(
             )
             continue
         _name, course_id = resolved
-        candidates = _seed_candidates(
-            conn, course_id, case.seed_chunk_labels
-        )
+        candidates = _seed_candidates(conn, course_id, case.seed_chunk_labels)
         if candidates is None:
             # Labels given but matched nothing: a case-file error must
             # surface as UNRESOLVED, never as a model-failure score
@@ -476,7 +471,10 @@ def run_answer_eval(
         attempts: list[str] = []
 
         def inspected_generate(
-            task: str, prompt: str, *, response_schema: dict[str, Any] | None = None,
+            task: str,
+            prompt: str,
+            *,
+            response_schema: dict[str, Any] | None = None,
             _attempts: list[str] = attempts,
         ) -> str:
             _attempts.append(
@@ -497,9 +495,7 @@ def run_answer_eval(
         candidates = composed.candidates
         answer_text = composed.text
         prompt = "\n\n".join(attempts)
-        passed, detail = _score(
-            case, answer_text, tuple(c.text for c in candidates)
-        )
+        passed, detail = _score(case, answer_text, tuple(c.text for c in candidates))
         records.append(
             CaseRecord(
                 case_id=case.id,
@@ -526,9 +522,7 @@ def run_answer_eval(
     for result in results:
         if result.resolved:
             per_kind.setdefault(result.kind, []).append(result.passed)
-    rates = {
-        kind: sum(passes) / len(passes) for kind, passes in per_kind.items()
-    }
+    rates = {kind: sum(passes) / len(passes) for kind, passes in per_kind.items()}
     resolved_results = [result for result in results if result.resolved]
     # all_passed requires EVERY case to have actually executed (review
     # catch #4): unresolved cases fail the suite loudly ("never a silent
@@ -576,9 +570,7 @@ def _log_summary(
     prompt_version: str,
     records: list[CaseRecord],
 ) -> None:
-    runs_dir = log_dir or (
-        Path(__file__).resolve().parents[3] / "runs"
-    )
+    runs_dir = log_dir or (Path(__file__).resolve().parents[3] / "runs")
     runs_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     log_path = runs_dir / f"eval_answer_{stamp}.log"

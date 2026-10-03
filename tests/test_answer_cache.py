@@ -11,9 +11,7 @@ ANSWER = "linearity preserves structure [1]."
 
 
 def _course(client: TestClient) -> str:
-    course_id: str = client.post("/courses", json={"name": "Cache"}).json()[
-        "course_id"
-    ]
+    course_id: str = client.post("/courses", json={"name": "Cache"}).json()["course_id"]
     add_chunk(course_id, "linearity means preserving addition and scaling.")
     return course_id
 

@@ -23,9 +23,7 @@ def _compressed_upload(data: bytes, mime_type: str) -> tuple[bytes, str]:
 
 def test_stream_hashes_and_counts() -> None:
     data = b"hello course materials" * 100
-    path, digest, count = storage.stream_to_temp(
-        io.BytesIO(data), max_bytes=10_000
-    )
+    path, digest, count = storage.stream_to_temp(io.BytesIO(data), max_bytes=10_000)
     try:
         import hashlib
 
@@ -76,9 +74,7 @@ def test_compressible_but_inefficient_stays_identity() -> None:
 
 def test_temp_file_compression_streams_and_replaces_input() -> None:
     data = b"large course notes " * 100_000
-    original, _, _ = storage.stream_to_temp(
-        io.BytesIO(data), max_bytes=len(data) + 1
-    )
+    original, _, _ = storage.stream_to_temp(io.BytesIO(data), max_bytes=len(data) + 1)
     stored_path, encoding, stored_size = storage.compress_temp_for_storage(
         original, "text/plain"
     )

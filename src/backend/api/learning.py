@@ -23,7 +23,7 @@ from src.backend.common.schemas.learning import (
     SuiteState,
     TeachingMethod,
 )
-from src.backend.student_model import learning, practice_support
+from src.backend.student_model import inspection, learning, practice_support
 
 router = APIRouter(tags=["learning"])
 
@@ -62,7 +62,7 @@ def _state(course_id: UUID, suite_id: UUID) -> SuiteState:
         latest = next(
             (
                 r
-                for r in learning.rows(conn, "runs", course_id=course_id)
+                for r in inspection.rows(conn, "runs", course_id=course_id)
                 if r["suite_id"] == suite_id
             ),
             None,
@@ -120,7 +120,7 @@ def practice_from_saved(course_id: UUID, payload: SuiteFromSaved) -> SuiteState:
                 "item_index": payload.item_index,
             }
             assigned = item.get("practice_id")
-            if assigned and learning.rows(
+            if assigned and inspection.rows(
                 conn, "suite", course_id=course_id, suite_id=UUID(assigned)
             ):
                 return _state(course_id, UUID(assigned))
@@ -143,7 +143,7 @@ def practice_from_saved(course_id: UUID, payload: SuiteFromSaved) -> SuiteState:
         existing = next(
             (
                 r
-                for r in learning.rows(conn, "suites", course_id=course_id)
+                for r in inspection.rows(conn, "suites", course_id=course_id)
                 if r["origin"] == origin
             ),
             None,
@@ -189,7 +189,7 @@ def submit_practice(
 def inspect_run(course_id: UUID, run_id: UUID) -> SuiteState:
     require_course(course_id)
     with connection() as conn:
-        records = learning.rows(conn, "run", course_id=course_id, run_id=run_id)
+        records = inspection.rows(conn, "run", course_id=course_id, run_id=run_id)
         if not records:
             raise HTTPException(404, "test session not found")
         run = learning.run_view(conn, records[0])
@@ -241,7 +241,7 @@ def rate_question_content(
 def delete_run(course_id: UUID, run_id: UUID) -> None:
     require_course(course_id)
     with connection() as conn:
-        if not learning.rows(conn, "delete_run", course_id=course_id, run_id=run_id):
+        if not inspection.rows(conn, "delete_run", course_id=course_id, run_id=run_id):
             raise HTTPException(404, "test session not found")
         conn.commit()
 
@@ -282,7 +282,7 @@ def forget_target(course_id: UUID, payload: ForgetTarget) -> None:
 @router.get("/learning/core", response_model=CoreMemory)
 def inspect_core() -> CoreMemory:
     with connection() as conn:
-        return learning.core(conn)
+        return inspection.core(conn)
 
 
 @router.put("/learning/core", response_model=CoreMemory)

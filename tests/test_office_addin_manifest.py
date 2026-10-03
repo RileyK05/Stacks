@@ -38,8 +38,7 @@ def test_manifest_is_well_formed_office_app() -> None:
 def test_manifest_declares_powerpoint_word_and_excel() -> None:
     root = _tree().getroot()
     hosts = [
-        host.get("Name")
-        for host in root.findall(f"{{{APP_NS}}}Hosts/{{{APP_NS}}}Host")
+        host.get("Name") for host in root.findall(f"{{{APP_NS}}}Hosts/{{{APP_NS}}}Host")
     ]
     assert hosts == ["Presentation", "Document", "Workbook"]
     override = root.find(f"{{{OV_NS}}}VersionOverrides")

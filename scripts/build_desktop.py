@@ -89,6 +89,7 @@ def build_backend() -> Path:
         "onnxruntime",
         "--collect-submodules",
         "tokenizers",
+        # Course-graph clustering (backend/graph/clustering.py) imports
         # Artifact export: Word and PowerPoint build from template files
         # shipped inside their packages.
         "--collect-data",

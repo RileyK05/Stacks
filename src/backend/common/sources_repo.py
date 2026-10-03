@@ -80,9 +80,12 @@ def upload_source(
             temp_path, mime_type
         )
         with connection() as conn:
-            if conn.execute(
-                get(_FILE, "active_course_exists"), {"course_id": course_id}
-            ).fetchone() is None:
+            if (
+                conn.execute(
+                    get(_FILE, "active_course_exists"), {"course_id": course_id}
+                ).fetchone()
+                is None
+            ):
                 raise UnknownCourseError("course not found")
             duplicate = conn.execute(
                 get(_FILE, "find_by_hash"),
@@ -144,6 +147,7 @@ def _to_source(row: dict[str, Any]) -> Source:
         source_type=row["source_type"],
         status=row["status"],
         size_bytes=row["size_bytes"],
+        has_index=bool(row.get("has_index", False)),
         file_hash=row["file_hash"],
         error_message=row["error_message"],
         created_at=row["created_at"],
@@ -209,8 +213,11 @@ def requeue_failed(conn: Connection, source_id: UUID, course_id: UUID) -> bool:
     """The deliberate retry path: failed → uploaded + re-enqueued. Returns
     False when the source is not in a failed state (or not in this
     course)."""
-    if conn.execute(
-        get(_FILE, "get_source"), {"course_id": course_id, "source_id": source_id}
-    ).fetchone() is None:
+    if (
+        conn.execute(
+            get(_FILE, "get_source"), {"course_id": course_id, "source_id": source_id}
+        ).fetchone()
+        is None
+    ):
         return False
     return _ingest_runs.requeue_failed_source(conn, source_id, course_id)

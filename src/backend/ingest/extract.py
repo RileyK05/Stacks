@@ -249,18 +249,9 @@ def _mask_code_fences(text: str) -> str:
 def _markdown_locators(text: str) -> tuple[LocatorSpan, ...]:
     """Section locators for markdown, with total character coverage.
 
-    Headings alone do not cover the whole document: a file with no headings
-    yields no locators at all, and a file with a preamble before its first
-    heading leaves that preamble uncovered. Both matter because build_chunks
-    rejects any chunk that maps to no locator ("citation grounding is
-    mandatory") — so an ordinary .md of notes would fail ingestion outright.
-    Worse, an uncovered preamble that shares a chunk with the first heading
-    gets CITED as that heading, which is a wrong citation rather than a
-    missing one.
-
-    So any region no heading covers falls back to the same line-range
-    locators plain text uses: every character stays addressable, and
-    preamble text is cited as lines rather than as somebody else's section.
+    Regions outside authored headings use plain-text line-range locators.
+    Every character stays addressable, and preambles cite their own lines
+    rather than the section that follows them.
     """
     heading_text = _mask_code_fences(text)
     spans: list[LocatorSpan] = []

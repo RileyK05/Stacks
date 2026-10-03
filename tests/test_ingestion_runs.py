@@ -1,10 +1,8 @@
 """End-to-end ingestion pipeline tests.
 
-Text sources index with no model at all: extract → locators → chunks →
-embeddings run locally, and the enrichment stages (TOC, knowledge) record
-an honest skip until their local-first implementations land. Only scanned
-PDFs need a model (OCR); without one they fail loudly, never falsely
-indexed.
+Text sources index without a generation model: extraction and passage encoding
+run locally, followed by atomic publication. Scanned PDFs require OCR; without
+a generation model they fail visibly and preserve any prior successful index.
 """
 
 import io
@@ -103,16 +101,11 @@ def test_text_source_indexes_with_no_model_configured(
     assert [row["stage"] for row in stages] == [
         "extract_text",
         "ocr",
-        "build_locators",
-        "build_chunks",
-        "embed_chunks",
-        "update_toc",
-        "extract_knowledge",
+        "prepare_passages",
+        "publish_index",
     ]
     assert {row["status"] for row in stages} == {"succeeded"}
     by_stage = {row["stage"]: row for row in stages}
-    assert by_stage["update_toc"]["error_message"].startswith("skipped:")
-    assert by_stage["extract_knowledge"]["error_message"].startswith("skipped:")
     assert by_stage["extract_text"]["error_message"] is None
 
     counts = _one(
@@ -244,7 +237,9 @@ def test_scanned_pdf_is_ocrd_and_recorded(
     with connection() as conn:
         run_id = run_ingestion(conn, source_id)
 
-    assert [call["task"] for call in calls] == ["ocr"]
+    # OCR is the first call; per-chunk concept extraction now runs after it
+    # (its stub reply is not concept JSON, so it contributes nothing here).
+    assert calls[0]["task"] == "ocr"
     assert len(calls[0]["images"]) == 2, "both rendered pages reach the model"
     statuses = {row["stage"]: row["status"] for row in _stage_rows(run_id)}
     assert statuses["ocr"] == "succeeded"
@@ -263,8 +258,8 @@ def test_scanned_pdf_is_ocrd_and_recorded(
         }
     assert "page one transcription" in text
     assert {"page 1", "page 2"} <= labels, "OCR pages keep page locators"
-    entry = usage_repo.ledger_page()[0]
-    assert (entry.task, entry.provider, entry.course_id) == ("ocr", "local", course_id)
+    ocr_entry = next(row for row in usage_repo.ledger_page() if row.task == "ocr")
+    assert (ocr_entry.provider, ocr_entry.course_id) == ("local", course_id)
 
 
 def test_scanned_pdf_without_a_model_fails_loudly(course_id: UUID) -> None:

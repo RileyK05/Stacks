@@ -1,6 +1,6 @@
 # Engineering backlog
 
-Updated 2026-09-30. This is the only engineering issue queue. Release checks live
+Updated 2026-10-02. This is the only engineering issue queue. Release checks live
 in `plan-notebook.md`; current behavior lives in `system.md`. Finish a task by
 removing its active entry and temporary plan/review file after transferring any
 lasting contract or remaining work. Do not create a completed-work archive.
@@ -90,15 +90,29 @@ Local evidence (ignored `runs/`, not portable release proof):
   shows an actual refusal, missed by the refusal-marker scorer. Fix that scorer
   and retain independent inspection; this does not establish broad quality.
 
+The prompt-37 MiniCPM5 rerun passed 8/10 mechanical checks, but inspection
+again found accepted code with an invalid transformation call. A refusal-marker
+miss and absent quiz artifact account for the scored failures. Do not interpret
+an improved mechanical count as correct generated behavior.
+
+The prompt-38 background-review probe offers a cited exercise and avoids the
+basics detour on its two source-rich fixtures. It still echoes an internal-policy
+sentence and is overly conservative in the explanation. Earlier 2/2 scoring on
+source-poor fixtures accepted unhelpful replies; keep usefulness and policy-echo
+inspection separate from keyword/citation markers.
+
 ### B-07 — Retrieval evidence and relevance (quality gap)
 
-Expand the one-case committed retrieval corpus before algorithm changes. Use
-held-out questions, multi-page supporting passages, restricted sources, and
-unrelated questions. Calibrate relevance/refusal together: an arbitrary cutoff
-can hide useful answers. Correct full-span scoring does not establish retrieval
-quality. Measure each seam and fusion against independent ground truth.
-Course-knowledge extraction currently records a skipped stage; decide and verify
-its evidence-bearing extraction contract before promising a complete concept model.
+The passage rebuild preserves source scope, coherent protected units, bounded
+windows, surrounding qualifications and visible partial coverage. Eight committed
+synthetic original-span checks preserve full evidence coverage under equal budgets;
+they are a baseline, not broad validation. Expand with independently labeled real
+PDFs, OCR, unmarked proofs, tables, slides, restricted sources and unrelated
+questions. Measure each seam/fusion and refusal together. Calibrate semantic breaks
+and context on development examples; reserve held-out cases for regression checks.
+Measure memory/index size, source-update latency and similarity recall on large
+courses. Retained edges are bounded; a full similarity rebuild still costs O(n²).
+Check full generation-model prompt capacity separately from the passage-token cap.
 
 ### B-08 — Learning evidence beyond the baseline (quality gap / future work)
 
@@ -172,6 +186,8 @@ Already-compressed Office/PDF/media files may shrink little. IndexedDB drafts
 are outside backend backups; cross-device draft recovery would need an explicit
 storage/export contract.
 
+
+
 ## Static candidates remaining from the original ledger
 
 Stable IDs retain their original namespace. Priorities below are the original
@@ -205,17 +221,6 @@ the dated note and Git history retain their disposition.
   `page_count`-th separator is lost from the corpus.
 - **Fix:** merge overflow into the final page or fail the stage loudly; never
   truncate silently.
-
-### C-04 — `StageSkipped` commits whatever the handler wrote before skipping
-- **Where:** `src/backend/ingest/pipeline.py:75-81`, `src/backend/ingest/orchestrator.py:230-242`
-- **Severity:** HIGH
-- **What:** `update_toc` deletes all of a source's TOC entries (line 240) and
-  *then* raises `StageSkipped` when there are no drafts (line 242).
-  `execute_pipeline` treats `StageSkipped` as success without rollback, and the
-  subsequent `SUCCEEDED` observe commits the deletion. A source with no
-  detectable headings silently loses previously-committed TOC entries.
-- **Fix:** `conn.rollback()` before recording a skip, or move the emptiness check
-  before the delete (the drafts are already computed).
 
 ### C-05 — A failed post-pipeline step leaves the run ledger stuck at `running`
 - **Where:** `src/backend/ingest/orchestrator.py:343-353`, `src/backend/ingest/runs.py:178-186`
@@ -365,23 +370,6 @@ the dated note and Git history retain their disposition.
 - **Fix:** search all whitespace (`\s`), fall back to the next whitespace, else
   document the exception.
 
-### C-21 — TOC extraction swallows errors silently
-- **Where:** `src/backend/ingest/toc.py:85-88`, `:108-111`, `:93`
-- **Severity:** MEDIUM
-- **What:** a bookmark whose page lookup fails is dropped with no log; a page-text
-  extraction failure returns `[]` so an entire page's headings vanish
-  indistinguishably from "no structure"; `reader.outline` itself is unprotected
-  and can fail the stage on a malformed PDF.
-- **Fix:** log at warning with context, and wrap `reader.outline` in the same
-  guard as per-item lookups.
-
-### C-22 — `_description` uses `body.find(title)` after whitespace normalization
-- **Where:** `src/backend/ingest/toc.py:51-58`
-- **Severity:** LOW
-- **What:** if the title's whitespace was collapsed, `find` misses and the
-  description over-includes the title.
-- **Fix:** match on the first N words of a normalized title/body pair.
-
 ### C-23 — Answer-cache fingerprint relies on `group_concat` ordering
 - **Where:** `src/backend/common/queries/answer_cache.sql:7-18`
 - **Severity:** MEDIUM
@@ -398,11 +386,11 @@ the dated note and Git history retain their disposition.
   normalized, so trivially-equal questions miss the cache.
 - **Fix:** broaden the strip set symmetrically.
 
-### C-26 — Eval runs ~10 queries per case (N+1)
-- **Where:** `src/backend/retrieval/evals.py:227-237`
+### C-26 — Eval repeats label lookups per seam
+- **Where:** `src/backend/retrieval/evals.py:214-223`
 - **Severity:** MEDIUM
-- **What:** four seams + `concept_matches` + five `_labels_for_candidates` calls
-  per case, serialized.
+- **What:** three candidate seams and four `_labels_for_candidates` calls per
+  resolved case, serialized. Measure cost on a larger evaluation set.
 - **Fix:** batch label lookups across cases/seams.
 
 ### C-27 — Empty `expected_labels` counts as a miss
@@ -426,14 +414,6 @@ the dated note and Git history retain their disposition.
 - **What:** an auditor cannot reproduce which `retrieval_config_version` or rerank
   cutoff produced the set, undermining golden rule 2.
 - **Fix:** persist policy version and `generation_k`/reranker model.
-
-### C-32 — `record_trace` default drops matched TOC entries
-- **Where:** `src/backend/retrieval/trace.py:41`
-- **Severity:** LOW
-- **What:** `toc_entry_ids` defaults to `()`, and eval/artifact paths call
-  `record_trace` without passing `result.matched_toc_entry_ids`, so traces claim
-  no TOC entries matched.
-- **Fix:** default to `result.matched_toc_entry_ids`.
 
 ### C-33 — Citation gate misses combined/range citations
 - **Where:** `src/backend/tutor/workspace.py:29`, `:176-192`
@@ -1387,13 +1367,6 @@ the dated note and Git history retain their disposition.
 - **What:** no limit/dimension filter in SQL; Python filters after fetch.
 - **Fix:** filter `dimension` in SQL; preallocate a buffer.
 
-### P-09 — Missing index on `chunk_locators(locator_id)`
-- **Where:** `src/backend/retrieval/funnel.py:181-184`, `migrations/001_local_baseline.sql:99-103`
-- **Severity:** MEDIUM
-- **What:** the composite PK `(chunk_id, locator_id)` can't serve
-  `WHERE locator_id = ?`; the TOC seam full-scans.
-- **Fix:** `CREATE INDEX idx_chunk_locators_locator ON chunk_locators(locator_id)`.
-
 ### P-10 — Missing index supporting the claim query
 - **Where:** `src/backend/common/queries/ingestion.sql:65-82`, `migrations/001_local_baseline.sql:156-167`
 - **Severity:** MEDIUM
@@ -1401,22 +1374,10 @@ the dated note and Git history retain their disposition.
   + sort.
 - **Fix:** add the index.
 
-### P-11 — Missing index on `toc_entries.source_id`
-- **Where:** `migrations/001_local_baseline.sql:236-247`, `ingestion.sql:210-211`
-- **Severity:** MEDIUM
-- **Fix:** add it.
-
 ### P-12 — Missing `(source_id, created_at)` index for `latest_run_for_source`
 - **Where:** `migrations/001_local_baseline.sql:117-130`
 - **Severity:** LOW
 - **Fix:** add it.
-
-### P-14 — TOC candidates carry a hardcoded `rank=0.0`
-- **Where:** `src/backend/retrieval/funnel.py:190-200`
-- **Severity:** LOW
-- **What:** despite `matched_entries.position` being available, all TOC
-  candidates normalize identically, contributing no discriminating signal.
-- **Fix:** rank by `-position`.
 
 ### P-15 — `settings.py` does N keyring reads per providers/model-options call
 - **Where:** `src/backend/api/settings.py:162-172`, `:382-390`
@@ -1717,20 +1678,6 @@ the dated note and Git history retain their disposition.
 - **What:** `APP_DATA_DIR` is not set for the subprocess.
 - **Fix:** set a temp data dir; mark `@pytest.mark.integration`.
 
-### T-11 — Tests that assert nothing / tautological tests
-- **Where:** `tests/test_retrieval.py:314-321,324-340`, `tests/test_imports.py:1-8`, `tests/test_schemas.py:60-280`
-- **Severity:** MEDIUM
-- **What:** `assert candidates is not None` (always true); a test with no
-  assertions; many schema tests assert Pydantic passthrough.
-- **Fix:** assert the actual property or delete.
-
-### T-12 — `test_toc.test_reingesting_replaces_a_sources_entries` is self-contradictory
-- **Where:** `tests/test_toc.py:106-122`
-- **Severity:** MEDIUM
-- **What:** asserts `count == 2` after re-ingesting the same source twice, proving
-  additive behavior while the name claims replacement.
-- **Fix:** record the count after the first run, assert unchanged after re-ingest.
-
 ### T-13 — Wall-clock / port / host-environment dependent tests
 - **Where:** `tests/test_ingestion_worker.py:188-218`, `tests/test_office_addin_setup.py:343-383`, `tests/test_runtime.py:81-82`
 - **Severity:** MEDIUM
@@ -1816,21 +1763,7 @@ the dated note and Git history retain their disposition.
 - **Severity:** LOW
 - **Fix:** per-run temp dir.
 
-### T-31 — `test_imports.py` doesn't import all packages or build the app
-- **Where:** `tests/test_imports.py:1-8`
-- **Severity:** LOW
-- **Fix:** import `api`, `artifacts`, `office_addin`, `runtime`, `scripts`; assert
-  `create_app()`.
-
 ## Docs and dead code
-
-### D-06 — Legacy schemas and stored trace shape
-- **Where:** `src/backend/common/schemas/`
-- **Priority:** MEDIUM (candidate)
-- **Check:** audit remaining unused chat/evidence/identity contracts and trace
-  shape against storage. Student practice now has real tables and coverage;
-  do not carry forward the old claim that the entire subsystem is dead.
-  Planned schemas need scope review rather than deletion by reference count.
 
 ### D-08 — `migrate` uses f-string SQL + `executescript` (implicit commit)
 - **Where:** `src/backend/common/migrate.py:60-65`
@@ -1839,55 +1772,6 @@ the dated note and Git history retain their disposition.
   docstring's explicit-transaction claim; `{script}` is arbitrary file content
   adjacent to `BEGIN IMMEDIATE`.
 - **Fix:** parameterized insert; run statements deliberately.
-
-### D-09 — Embedding model-swap wording
-- **Where:** `common/migrations/001_local_baseline.sql`, `common/queries/ingestion.sql`
-- **Priority:** LOW (verified documentation mismatch)
-- **Check:** the primary key is chunk_id; replacement overwrites its model/vector.
-  Current product docs now say so. Correct the misleading query comment in a
-  code pass; never rewrite the applied baseline migration. If multiple vectors
-  per chunk become a requirement, choose it explicitly and add a new migration.
-
-### D-11 — `course_archive._discard` embeds raw SQL outside the query registry
-- **Where:** `src/backend/common/course_archive.py:272-274`
-- **Severity:** LOW
-- **Fix:** move into `queries/*.sql`.
-
-### D-12 — `ingestion.sql insert_toc` hardcodes `version = 1` (versioning is dead)
-- **Where:** `src/backend/common/queries/ingestion.sql:206-208`
-- **Severity:** LOW
-- **Fix:** increment or remove the versioning pretense.
-
-### D-13 — `WorkspaceHtml` is unreachable dead code
-- **Where:** `src/backend/tutor/workspace.py:62-66`, `artifacts/content.py:343-344`
-- **Severity:** LOW
-- **What:** no prompt, no `Intent.HTML`, no `compose.workspace_schema` branch.
-- **Fix:** wire it or delete it.
-
-### D-14 — Remaining marker/KNOWN_* constants
-- **Where:** `src/backend/common/schemas/`, artifact content
-- **Priority:** NIT (candidate)
-- **Check:** inspect actual unused constants. The blank-content wrapper and
-  course-memory truncation marker were already removed; no further cleanup is
-  established by the old allegation.
-
-### D-15 — `memory/__init__.py` package is empty and collides with two other memory names
-- **Where:** `src/backend/memory/__init__.py:1-10`
-- **Severity:** LOW
-- **Fix:** rename or delete.
-
-### D-16 — Remaining model-task mapping entries
-- **Where:** `src/backend/ingest/orchestrator.py:MODEL_TASKS`
-- **Priority:** NIT (candidate)
-- **Check:** OCR uses this mapping. Verify whether UPDATE_TOC and
-  EXTRACT_KNOWLEDGE entries remain purposeful scaffolding or can be removed.
-  The PDF bytes parameter is used and the empty type-checking block was removed;
-  neither belongs on the remaining cleanup queue.
-
-### D-17 — `prompts.toml` `artifact_generation` text is never sent; version/comment drift
-- **Where:** `configs/prompts.toml:130-135`, `:1-2`
-- **Severity:** LOW
-- **Fix:** use or remove; version the text history.
 
 ### D-19 — `_parse_timestamp` raises `ValueError` on corrupt rows
 - **Where:** `src/backend/common/db.py:54-56`
@@ -1906,11 +1790,6 @@ the dated note and Git history retain their disposition.
 - **Check:** retaining the old keyring name preserves existing credentials.
   Rename only with an explicit credential migration; branding alone is not a
   reason to make stored keys disappear.
-
-### D-23 — `Icon.svelte` includes unused icons
-- **Where:** `src/frontend/src/lib/components/Icon.svelte:82-91`
-- **Severity:** NIT
-- **Fix:** prune.
 
 ## Additional candidates from the 2026-09-29 review
 

@@ -1,5 +1,5 @@
 import pytest
-from src.backend.common.schemas import IngestionStage, IngestionStatus
+from src.backend.common.schemas.base import IngestionStage, IngestionStatus
 from src.backend.ingest.pipeline import (
     PIPELINE_STAGES,
     IngestionPipelineError,
@@ -112,7 +112,7 @@ def test_skipped_stage_is_recorded_as_succeeded_with_reason() -> None:
         raise StageSkipped("no table of contents yet")
 
     handlers = _handlers(calls)
-    handlers[IngestionStage.UPDATE_TOC] = skip
+    handlers[IngestionStage.OCR] = skip
     result = execute_pipeline(
         handlers,
         max_attempts=2,
@@ -120,9 +120,9 @@ def test_skipped_stage_is_recorded_as_succeeded_with_reason() -> None:
             (stage, status, error)
         ),
     )
-    assert IngestionStage.UPDATE_TOC in {s.stage for s in result.stages}
+    assert IngestionStage.OCR in {s.stage for s in result.stages}
     assert (
-        IngestionStage.UPDATE_TOC,
+        IngestionStage.OCR,
         IngestionStatus.SUCCEEDED,
         "skipped: no table of contents yet",
     ) in recorded

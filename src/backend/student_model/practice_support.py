@@ -25,7 +25,7 @@ from src.backend.common.schemas.learning import (
     PracticeQuestion,
     PracticeSuite,
 )
-from src.backend.student_model import learning
+from src.backend.student_model import inspection, learning
 from src.backend.tutor.compose import parse_json_object
 
 
@@ -160,7 +160,7 @@ def help_with(
             if selection and selection["model_choice"]
             else None
         )
-        runs = learning.rows(conn, "run", course_id=course_id, run_id=payload.run_id)
+        runs = inspection.rows(conn, "run", course_id=course_id, run_id=payload.run_id)
         if runs and runs[0]["suite_id"] != suite_id:
             raise ValueError("this attempt belongs to another quiz")
         if payload.kind == "explain" and not runs:
@@ -272,14 +272,14 @@ def help_with(
         )
         with connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            if payload.kind == "hint" and learning.rows(
+            if payload.kind == "hint" and inspection.rows(
                 conn, "run", course_id=course_id, run_id=payload.run_id
             ):
                 raise ValueError(
                     "this attempt was submitted while help was unavailable; use Explain"
                 )
             if payload.kind == "explain":
-                current = learning.rows(
+                current = inspection.rows(
                     conn, "run", course_id=course_id, run_id=payload.run_id
                 )
                 if (

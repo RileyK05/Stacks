@@ -1,19 +1,21 @@
+import { createStoreRuntime, installApiMock, jsonResponse as json } from '../../../tests/helpers/storeRuntime.mjs';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { createServer } from 'vite';
 
-let vite, MapStudy, originalRequest, originalFetch, respond;
-function json(data, status = 200) { return new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } }); }
+let vite, MapStudy, restoreApi, respond;
 const context = { courseId: 'course', origin: { message_id: 'message', item_index: 0 }, ready: true };
 before(async () => {
-  vite = await createServer({ configFile: fileURLToPath(new URL('../../../vite.config.ts', import.meta.url)), optimizeDeps: { entries: ['src/lib/stores/mapStudy.svelte.ts'], noDiscovery: true, include: [] }, server: { middlewareMode: true, hmr: false }, appType: 'custom' });
-  originalRequest = globalThis.Request; originalFetch = globalThis.fetch;
-  globalThis.Request = class extends originalRequest { constructor(input, init) { super(typeof input === 'string' && input.startsWith('/') ? new URL(input, 'http://localhost') : input, init); } };
-  globalThis.fetch = async (request, init) => respond(request instanceof globalThis.Request ? request : new globalThis.Request(request, init));
+  vite = await createStoreRuntime(['src/lib/stores/mapStudy.svelte.ts']);
+  restoreApi = installApiMock((request) => respond(request));
   ({ MapStudy } = await vite.ssrLoadModule('/src/lib/stores/mapStudy.svelte.ts'));
 });
-after(async () => { await vite?.close(); globalThis.Request = originalRequest; globalThis.fetch = originalFetch; });
+after(async () => {
+  try {
+    await vite?.close();
+  } finally {
+    restoreApi?.();
+  }
+});
 
 test('a lost quiz response retries the same request; pending and unsaved maps cannot send duplicates', async () => {
   const bodies = []; let release;

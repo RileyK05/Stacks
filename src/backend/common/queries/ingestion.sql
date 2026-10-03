@@ -116,12 +116,6 @@ WHERE source_id = :source_id;
 INSERT INTO locators (locator_id, source_id, locator_type, start, end_value, label, description)
 VALUES (:locator_id, :source_id, :locator_type, :start, :end_value, :label, :description);
 
--- name: insert_chunk
--- One row per LOGICAL chunk (review catch #10): the primary locator on
--- the row, the full span in chunk_locators.
-INSERT INTO chunks (chunk_id, source_id, locator_id, chunk_index, text)
-VALUES (:chunk_id, :source_id, :locator_id, :chunk_index, :text);
-
 -- name: insert_chunk_locator
 INSERT INTO chunk_locators (chunk_id, locator_id)
 VALUES (:chunk_id, :locator_id)
@@ -130,19 +124,8 @@ ON CONFLICT DO NOTHING;
 -- name: delete_chunks
 DELETE FROM chunks WHERE source_id = :source_id;
 
--- name: delete_chunk_embeddings
-DELETE FROM chunk_embeddings
-WHERE chunk_id IN (
-    SELECT chunk_id FROM chunks WHERE source_id = :source_id
-);
-
--- name: chunk_ids_by_source_index
-SELECT chunk_id, chunk_index
-FROM chunks
-WHERE source_id = :source_id;
-
 -- name: replace_chunk_embedding
--- One row per chunk, keyed by model name (decision 008).
+-- One representative vector per passage; a model swap replaces that vector.
 INSERT INTO chunk_embeddings (chunk_id, model, dimension, embedding)
 VALUES (:chunk_id, :model, :dimension, :embedding)
 ON CONFLICT (chunk_id) DO UPDATE
@@ -219,33 +202,3 @@ WHERE source_id = :source_id;
 SELECT created_at AS queued_at
 FROM pending_ingestion
 WHERE source_id = :source_id;
-
--- name: queue_status
--- What the UI shows while a course is processing.
-SELECT pending.source_id, pending.claimed_at, pending.heartbeat_at,
-       pending.created_at
-FROM pending_ingestion AS pending
-WHERE pending.course_id = :course_id
-ORDER BY pending.created_at;
-
--- name: course_toc
--- The course's table of contents (one per course; entries are replaced
--- per source as sources are ingested).
-SELECT toc_id FROM tables_of_contents
-WHERE course_id = :course_id
-ORDER BY version DESC
-LIMIT 1;
-
--- name: insert_toc
-INSERT INTO tables_of_contents (toc_id, course_id, version)
-VALUES (:toc_id, :course_id, 1);
-
--- name: delete_source_toc_entries
-DELETE FROM toc_entries WHERE source_id = :source_id;
-
--- name: insert_toc_entry
-INSERT INTO toc_entries
-    (entry_id, toc_id, source_id, locator_id, title, description, position)
-VALUES
-    (:entry_id, :toc_id, :source_id, :locator_id, :title, :description, :position);
-

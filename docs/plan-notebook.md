@@ -1,6 +1,6 @@
 # Current handoff and release plan
 
-Updated 2026-09-30. Current implementation belongs in `system.md`, unresolved
+Updated 2026-10-02. Current implementation belongs in `system.md`, unresolved
 engineering/product work in `docket.md`, and consequential history in `notes.md`.
 Replace this handoff as work advances; delete completed temporary plans/reviews.
 
@@ -35,78 +35,67 @@ Implemented baselines:
   compression strengths, schedule/rotation, verified separate-folder recovery,
   and offline restore CLI (system §3). Desktop activation remains B-14.
 
-Next work: use the remaining B entries at the top of `docket.md`. Ask about genuine
-tradeoffs; handle straightforward confirmed defects without boilerplate questions.
-Keep model-quality failures and native verification gaps visible until resolved.
-Google live access and automatic Mac window capture are not implemented.
+- Coherent source-backed RAG passages, parent/order relationships, bounded search
+  windows, atomic replacement, context expansion, partial citations/continuation,
+  source outline and inferred similarity, plus opt-in saved-material lookup
+  (system §§4–5, 15). TOC/concept extraction and prerequisite graphs are retired.
+  Review suggestions alone never change student proficiency/preferences.
+
+Next work comes from the B entries in `docket.md`: prioritize actual generated
+answer correctness and broader retrieval/source-scope acceptance. Ask about genuine
+tradeoffs; handle straightforward confirmed defects directly. Native Office,
+desktop recovery activation, live Google access and Mac capture remain open.
+
+The code-coherence pass removes retired schema/chunker scaffolding and unused
+SQL/prompts, separates read-only memory inspection from practice writes, and
+breaks Office setup/bridge dependencies through shared course preferences.
+All backend imports resolve to current files; the module audit finds no import
+cycles. API contracts and every retained prompt's content are unchanged.
+Python formatting is standardized and checked in CI; frontend behavior tests
+share their runtime/network and draft-storage fixtures. Stored data, append-only
+migrations and saved HTML workspace parsing are retained.
 
 ## Latest validation evidence
 
-The mind-map pass completed 778 backend tests, then 88 focused map/compose/support/
-archive checks after source/model metadata changes, and 15 map checks after the
-final saved-quiz version/pinned-help regression. Ruff, mypy across 132 source
-files, regenerated API types, frontend diagnostics, 17 frontend behavior tests,
-and production build passed, including the final HTML edge controls.
-Browser acceptance used isolated synthetic sources and simulated model output:
-expand/focus/comparison details, automatic evidence loading, Explain, generated
-saved quiz, complete scored submission, map adoption, reload, restored quiz score,
-and full saved map view. It exposed and fixed lazy citation loading and an
-unreliable SVG edge hit area. Proof: `runs/mind-map/mind-map.png`.
-The real MiniCPM5 2B prompt-35 probe is `runs/mind-map/semantic/report.json`;
-it still omits named examples and produces imperfect explanations/alternatives.
-The latest narrow harness is `runs/bakeoff/20260930T174204Z/`: 1/2 mechanically;
-inspection found a proper refusal missed by the marker scorer. These results do
-not resolve B-06 or certify installed native behavior.
-The fresh acceptance tab, fixture services, and evaluation model processes were
-stopped after acceptance. An earlier stalled IAB tab (8) could not be closed
-through either documented binding; it may remain pointed at the stopped fixture.
+The code-coherence pass passes 757 backend tests, Ruff lint/format checks,
+strict mypy (138 source files), frontend diagnostics (zero errors/warnings),
+17 frontend behavior tests and 55 Office add-in tests plus Office.js type checks.
+The lower backend count removes 26 tests for retired scaffolding or vacuous
+contracts and adds one stronger app-factory check; current learning, citation,
+archive, backup and passage behavior remains covered. Evidence lives under
+`runs/code-cleanup/`: `final-tests.txt`, frontend/Office logs and `final-audit.json`.
+The audit finds no backend import cycles or uncalled literal SQL blocks, excluding
+the backup delete dispatcher whose dynamic operations have tier coverage.
+Generated OpenAPI matches the prior RAG contract exactly. Prompt version 39 removes
+unused entries only; all 30 retained prompts have unchanged content.
 
-The quiz support pass completed a 761-test full backend run, followed by focused
-assessment/archive, 11-case support/routing, and 14-case backup checks after the
-last changes. Ruff, mypy across 128 source files, generated API types, frontend
-diagnostics, 14 frontend tests, and production build passed. Browser acceptance
-covered hint → assisted submission → Explain → independent question/help votes
-→ optional reason → reload/reopen with saved results, assistance, feedback, and
-cached help. Proof is `runs/quiz-support/quiz-controls.png`; it uses simulated
-model output. A real MiniCPM5 2B probe exercised a reasoning hint, missed-answer
-explanation, and excluded-question explanation
-(`runs/quiz-support/semantic/report.json`, prompt 31). Basic concept handling
-improved after inspection, but the excluded reply still echoed a feedback-policy
-sentence. The narrow 2/2 grounding/refusal rerun is
-`runs/bakeoff/20260930T140643Z/`; broader quality remains B-06. Temporary browser,
-fixture services, and the evaluation model process were stopped.
+The prior RAG evidence remains in `runs/rag-rebuild/release-check.txt`. Cases cover
+proof/window coverage, contextual qualifications, selected/excluded sources,
+saved-version lookup, partial citations/ordered continuation, failed publication,
+legacy annotation/history migration, backup tiers and retired Office fields.
+No native compilation, packaging or installed-platform acceptance was run.
 
-The 2026-09-30 saving/backup pass completed 751 backend tests, Ruff, mypy across
-127 source files, generated API types, frontend diagnostics and production build.
-The preceding Office pass completed 55 JavaScript tests and Office.js type checks;
-Office code was unchanged by saving/backup and quiz work. One existing
-Starlette/httpx deprecation warning remains. A subsequent 18-case course-archive/
-settings run covered a new WAL-size race: Settings must stay usable if
-checkpointing removes the WAL during measurement. These checks cover retention
-bytes (not just deleted rows), source hash changes, failed/overlapping backups,
-restore schema/path/hash validation, restored source queues/citations, adoption/
-retry/copy and course-import identity, in-flight edits, failed flush, recovery
-revision/writer isolation, and model-save metadata.
+A read-only copy of the development database upgraded through the new migrations
+with SQLite integrity/foreign-key checks and exact preservation of 682 passages,
+1,306 locator links, 850 locators, six course-memory records, courses, sources
+and conversations. The live database was not migrated or reset.
 
-Isolated browser checks covered edited draft save/reopen, complete quiz results
-and revealed retakes, document refresh/deduplication, latest tail text, offline
-recovery, reload, and course isolation. They used seeded or simulated model/Office
-output. Browser acceptance also exercises backup settings/create/recover and
-unfinished-before-first-save draft reload. A persistent-editor recovery failure
-missed by helper tests was reproduced and corrected. The visible failed save →
-reload → recovered title/body → Retry journey persisted the exact paragraph as
-version 4 of the same artifact; local proof is `runs/save-backup/recovered-draft.png`.
-Actual-store tests include client proxy metadata to catch that serialization edge.
-Folder recovery was also exercised through the offline CLI; backup controls and
-heavy-tier recovery have local proof in `runs/save-backup/backup-settings.png`.
-The disposable fixture services and browser tab were stopped/closed. These
-establish UI/persistence contracts, not real Office behavior or general factual/
-pedagogical quality.
+`scripts/eval_passages.py` uses the installed encoder and committed original-span
+fixtures at equal 512-token budgets. After independent four-sentence calibration,
+both modes covered all eight cases; encoder boundaries increased mean relevant
+character fraction from 0.656 to 0.943. This small synthetic corpus is not broad
+course validation or an end-to-end answer-quality score. Expand it under B-07.
 
-Generated-advice quality remains mixed (B-06): the broader recorded model check
-passed 7/10; later narrow grounding/refusal probes do not establish general
-quality. Exact stored-passage lookup is deterministic. Syntax, citation, and
-draft-anchor checks cannot establish correct explanations or executable examples.
+Prompt-37 MiniCPM5 2B evaluation (`runs/bakeoff/20261002T020747Z/`) passed 8/10
+mechanical checks. One refusal missed the marker scorer; quiz generation failed
+to emit its artifact. Inspection also found a mechanically accepted Python
+example with an invalid transformation call. This does not resolve B-06.
+The prompt-38 source-rich review probe (`runs/bakeoff/20261002T022609Z/`) passed
+2/2 mechanically: it offered a concrete cited exercise and avoided the unwanted
+basics detour. Inspection still found an internal-policy sentence in the review
+and an overly conservative explanation in the second reply. These remain B-06.
+Model processes are stopped after each evaluation.
+Earlier Office/browser/native boundaries remain in the release gates below.
 
 ## Prior platform evidence
 

@@ -54,16 +54,17 @@ wins over any other doc or code name:
 - **Course memory (child)** — per-course focus record ("what this student
   struggles with in THIS course"). One local user per database. Facts about
   understanding; never behavior instructions. Survives course deletion.
-- **Course knowledge / TOC** — what the course SAYS (concepts, evidence)
-  and the index for FINDING it. Shared per-course state. Not memory.
-  Lives in tables like `concepts`/`memory_objects`/`toc_entries` and the
-  misleadingly named `schemas/memory.py` and `src/backend/memory/`.
+- **Course factual evidence** — exact original passages, locators, source
+  parents, bounded search windows and inferred similarity. Shared course state,
+  separate from student memory. `rag/` owns the passage store; legacy knowledge
+  annotations are ordinary saved artifacts. TOC/concept/dependency stores are
+  retired; do not rebuild a parallel factual or prerequisite-memory subsystem.
 - **Student data** — raw private per-user records (attempts, mastery,
   chat). Separate subsystem.
 
 If a task says "course memory," it means the child node above. The
-`course_memories` table IS that node. `MemoryObject` is NOT memory — it is
-a course-knowledge note. The only write seam is `course_memory.refresh`.
+`course_memories` table IS that node. The only COURSE focus write seam is `course_memory.refresh`;
+source indexing never calls it.
 
 ## Engineering tradeoff
 
@@ -82,11 +83,12 @@ data/
   eval/          # eval questions + held-out sets (committed)
 src/
   backend/
-    ingest/        # parse, locators, token-bounded chunks, embeddings, OCR
-    retrieval/     # four-seam funnel + traces
-    memory/        # concept/dependency store + table of contents
+    ingest/        # parsing, locators, OCR, passage preparation/publication pipeline
+    retrieval/     # shared passage retrieval, context, reranking + traces
+    rag/           # coherent original passages, parents, windows, saved-material lookup
+    graph/         # source containment/order and inferred passage similarity
     artifacts/     # typed content (notes/decks/schedules/quizzes), cited model edits, exports
-    student_model/ # attempts, mastery, error model (schema live; subsystem M3-4)
+    student_model/ # practice writes, read-only inspection, experiments and quiz help
     tutor/         # task framing, saved-chat context, grounded answers
     evals/         # answer eval harness (retrieval evals live in retrieval/)
     runtime/       # bundled llama.cpp server, model catalog, user GGUF models
@@ -97,7 +99,7 @@ src/
     serve.py       # the backend process the desktop shell runs
     version.py     # app name + version (scripts/set_version.py)
     common/
-      schemas/       # Pydantic models, one module per storage layer
+      schemas/       # validated runtime contracts grouped by feature
       config.py      # .env loading + settings
       db.py          # the single SQLite connection seam
       migrate.py     # versioned migration runner
@@ -125,7 +127,7 @@ docs/
   docket.md      # triaged bug/release ledger; verify candidates before acting
 ```
 
-The six subsystems map 1:1 to `src/backend/<package>`. Cross-cutting code
+Subsystem packages own their feature flows. Cross-cutting code
 (Pydantic schemas, logging, config, DB access) lives in `src/backend/common/` to
 avoid circular imports. Keep packages cohesive and imports acyclic. Backend and
 frontend are separate codebases; frontend talks to backend only via its API.
@@ -151,9 +153,10 @@ frontend are separate codebases; frontend talks to backend only via its API.
   `generate` (routed to the user's chosen endpoint, recorded in the usage
   ledger) or the in-process `embed_*` / `rerank_scores` seams. Every prompt
   or model change is measured with `scripts/eval_models.py`.
-- **Extensibility:** `kind`, `locator_type`, `content_type`, `claim_type`, and
-  `target_type` are free strings so new types need no schema change. Known
-  values are documented in `schemas/base.py` (`KNOWN_*` constants).
+- **Contracts:** import schemas from their owning modules. Keep active runtime
+  contracts, repository records and archive representations distinct; do not
+  resurrect scaffolding for retired storage models. Free-string format fields
+  remain extensible; feature-specific enums are validated where they are used.
 - **No secrets:** never log or commit keys, tokens, or course materials with
   classmates' work.
 - **Commits:** concise messages matching repo style; only commit when asked.
@@ -167,6 +170,7 @@ Run from the project root, using the venv:
 ```
 .venv/Scripts/python -m pytest                        # tests (fresh SQLite per test)
 .venv/Scripts/python -m ruff check .                  # lint
+.venv/Scripts/python -m ruff format --check src/backend scripts tests # formatting
 .venv/Scripts/python -m mypy src                      # typecheck
 .venv/Scripts/python -m uvicorn src.backend.main:app  # API only (browser dev, with npm run dev)
 .venv/Scripts/python -m scripts.eval_models --help    # model bake-off / eval
@@ -174,7 +178,7 @@ Run from the project root, using the venv:
 .venv/Scripts/python -m scripts.set_version X.Y.Z     # bump the version everywhere
 ```
 
-All three checks must pass before declaring work done. Tests never start
+These checks must pass before declaring work done. Tests never start
 llama-server, download models, or read other apps' model folders.
 
 Frontend (see `src/frontend/README.md` — separate npm codebase, run from

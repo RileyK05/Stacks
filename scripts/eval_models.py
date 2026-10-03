@@ -77,6 +77,15 @@ def _seed_harness_course() -> None:
         "A linear transformation preserves addition and scalar multiplication.",
         label="page 1",
     )
+    add_chunk(
+        course.course_id,
+        "Scalar multiplication multiplies each vector coordinate by a scalar: "
+        "2(1, 3) = (2, 6). Vector addition adds corresponding coordinates. "
+        "For linearity, check T(u+v)=T(u)+T(v) and T(cu)=cT(u). "
+        "Practice idea: compute 3(2, -1), then check both properties for T(x)=2x. "
+        "Use a fresh vector to check your work independently.",
+        label="page 2",
+    )
 
 
 def _seed_course(spec: str) -> None:
@@ -239,9 +248,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"report: {output}")
     print("Mechanical checks only; inspect factual accuracy and usefulness separately.")
-    return 0 if reports and all(
-        r.passed > 0 and not (r.errors or r.failed or r.unresolved) for r in reports
-    ) else 1
+    return (
+        0
+        if reports
+        and all(
+            r.passed > 0 and not (r.errors or r.failed or r.unresolved) for r in reports
+        )
+        else 1
+    )
 
 
 if __name__ == "__main__":

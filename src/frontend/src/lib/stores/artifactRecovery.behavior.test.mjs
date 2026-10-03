@@ -1,80 +1,33 @@
+import { MemoryDrafts } from '../../../tests/helpers/memoryDrafts.mjs';
+import { createStoreRuntime, installApiMock, jsonResponse } from '../../../tests/helpers/storeRuntime.mjs';
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { fileURLToPath } from 'node:url';
 import { proxy } from 'svelte/internal/client';
-import { createServer } from 'vite';
 
 let vite;
 let OpenArtifact;
-let originalRequest;
-let originalFetch;
+let restoreApi;
 let respond;
 let fetchCalls;
 
 before(async () => {
-  vite = await createServer({
-    configFile: fileURLToPath(new URL('../../../vite.config.ts', import.meta.url)),
-    optimizeDeps: { entries: ['src/lib/stores/artifact.svelte.ts'], noDiscovery: true, include: [] },
-    server: { middlewareMode: true, hmr: false },
-    appType: 'custom'
-  });
-
-  originalRequest = globalThis.Request;
-  originalFetch = globalThis.fetch;
-  globalThis.Request = class extends originalRequest {
-    constructor(input, init) {
-      super(typeof input === 'string' && input.startsWith('/') ? new URL(input, 'http://localhost') : input, init);
-    }
-  };
+  vite = await createStoreRuntime(['src/lib/stores/artifact.svelte.ts']);
   fetchCalls = [];
-  globalThis.fetch = async (request, init) => {
-    const normalized = request instanceof globalThis.Request ? request : new globalThis.Request(request, init);
-    fetchCalls.push({ method: normalized.method, path: new URL(normalized.url).pathname });
-    return respond(normalized);
-  };
-
+  restoreApi = installApiMock((request) => {
+    fetchCalls.push({ method: request.method, path: new URL(request.url).pathname });
+    return respond(request);
+  });
   ({ OpenArtifact } = await vite.ssrLoadModule('/src/lib/stores/artifact.svelte.ts'));
 });
 
 after(async () => {
-  await vite?.close();
-  if (originalRequest) globalThis.Request = originalRequest;
-  if (originalFetch) globalThis.fetch = originalFetch;
+  try {
+    await vite?.close();
+  } finally {
+    restoreApi?.();
+  }
 });
 
-class MemoryDrafts {
-  records = new Map();
-  failPuts = 0;
-
-  async get(key) {
-    return this.records.get(key) ?? null;
-  }
-
-  async list(prefix) {
-    return [...this.records.values()].filter((draft) => draft.key.startsWith(prefix));
-  }
-
-  async put(draft) {
-    if (this.failPuts > 0) {
-      this.failPuts -= 1;
-      throw new Error('simulated local persistence failure');
-    }
-    this.records.set(draft.key, structuredClone(draft));
-  }
-
-  async delete(key, revision, writerId) {
-    const saved = this.records.get(key);
-    if (saved && (revision === undefined || (saved.revision === revision && (writerId === undefined || saved.writerId === writerId)))) {
-      this.records.delete(key);
-    }
-  }
-
-  async deleteArtifact(courseId, artifactId) {
-    for (const [key, draft] of this.records) {
-      if (draft.courseId === courseId && draft.artifactId === artifactId) this.records.delete(key);
-    }
-  }
-}
 
 function artifactView(version = 1, content = { markdown: 'server content' }) {
   return {
@@ -90,13 +43,6 @@ function artifactView(version = 1, content = { markdown: 'server content' }) {
   };
 }
 
-function jsonResponse(data, status = 200) {
-  if (status === 204) return new Response(null, { status });
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { 'content-type': 'application/json' }
-  });
-}
 
 function artifactPath(request) {
   return new URL(request.url).pathname.endsWith('/courses/course-1/artifacts/artifact-1');

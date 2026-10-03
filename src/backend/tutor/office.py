@@ -45,7 +45,7 @@ from src.backend.common.queries import get
 from src.backend.retrieval import funnel, rerank, trace
 from src.backend.retrieval.config import RetrievalPolicy
 from src.backend.student_model import learning
-from src.backend.tutor.compose import Intent, classify_intent
+from src.backend.tutor.compose import Intent, classify_intent, numbered_passages
 
 # How much of the host's text is searched with and shown to the model. A
 # whole slide is small; a pasted document is bounded so a runaway selection
@@ -147,7 +147,10 @@ def is_graded_request(instruction: str, context: str) -> bool:
     return classify_intent(probe) is Intent.GRADED or bool(_GRADED.search(probe))
 
 
-def _citations(conn: Connection, chunk_ids: Sequence[UUID]) -> tuple[Citation, ...]:
+def _citations(
+    conn: Connection, candidates: Sequence[funnel.Candidate]
+) -> tuple[Citation, ...]:
+    chunk_ids = [c.chunk_id for c in candidates]
     if not chunk_ids:
         return ()
     rows = conn.execute(
@@ -156,7 +159,8 @@ def _citations(conn: Connection, chunk_ids: Sequence[UUID]) -> tuple[Citation, .
     ).fetchall()
     by_id = {row["chunk_id"]: row for row in rows}
     citations: list[Citation] = []
-    for number, chunk_id in enumerate(chunk_ids, start=1):
+    for number, candidate in enumerate(candidates, start=1):
+        chunk_id = candidate.chunk_id
         row = by_id.get(chunk_id)
         if row is None:
             continue
@@ -166,8 +170,9 @@ def _citations(conn: Connection, chunk_ids: Sequence[UUID]) -> tuple[Citation, .
                 chunk_id=str(chunk_id),
                 source_id=str(row["source_id"]),
                 filename=row["filename"],
-                label=row["label"],
-                text=row["text"],
+                label=row["label"]
+                + (" · partial passage" if candidate.partial else ""),
+                text=candidate.text,
             )
         )
     return tuple(citations)
@@ -215,9 +220,7 @@ def answer(
             "nothing in this course's materials matches what you selected"
         )
     candidates = rerank.select_for_generation(query, result.candidates)
-    numbered = "\n\n".join(
-        f"[{index + 1}] {candidate.text}" for index, candidate in enumerate(candidates)
-    )
+    numbered = numbered_passages(candidates)
     host_label = host.strip() or "the document"
     looked_at = _context(context) or "(nothing selected)"
     request = instruction.strip() or "(none — use the action)"
@@ -253,9 +256,8 @@ def answer(
         query,
         used,
         embedding_model=embedding_model,
-        toc_entry_ids=result.matched_toc_entry_ids,
     )
-    cited = _citations(conn, tuple(candidate.chunk_id for candidate in candidates))
+    cited = _citations(conn, candidates)
     return OfficeAnswer(
         action=action,
         text=text,

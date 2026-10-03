@@ -5,7 +5,16 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel
 from src.backend.api.deps import require_course
 from src.backend.common import sources_repo, storage
@@ -47,6 +56,7 @@ class SourceView(BaseModel):
     mime_type: str
     source_type: SourceType
     status: SourceStatus
+    has_index: bool = False
     error_message: str | None
     size_bytes: int | None
     created_at: datetime
@@ -57,6 +67,10 @@ class PassageView(BaseModel):
     locator_type: str
     label: str
     description: str | None
+    char_start: int = 0
+    char_end: int = 0
+    text_length: int = 0
+    next_start: int | None = None
 
 
 @router.post(
@@ -210,7 +224,13 @@ def source_pdf_page(course_id: UUID, source_id: UUID, page_number: int) -> Respo
     "/{course_id}/sources/{source_id}/chunks/{chunk_id}",
     response_model=PassageView,
 )
-def source_passage(course_id: UUID, source_id: UUID, chunk_id: UUID) -> PassageView:
+def source_passage(
+    course_id: UUID,
+    source_id: UUID,
+    chunk_id: UUID,
+    start: Annotated[int, Query(ge=0)] = 0,
+    max_chars: Annotated[int | None, Query(ge=1, le=32000)] = None,
+) -> PassageView:
     require_course(course_id)
     with connection() as conn:
         row = conn.execute(
@@ -219,7 +239,22 @@ def source_passage(course_id: UUID, source_id: UUID, chunk_id: UUID) -> PassageV
         ).fetchone()
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "passage not found")
-    return PassageView.model_validate(row)
+    view = PassageView.model_validate(row)
+    length = len(view.text)
+    if start > length:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "passage offset is past its end"
+        )
+    end = min(length, start + max_chars) if max_chars else length
+    return view.model_copy(
+        update={
+            "text": view.text[start:end],
+            "char_start": start,
+            "char_end": end,
+            "text_length": length,
+            "next_start": end if end < length else None,
+        }
+    )
 
 
 @router.post("/{course_id}/sources/{source_id}/requeue")

@@ -12,7 +12,7 @@ from src.backend.common.prompt_registry import grounded_prompt, load_prompt
 from src.backend.common.providers import ProviderChoice
 from src.backend.common.queries import get
 from src.backend.common.schemas.learning import ResearchResult
-from src.backend.student_model import learning
+from src.backend.student_model import inspection, learning
 from src.backend.tutor.compose import parse_json_object
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ def inspect_exchange(
     try:
         with connection() as conn:
             evidence = learning.evidence_for(conn, chunk_ids)
-            existing = learning.experiments(conn, course_id)
+            existing = inspection.experiments(conn, course_id)
         if len(evidence) != len(chunk_ids):
             return
         policy = load_learning_policy().practice

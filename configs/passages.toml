@@ -1,0 +1,13 @@
+version = "2"
+semantic_enabled = true
+target_tokens = 512
+boundary_similarity = 0.78
+search_window_tokens = 512
+retrieved_passage_tokens = 2048
+generation_material_tokens = 6144
+window_overlap_tokens = 64
+context_neighbors = 2
+context_similarity = 0.72
+similarity_neighbors = 8
+similarity_floor = 0.78
+similarity_block_rows = 128

@@ -47,7 +47,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 from src.backend.common import secrets, settings_repo
 from src.backend.common.config import PROJECT_ROOT, get_settings
-from src.backend.common.schemas.base import INGESTION_TASKS, KNOWN_GENERATION_TASKS
+from src.backend.common.schemas.base import BACKGROUND_TASKS, KNOWN_GENERATION_TASKS
 
 DEFAULT_MODELS_PATH = PROJECT_ROOT / "configs" / "models.toml"
 LOCAL = "local"
@@ -65,7 +65,7 @@ class TaskClass(StrEnum):
 def task_class(task: str) -> TaskClass:
     if task not in KNOWN_GENERATION_TASKS:
         raise ValueError(f"unknown generation task: {task}")
-    return TaskClass.BACKGROUND if task in INGESTION_TASKS else TaskClass.INTERACTIVE
+    return TaskClass.BACKGROUND if task in BACKGROUND_TASKS else TaskClass.INTERACTIVE
 
 
 class ProviderPreset(BaseModel):

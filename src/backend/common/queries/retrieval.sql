@@ -19,131 +19,57 @@ JOIN chunks AS chunk ON chunk.chunk_rowid = chunks_fts.rowid
 JOIN sources AS source ON source.source_id = chunk.source_id
 WHERE chunks_fts MATCH :match
   AND source.course_id = :course_id
-  AND source.status = 'indexed'
+  AND (source.status = 'indexed' OR EXISTS (SELECT 1 FROM source_indexes WHERE source_id = source.source_id))
+  AND EXISTS (SELECT 1 FROM courses WHERE course_id = source.course_id AND deleted_at IS NULL)
   AND (:source_ids IS NULL OR source.source_id IN (SELECT value FROM json_each(:source_ids)))
 ORDER BY rank DESC, chunk.chunk_index
 LIMIT :limit;
 
--- name: toc_candidates
--- TOC seam (static matching): entries of the course's current TOC whose
--- title/description match the query (same stemming as the keyword seam),
--- plus the chunks under those entries' locators. The join goes through
--- chunk_locators (a chunk's FULL locator span), not chunks.locator_id (its
--- primary locator only): a section that starts mid-chunk would otherwise
--- match no chunk at all. Entries with a NULL locator drop out via the
--- join, which also bounds the seam to entries with text behind them.
-WITH current_toc AS (
-    SELECT toc_id
-    FROM tables_of_contents
-    WHERE course_id = :course_id
-    ORDER BY version DESC
-    LIMIT 1
-),
-matched_entries AS (
-    SELECT entry.entry_id, entry.title, entry.source_id, entry.locator_id,
-           entry.position
-    FROM toc_entries_fts
-    JOIN toc_entries AS entry ON entry.entry_rowid = toc_entries_fts.rowid
-    WHERE toc_entries_fts MATCH :match
-      AND entry.toc_id IN (SELECT toc_id FROM current_toc)
-)
-SELECT chunk.chunk_id,
-       chunk.source_id,
-       chunk.locator_id,
-       chunk.chunk_index,
-       chunk.text,
-       matched_entries.entry_id,
-       matched_entries.title
-FROM matched_entries
-JOIN chunk_locators AS span ON span.locator_id = matched_entries.locator_id
-JOIN chunks AS chunk ON chunk.chunk_id = span.chunk_id
-JOIN sources AS source ON source.source_id = chunk.source_id
-WHERE source.course_id = :course_id
-  AND source.status = 'indexed'
-  AND (:source_ids IS NULL OR source.source_id IN (SELECT value FROM json_each(:source_ids)))
-ORDER BY matched_entries.position, chunk.chunk_index
-LIMIT :limit;
-
--- name: dependency_expansion
--- Graph-walk seam: given matched concept ids, return chunks attached to
--- prerequisite or dependent concepts (1-hop walk). UNION (not an OR
--- join) so each branch uses its index and a chunk reachable both ways
--- burns one LIMIT slot, not two. Deterministic ORDER BY because candidate
--- order feeds reproducible retrieval runs.
--- KNOWN PRECISION GAP: memory_objects link concepts to sources, not
--- locators, so this returns every chunk of the source a concept's
--- evidence lives in; the limit bounds the flood. Dormant without edges.
-SELECT chunk.chunk_id,
-       chunk.source_id,
-       chunk.locator_id,
-       chunk.chunk_index,
-       chunk.text
-FROM concepts AS matched
-JOIN dependencies AS dep ON dep.prereq_id = matched.concept_id
-JOIN memory_objects AS mo ON mo.concept_id = dep.dependent_id
-JOIN chunks AS chunk ON chunk.source_id = mo.source_id
-JOIN sources AS src ON src.source_id = chunk.source_id
-WHERE matched.concept_id IN (SELECT value FROM json_each(:concept_ids))
-  AND matched.course_id = :course_id
-  AND src.status = 'indexed'
-  AND (:source_ids IS NULL OR src.source_id IN (SELECT value FROM json_each(:source_ids)))
-UNION
-SELECT chunk.chunk_id,
-       chunk.source_id,
-       chunk.locator_id,
-       chunk.chunk_index,
-       chunk.text
-FROM concepts AS matched
-JOIN dependencies AS dep ON dep.dependent_id = matched.concept_id
-JOIN memory_objects AS mo ON mo.concept_id = dep.prereq_id
-JOIN chunks AS chunk ON chunk.source_id = mo.source_id
-JOIN sources AS src ON src.source_id = chunk.source_id
-WHERE matched.concept_id IN (SELECT value FROM json_each(:concept_ids))
-  AND matched.course_id = :course_id
-  AND src.status = 'indexed'
-  AND (:source_ids IS NULL OR src.source_id IN (SELECT value FROM json_each(:source_ids)))
-ORDER BY chunk_index, chunk_id
-LIMIT :limit;
-
 -- name: embedding_rows
--- Embedding seam input: every indexed chunk's vector under the current
--- model for this course. Scoring (dot product) happens in numpy — a
--- course's vectors fit in memory comfortably, and brute force over a few
--- thousand chunks takes milliseconds.
-SELECT chunk.chunk_id,
-       chunk.source_id,
-       chunk.locator_id,
-       chunk.chunk_index,
-       chunk.text,
-       emb.dimension,
-       emb.embedding
+SELECT chunk.chunk_id, chunk.source_id, chunk.locator_id, chunk.chunk_index,
+       window.dimension, window.embedding,
+       window.char_start AS window_start, window.char_end AS window_end
+FROM passage_windows AS window
+JOIN chunks AS chunk ON chunk.chunk_id = window.chunk_id
+JOIN sources AS source ON source.source_id = chunk.source_id
+JOIN courses AS course ON course.course_id = source.course_id
+WHERE source.course_id = :course_id AND course.deleted_at IS NULL
+  AND window.model = :model
+  AND (source.status = 'indexed' OR EXISTS (
+      SELECT 1 FROM source_indexes WHERE source_id = source.source_id))
+  AND (:source_ids IS NULL OR source.source_id IN (SELECT value FROM json_each(:source_ids)))
+UNION ALL
+SELECT chunk.chunk_id, chunk.source_id, chunk.locator_id, chunk.chunk_index,
+       emb.dimension, emb.embedding, 0, length(chunk.text)
 FROM chunk_embeddings AS emb
 JOIN chunks AS chunk ON chunk.chunk_id = emb.chunk_id
 JOIN sources AS source ON source.source_id = chunk.source_id
-WHERE source.course_id = :course_id
-  AND source.status = 'indexed'
+JOIN courses AS course ON course.course_id = source.course_id
+WHERE source.course_id = :course_id AND course.deleted_at IS NULL
   AND emb.model = :model
+  AND NOT EXISTS (SELECT 1 FROM passage_windows WHERE chunk_id = chunk.chunk_id)
+  AND (source.status = 'indexed' OR EXISTS (SELECT 1 FROM source_indexes WHERE source_id = source.source_id))
   AND (:source_ids IS NULL OR source.source_id IN (SELECT value FROM json_each(:source_ids)));
 
--- name: locator_labels
-SELECT locator.locator_id,
-       locator.locator_type,
-       locator.label,
-       locator.start AS char_start,
-       locator.end_value AS char_end,
-       locator.description,
-       source.filename
-FROM locators AS locator
-JOIN sources AS source ON source.source_id = locator.source_id
-WHERE locator.locator_id IN (SELECT value FROM json_each(:locator_ids));
-
--- name: course_concepts
--- The dependency seam's matcher input. Matching itself happens in Python
--- (whole-word, case-insensitive, regex-escaped model-extracted names).
-SELECT concept_id, name, synonyms
-FROM concepts
-WHERE course_id = :course_id
-ORDER BY name, concept_id;
+-- name: similar_candidates
+SELECT chunk.chunk_id, chunk.source_id, chunk.locator_id, chunk.chunk_index,
+       chunk.text, max(edge.weight) AS rank
+FROM graph_edges AS edge
+JOIN chunks AS chunk ON chunk.chunk_id = CASE
+    WHEN edge.chunk_a IN (SELECT value FROM json_each(:chunk_ids)) THEN edge.chunk_b
+    ELSE edge.chunk_a END
+JOIN sources AS source ON source.source_id = chunk.source_id
+JOIN courses AS course ON course.course_id = source.course_id
+WHERE edge.course_id = :course_id AND edge.model = :model
+  AND (edge.chunk_a IN (SELECT value FROM json_each(:chunk_ids))
+       OR edge.chunk_b IN (SELECT value FROM json_each(:chunk_ids)))
+  AND chunk.chunk_id NOT IN (SELECT value FROM json_each(:chunk_ids))
+  AND source.course_id = :course_id AND course.deleted_at IS NULL
+  AND (source.status = 'indexed' OR EXISTS (SELECT 1 FROM source_indexes WHERE source_id = source.source_id))
+  AND (:source_ids IS NULL OR source.source_id IN (SELECT value FROM json_each(:source_ids)))
+GROUP BY chunk.chunk_id
+ORDER BY rank DESC, chunk.source_id, chunk.chunk_index
+LIMIT :limit;
 
 -- name: chunk_locator_labels
 SELECT DISTINCT locator.label

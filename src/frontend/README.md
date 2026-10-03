@@ -38,6 +38,7 @@ npm install
 npm run desktop   # the app in dev: Vite + tauri dev, starts the backend from .venv
 npm run dev       # SPA in a browser only (run `uvicorn src.backend.main:app` beside it)
 npm run check     # svelte-check type/diagnostics — must pass
+npm test          # store behavior, recovery, quiz help and map scope
 npm run build     # static SPA into build/
 npm run gen:api   # regenerate src/lib/api/schema.d.ts from the backend
 ```
@@ -74,6 +75,7 @@ client is an `ApiError`, including network failures.
 ```
 src-tauri/           the desktop shell (Rust): window, backend process, plugins
 src/lib/api/         backend connection, generated schema, typed client, ApiError
+tests/helpers/      shared store runtime/API and in-memory draft test fixtures
 src/lib/stores/      runes stores: theme, toast, confirm, debug, chat,
                      artifact, workspace, panel; office.ts (Office add-in API)
 src/lib/components/  Button, Card, TextInput, Select, Spinner, Skeleton, ErrorBanner,

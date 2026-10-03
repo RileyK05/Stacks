@@ -24,9 +24,8 @@ while thinking (plan §6.3).
 
 Embeddings are a SEPARATE seam (`embed_*`), deliberately not `generate`:
 the embedding model runs in-process, so it records nothing and sends no
-course text anywhere. Its contract lives in configs/embeddings.toml (the
-model name is the chunk_embeddings row key; dimension is enforced loudly
-on write and read).
+course text anywhere. Its contract lives in configs/embeddings.toml. Vectors
+carry model identity; dimension is enforced on write and read.
 """
 
 from __future__ import annotations
@@ -591,6 +590,17 @@ def reset_embedding_backend() -> None:
     _EMBEDDING_BACKEND = None
 
 
+def embedding_token_count(text: str) -> int:
+    """Count document tokens without the encoder's truncation or padding."""
+    backend = _load_embedding_backend()
+    counter = getattr(backend.model, "token_count", None)
+    value = backend.policy.document_prefix + text
+    if counter is None:
+        # Custom backends without a tokenizer use a conservative byte budget.
+        return len(value.encode("utf-8")) + 2
+    return int(counter(value))
+
+
 def embed_texts(
     texts: Sequence[str],
     *,
@@ -630,11 +640,6 @@ def embed_texts(
 
 _RERANKER: Any = None
 _RERANKER_NAME: str | None = None
-
-
-def reset_reranker() -> None:
-    global _RERANKER, _RERANKER_NAME
-    _RERANKER, _RERANKER_NAME = None, None
 
 
 def rerank_scores(model_name: str, query: str, texts: Sequence[str]) -> list[float]:

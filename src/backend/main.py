@@ -27,6 +27,7 @@ from src.backend.api import (
     conversations,
     courses,
     data,
+    graph,
     learning,
     mind_maps,
     office_setup,
@@ -79,6 +80,7 @@ def create_api() -> FastAPI:
     api.include_router(data.router)
     api.include_router(backups.router)
     api.include_router(learning.router)
+    api.include_router(graph.router)
     api.include_router(mind_maps.router)
     api.include_router(office_setup.router)
 

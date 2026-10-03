@@ -108,7 +108,7 @@ def test_a_real_request_is_never_mistaken_for_small_talk(
 def test_small_talk_gets_a_reply_from_the_model_without_any_search(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """"echo hello" in a course with nothing in it was refused as "nothing
+    """ "echo hello" in a course with nothing in it was refused as "nothing
     relevant found"; and "hi" in a full one was answered from random
     passages."""
     _no_search(monkeypatch)
@@ -393,9 +393,10 @@ def test_a_blank_question_is_refused_before_anything_runs(
     calls = configure_test_provider(monkeypatch, ANSWER)
     chat_id = _chat(client, course_id)
     assert _send(client, course_id, chat_id, "   \n ").status_code == 422
-    assert client.post(
-        f"/courses/{course_id}/ask", json={"question": "  "}
-    ).status_code == 422
+    assert (
+        client.post(f"/courses/{course_id}/ask", json={"question": "  "}).status_code
+        == 422
+    )
     assert calls == []
 
 
@@ -478,7 +479,7 @@ def test_the_ask_endpoint_answers_small_talk_too(
 
 
 def test_words_with_accents_are_searched_whole() -> None:
-    """"sociología" was cut into "sociolog" + "a" and "Émile" into "mile":
+    """ "sociología" was cut into "sociolog" + "a" and "Émile" into "mile":
     tokens that match nothing the (diacritic-folding) index holds."""
     from src.backend.retrieval.funnel import _keyword_tokens
 
@@ -492,9 +493,7 @@ def test_a_question_with_accents_finds_its_passage(client: TestClient) -> None:
     from src.backend.common.db import connection
     from src.backend.retrieval import funnel
 
-    course_id = UUID(
-        client.post("/courses", json={"name": "Soc"}).json()["course_id"]
-    )
+    course_id = UUID(client.post("/courses", json={"name": "Soc"}).json()["course_id"])
     add_chunk(course_id, "Émile Durkheim studied suicide and social solidarity.")
     add_chunk(course_id, "Unrelated passage about bases.")
     with connection() as conn:

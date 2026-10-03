@@ -150,6 +150,8 @@ def _tier_snapshot(snapshot: Path, tier: str) -> None:
             "usage_ledger",
             "retrieval_traces",
             "chunk_embeddings",
+            "passage_windows",
+            "graph_edges",
         ):
             conn.execute(get(_FILE, f"delete_{operation}"))
         conn.execute(get(_FILE, "sanitize_artifact_origins"))
@@ -170,8 +172,8 @@ def _tier_snapshot(snapshot: Path, tier: str) -> None:
         )
         if tier == "heavy":
             for operation in (
-                'practice_feedback',
-                'practice_help',
+                "practice_feedback",
+                "practice_help",
                 "practice_assessments",
                 "practice_runs",
                 "learning_teaching_events",
@@ -564,11 +566,6 @@ def _validate_schema(conn: sqlite3.Connection) -> None:
         "ingestion_runs",
         "ingestion_stage_runs",
         "ingestion_history",
-        "concepts",
-        "memory_objects",
-        "memory_object_evidence",
-        "tables_of_contents",
-        "toc_entries",
         "retrieval_traces",
         "app_settings",
         "course_memories",
@@ -586,6 +583,11 @@ def _validate_schema(conn: sqlite3.Connection) -> None:
         "work_documents",
         "work_turns",
     }
+    versions_present = {
+        row["version"] for row in conn.execute(get(_FILE, "schema_versions"))
+    }
+    if "014" in versions_present:
+        required.update({"source_indexes", "passage_containers", "passage_windows"})
     missing = required - existing
     if missing:
         raise InvalidBackupError(

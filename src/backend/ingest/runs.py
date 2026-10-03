@@ -49,7 +49,7 @@ def _to_stage_run(row: dict[str, Any]) -> IngestionStageRun:
     return IngestionStageRun(
         stage_run_id=row["stage_run_id"],
         run_id=row["run_id"],
-        stage=IngestionStage(row["stage"]),
+        stage=row["stage"],
         position=row["position"],
         depends_on_stage_id=row["depends_on_stage_id"],
         status=IngestionStatus(row["status"]),
@@ -119,11 +119,9 @@ def latest_run_for_source(conn: Connection, source_id: UUID) -> IngestionRun | N
     return _to_run(row) if row else None
 
 
-def stage_run(
-    conn: Connection, run_id: UUID, stage: IngestionStage
-) -> IngestionStageRun | None:
+def stage_run(conn: Connection, run_id: UUID, stage: str) -> IngestionStageRun | None:
     row = conn.execute(
-        get(_FILE, "get_stage_run"), {"run_id": run_id, "stage": stage.value}
+        get(_FILE, "get_stage_run"), {"run_id": run_id, "stage": stage}
     ).fetchone()
     return _to_stage_run(row) if row else None
 
@@ -238,9 +236,7 @@ def queued_at_for(conn: Connection, source_id: UUID) -> Any:
     """The queue row's original queued_at, captured BEFORE the row is
     deleted so the history row preserves the original enqueue time.
     Returns None when the row is already gone."""
-    row = conn.execute(
-        get(_FILE, "queued_at_for"), {"source_id": source_id}
-    ).fetchone()
+    row = conn.execute(get(_FILE, "queued_at_for"), {"source_id": source_id}).fetchone()
     return row["queued_at"] if row else None
 
 

@@ -21,6 +21,8 @@ class EmbeddingPolicy(BaseModel):
     document_prefix: str
     batch_size: int = Field(ge=1)
     min_similarity: float
+
+
 def load_embedding_policy(
     path: Path = DEFAULT_EMBEDDINGS_PATH,
 ) -> EmbeddingPolicy:
@@ -28,9 +30,7 @@ def load_embedding_policy(
         raw = tomllib.load(config_file)
     return EmbeddingPolicy.model_validate(
         {
-            "embeddings_config_version": raw["version"][
-                "embeddings_config_version"
-            ],
+            "embeddings_config_version": raw["version"]["embeddings_config_version"],
             **raw["model"],
             **raw["ingest"],
             **raw["query"],

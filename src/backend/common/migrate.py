@@ -41,6 +41,64 @@ def _pending_migrations() -> list[tuple[str, Path]]:
     return pending
 
 
+def _compatible_script(conn: Connection, version: str, script: str) -> str:
+    if version != "012":
+        return script
+    base = {
+        "artifact_id",
+        "version",
+        "title",
+        "content",
+        "sources",
+        "author",
+        "note",
+        "created_at",
+    }
+    columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(artifact_versions)")
+    }
+    extra = columns - base
+    if not extra:
+        return script
+    allowed = {"file_sha256", "filename", "file_size", "mime_type", "ops"}
+    if extra - allowed:
+        raise RuntimeError("unrecognized historical artifact fields; upgrade stopped")
+    # Retired Office builds had file/revision fields. Preserve them in the
+    # exported provenance envelope before the immutable 012 rebuild runs.
+    version_fields = ["'version', v.version"] + [
+        f"'{key}', " + (f"json(v.{key})" if key == "ops" else f"v.{key}")
+        for key in sorted(extra)
+    ]
+    artifact_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(artifacts)")
+    }
+    file_fields = [
+        f"'{key}', artifacts.{key}"
+        for key in sorted(allowed - {"ops"})
+        if key in artifact_columns
+    ]
+    preserve = (
+        "UPDATE artifacts SET origin = json_set(origin, '$.legacy_office_versions', "
+        "json((SELECT json_group_array(json_object("
+        + ", ".join(version_fields)
+        + ")) FROM artifact_versions v WHERE v.artifact_id = artifacts.artifact_id))"
+        + (
+            ", '$.legacy_office_file', json_object(" + ", ".join(file_fields) + ")"
+            if file_fields
+            else ""
+        )
+        + ");\n"
+    )
+    projection = (
+        "artifact_id, version, title, content, sources, author, note, created_at"
+    )
+    return preserve + script.replace(
+        "INSERT INTO artifact_versions SELECT * FROM kept_artifact_versions;",
+        f"INSERT INTO artifact_versions SELECT {projection} "
+        "FROM kept_artifact_versions;",
+    )
+
+
 def migrate(path: Path | None = None) -> list[str]:
     """Apply any unapplied migrations in order. Returns applied versions.
 
@@ -57,6 +115,7 @@ def migrate(path: Path | None = None) -> list[str]:
             if version in done:
                 continue
             script = migration.read_text(encoding="utf-8")
+            script = _compatible_script(conn, version, script)
             conn.executescript(
                 "BEGIN IMMEDIATE;\n"
                 f"{script}\n"

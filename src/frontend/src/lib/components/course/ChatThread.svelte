@@ -309,6 +309,12 @@
                             {#if citation.description}
                               <p class="mt-1.5 text-xs italic text-muted">{citation.description}</p>
                             {/if}
+                            {#if citation.partial}
+                              <p class="mt-1.5 text-xs text-muted">The tutor read part of this passage. Open the source to continue reading the complete argument.</p>
+                            {/if}
+                            {#each citation.generated_materials ?? [] as material}
+                              <p class="mt-1.5 text-xs text-muted">Found through saved material: {material.title}. The evidence below is from the original source.</p>
+                            {/each}
                             <p class="mt-2 border-l-2 border-line-strong pl-3 text-[13px] leading-relaxed text-muted">
                               {citation.text}
                             </p>

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from src.backend.office_addin import certs, live, macos, manifest, service
+from src.backend.office_addin import certs, live, macos, manifest, preferences, service
 
 
 @dataclass
@@ -153,7 +153,7 @@ def test_mac_disconnect_stops_clears_broker_unregisters_untrusts_and_removes_fil
 
 
 def test_mac_startup_repairs_manifest_and_host_without_prompting(
-    mac_service: tuple[FakeMac, FakeHost, FakeBroker]
+    mac_service: tuple[FakeMac, FakeHost, FakeBroker],
 ) -> None:
     platform, host, _broker = mac_service
     service.connect()
@@ -176,7 +176,7 @@ def test_mac_startup_repairs_manifest_and_host_without_prompting(
 
 
 def test_open_document_launches_mac_office_and_remembers_course(
-    mac_service: tuple[FakeMac, FakeHost, FakeBroker]
+    mac_service: tuple[FakeMac, FakeHost, FakeBroker],
 ) -> None:
     from src.backend.common import courses_repo
 
@@ -186,7 +186,7 @@ def test_open_document_launches_mac_office_and_remembers_course(
     assert service.open_document("excel", None, course.course_id) == "excel"
 
     assert platform.launched == [("excel", None)]
-    assert service.last_course() == str(course.course_id)
+    assert preferences.last_course() == str(course.course_id)
 
 
 def test_registered_routes_to_macos_using_a_local_platform_stub(

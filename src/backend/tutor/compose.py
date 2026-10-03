@@ -350,17 +350,27 @@ class Composed:
     rejected_quotes: tuple[quote_anchors.Quote, ...] = ()
 
 
+def numbered_passages(candidates: tuple[Candidate, ...]) -> str:
+    blocks = [
+        f"[{index + 1}] chunk {candidate.chunk_id}"
+        + (
+            f" (partial passage: characters {candidate.window_start}–"
+            f"{candidate.window_end} of {candidate.text_length}; "
+            "incomplete logical unit)"
+            if candidate.partial
+            else ""
+        )
+        + f"\n{candidate.text}"
+        for index, candidate in enumerate(candidates)
+    ]
+    return "\n\n".join(blocks)
+
+
 def numbered_material(
     question: str, candidates: tuple[Candidate, ...], conversation: str = ""
 ) -> str:
-    """The question and numbered chunks, preceded — in a saved chat — by
-    the conversation so far (tutor/chat.py). It all goes inside the fence:
-    earlier turns are context, never a source to cite."""
-    blocks = [
-        f"[{index + 1}] chunk {candidate.chunk_id}\n{candidate.text}"
-        for index, candidate in enumerate(candidates)
-    ]
-    evidence = "\n\n".join(blocks)
+    """Conversation context and numbered original evidence, inside the fence."""
+    evidence = numbered_passages(candidates)
     material = f"Question: {question}\n\nCourse material:\n{evidence}"
     if conversation:
         return f"Conversation so far (context only):\n{conversation}\n\n{material}"
@@ -787,6 +797,8 @@ def compose_answer(
         candidates = select(question, candidates)
     intent = classify_intent(question)
     material = numbered_material(question, candidates, conversation)
+    if intent in (Intent.ANSWER, Intent.GRADED):
+        teaching += "\n" + load_prompt("background_review")
     if intent is Intent.ANSWER and answer_mode is AnswerMode.QUOTES:
         return _compose_quoted(
             material, candidates, generate, on_schema_rejected, teaching

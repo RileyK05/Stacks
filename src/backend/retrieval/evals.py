@@ -7,7 +7,7 @@ that MUST appear in the retrieved set for the case to count as a hit
 
 `run_eval` computes what decision 008's kill-switch requires, with every
 number taken at the SAME k (policy.final_k) so the comparison is fair:
-- recall@k for EACH seam alone (keyword-only, toc-only, dependency-only,
+- recall@k for EACH seam alone (keyword-only, graph-only,
   embedding-only when a query embedding function is supplied), each seam
   truncated to its own best final_k
 - recall@k for the FUSION
@@ -39,11 +39,9 @@ from src.backend.retrieval.funnel import Candidate
 
 _FILE = "retrieval_traces"
 
-EVAL_DIR = (
-    Path(__file__).resolve().parents[3] / "data" / "eval" / "retrieval"
-)
+EVAL_DIR = Path(__file__).resolve().parents[3] / "data" / "eval" / "retrieval"
 
-SEAM_NAMES = ("keyword", "toc", "dependency", "embedding")
+SEAM_NAMES = ("keyword", "embedding", "graph")
 
 
 @dataclass(frozen=True)
@@ -78,8 +76,7 @@ class EvalSummary:
             f"fused recall@k: {self.fused_recall:.2f}",
             "seam recall@k: "
             + ", ".join(
-                f"{seam}={self.seam_recall.get(seam, 0.0):.2f}"
-                for seam in SEAM_NAMES
+                f"{seam}={self.seam_recall.get(seam, 0.0):.2f}" for seam in SEAM_NAMES
             ),
             f"best single seam: {self.best_single_seam} "
             f"({self.best_single_recall:.2f})",
@@ -126,13 +123,11 @@ def _labels_for_candidates(
     return frozenset(row["label"] for row in rows)
 
 
-def _top(
-    seam: dict[UUID, Candidate], k: int
-) -> tuple[Candidate, ...]:
+def _top(seam: dict[UUID, Candidate], k: int) -> tuple[Candidate, ...]:
     """The seam's own best k, in seam order.
 
     Seam dicts are built from rows the SQL already ordered (rank DESC for
-    keyword/embedding, position for TOC, deterministic for dependency), so
+    keyword/embedding/graph), so
     insertion order IS the seam's ranking. Truncating here is what makes the
     per-seam and fused numbers comparable: without it each seam is scored at
     its own limit (20) while the fusion is scored at final_k (10), and
@@ -196,16 +191,6 @@ def run_eval(
         keyword = funnel.keyword_seam(
             conn, course_id, case.question, policy.keyword_limit
         )
-        toc, _entries = funnel.toc_seam(
-            conn, course_id, case.question, policy.toc_limit
-        )
-        matched = funnel.concept_matches(
-            conn, course_id, case.question, policy.dependency_limit
-        )
-        matched_ids = [row["concept_id"] for row in matched]
-        dependency = funnel.dependency_seam(
-            conn, course_id, matched_ids, policy.dependency_limit
-        )
         embeddings = funnel.embedding_seam(
             conn,
             course_id,
@@ -213,12 +198,14 @@ def run_eval(
             embedding_model,
             policy.embedding_limit,
         )
-        # Fuse the seams already computed above rather than calling
-        # funnel.retrieve(), which would re-run all four seams plus the
-        # concept match — double the DB work per case for the same answer.
-        fused_candidates = funnel.fuse(
-            keyword, toc, dependency, embeddings, policy=policy
+        graph = funnel.graph_seam(
+            conn,
+            course_id,
+            {**keyword, **embeddings},
+            policy.graph_limit,
+            embedding_model,
         )
+        fused_candidates = funnel.fuse(keyword, embeddings, graph, policy=policy)
         layer_contribution: dict[str, int] = {}
         for candidate in fused_candidates:
             for layer in candidate.layers:
@@ -227,8 +214,7 @@ def run_eval(
         per_seam_hits: dict[str, bool] = {}
         for seam_name, seam in (
             ("keyword", keyword),
-            ("toc", toc),
-            ("dependency", dependency),
+            ("graph", graph),
             ("embedding", embeddings),
         ):
             labels = _labels_for_candidates(conn, _top(seam, policy.final_k))

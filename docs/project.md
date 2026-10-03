@@ -24,6 +24,13 @@ and map positions do not measure semantic similarity. The initial generator maps
 retrieved passages; it does not claim exhaustive coverage of an entire course.
 Exploration alone supplies no evidence of student proficiency or preferences.
 
+Course retrieval keeps original coherent passages and source parents in the same
+local database. Proofs remain logical units; long ones are searched through
+bounded windows and incomplete reading is visible. Saved generated study aids
+are searchable only by opt-in and point back to eligible original evidence.
+No prerequisite graph is stored. The tutor may tentatively suggest background
+review and practice without recording an unearned proficiency judgment.
+
 ## Problem
 
 A course creates fragmented information:
@@ -81,10 +88,10 @@ that can be evaluated on real courses. The target is an ordinary laptop
 
 ## Core system model
 
-The system has six layers (mirrored by `src/backend/common/schemas/`). The
-SQLite baseline (migration 001) holds layers 1–3 and 6. Saved chats and
-typed artifacts have their own migrations; adaptive practice and student memory
-use migration 008 (006 and 007 remain retired).
+The product has six concerns. Runtime contracts are grouped by feature,
+with repository and archive records beside their implementations. The SQLite
+baseline is extended through append-only migrations for saved chats, artifacts,
+adaptive practice and passage retrieval; 006 and 007 remain retired.
 
 ### 1. Courses
 
@@ -96,7 +103,7 @@ passages stay readable in saved work.
 
 Tutor preferences change presentation, not truth or retrieval.
 Presentation is a user-memory (root) concern per decision 007 and may not
-alter the TOC, evidence selection, citations, or mastery evaluation.
+alter factual evidence, source eligibility, citations, or mastery evaluation.
 
 ### 2. Source content
 
@@ -105,30 +112,33 @@ stream to disk under a hard byte ceiling, are stored under generated names
 (path traversal structurally impossible), and are gzip-compressed only
 when the mime type allows and it saves ≥10% (`stored_encoding`:
 `identity` / `gzip`). Each source gets **locators**: a free-typed
-per-format table of contents (slide 7, page 3, timestamp 12:30, cell range
+source location (slide 7, page 3, timestamp 12:30, cell range
 A1:D20 — each format keeps its natural unit). Retrieval units are
-**token-bounded chunks**, each stored once with its locator set in a join
-table (`chunk_locators`). Sources carry `file_hash` for dedup. Ingestion
-is an ordered, versioned pipeline: text extraction → OCR (image-only PDFs;
-rasterization-capped) → locators → chunks → chunk embeddings → TOC update →
-course-knowledge extraction. A stage runs only after its dependency
-succeeds, retries per versioned configuration, and stops the pipeline with
-an inspectable error when its attempts are exhausted.
+**coherent original passages**, stored once with their locator links
+(`chunk_locators`), authored parents, and original order. Long passages keep
+their logical identity and use bounded embedded search windows. Sources carry
+`file_hash` for dedup. Ingestion is an ordered, versioned pipeline: text
+extraction → OCR (image-only PDFs; rasterization-capped) → passage preparation →
+atomic index publication. A stage runs only after its predecessor succeeds,
+retries per versioned configuration, and reports exhausted attempts. A failed
+refresh leaves the last successful index usable.
 
-### 3. Course knowledge (not memory; decision 007)
+### 3. Course factual evidence
 
-Concepts (with synonyms, evidence levels), dependencies (nullable prereq,
-in-course or external — Calc 2 can depend on Calc 1), memory objects
-(concepts/formulas/theorems/examples/misconceptions with evidence), and the
-**table of contents**: a per-course, versioned index of what's in the
-course and where, built from the author's own structure when the file has
-one.
+One passage store holds original text, source/chapter/section parents, bounded
+search windows and locators. The encoder proposes coherent boundaries without
+rewriting or discarding text. Containment and original order are structural;
+similarity links and inferred headings are labeled as inferred. There is no
+separate TOC, concept inventory or prerequisite graph. Legacy knowledge
+annotations survive as ordinary saved artifacts with their evidence.
 
-**Retrieval is hybrid four-seam (decision 008).** Keyword (SQLite FTS5),
-TOC routing, dependency walk, and embeddings generate candidates; fusion
-normalizes and allocates the cited set, and a cross-encoder reranker picks
-what the model reads. Each seam must beat the funnel without it on the
-eval set, and fusion must beat the best single seam, or it is dropped.
+Keyword (SQLite FTS5), window embeddings and passage similarity generate
+candidates within the selected originals. Fusion and a cross-encoder reranker
+choose bounded excerpts; nearby context retains qualifications. Citations show
+when the model read only part of a passage. Saved generated study materials are
+searchable only when enabled for the course, and lead back to eligible original
+support rather than becoming factual authority. Each retrieval seam must earn
+its place on broader course evaluations.
 
 ### 4. Student model
 
@@ -155,12 +165,11 @@ model's context stays current.
 
 ### 6. Evidence & grounding
 
-The enforcement layer for source grounding: responses → claims → citations →
-retrieval traces. Every claim links to the evidence that grounds it (chunk,
-memory object, or TOC entry); every response records what was retrieved.
-`ArtifactOrigin` records how generated content was produced; `ModelDecision`
-records the model's storage/description decisions so they can be audited and
-regenerated.
+Answers carry citations to original passages and source locations; retrieval
+traces record the excerpts actually supplied to the model. Saved messages and
+artifact versions retain that provenance and preserve cited passages across
+source changes. Valid citations do not establish that every generated claim is
+entailed by its source; independent semantic evaluation remains essential.
 
 ## MVP
 
@@ -175,7 +184,8 @@ A single-course MVP for one student on their own laptop.
    sources and model, and open an answer's cited passage in the source.
 4. I can create and edit cited course notes, schedules, study decks, quizzes,
    and flashcards, review model edits, and restore an earlier version.
-5. I can view a concept page containing a course-specific definition, prerequisite links, examples, and source evidence.
+5. I can explore source structure or a saved mind map, inspect original passages,
+   and request a cited explanation or practice quiz.
 6. I can request a short closed-notes diagnostic constrained to selected topics.
 7. I can answer the diagnostic, state my confidence beforehand, and receive feedback.
 8. The system stores my errors by concept and displays the evidence behind any recommendation.
@@ -210,12 +220,12 @@ The MVP is useful if, for one real course:
   OpenAI, or any OpenAI-compatible endpoint. Keys live in the OS keychain.
 - **Encoders:** embeddings (IBM granite-embedding-english-r2) and the
   reranker run in-process on ONNX Runtime, pinned and checksummed. Model
-  choice is a pencil mark: each chunk stores one embedding and its model
-  identity. Switching models requires re-ingestion and replaces that vector;
+  choice is a pencil mark: each search window stores its embedding and model
+  identity. Switching models requires re-ingestion and replaces those vectors;
   vectors from different model spaces are not mixed during retrieval.
 - **Frontend:** separate codebase (`src/frontend/`), talks to the backend only via its API.
 - **Config:** tunables versioned in `configs/` (`ingestion.toml`,
-  `retrieval.toml`, `embeddings.toml`, `models.toml`, `runtime.toml`,
+  `retrieval.toml`, `passages.toml`, `embeddings.toml`, `models.toml`, `runtime.toml`,
   `prompts.toml`, `tutor.toml`, `lifecycle.toml`). `.env` holds only
   optional development settings.
 
@@ -260,8 +270,8 @@ actionable, and cold-probe outcomes improve over repeated attempts.
 
 Fine-tuning is phase two or three, not the MVP. Do not fine-tune until there is a
 versioned evaluation set, a documented baseline failure, enough high-quality
-examples, and a clear metric. Good early targets: a structured-extraction model
-for course concepts, a reranker, a probe generator, an error classifier.
+examples, and a clear metric. Candidate targets include passage boundaries,
+a reranker, a probe generator, and an error classifier.
 
 ## Privacy and academic integrity
 
@@ -277,12 +287,12 @@ for course concepts, a reranker, a probe generator, an error classifier.
 ## Milestones
 
 - [x] **Milestone 0: Foundations** — scaffolding, tooling, six-layer
-  Pydantic schema, migrations + runner, deletion design.
+  storage, runtime contracts, migrations + runner, deletion design.
 - [x] **Milestone 0.5: Hosted accounts and metering** — built for the
   hosted version (accounts, tiers, enrollment, sharing), then replaced by
   decision 012. That version lives on in the original hosted repository.
 - [x] **Milestone 1: Source-grounded retrieval** — the ingestion pipeline,
-  hybrid four-seam retrieval with fusion + traces (decision 008), the
+  original-passage retrieval with fusion, bounded context and traces, the
   worker loop, the tutor endpoint (ask with strict refusal), and the
   citations endpoint behind the "sources used" panel.
 - [x] **Milestone 1.5: Local-first desktop** — SQLite, the bundled
@@ -291,8 +301,8 @@ for course concepts, a reranker, a probe generator, an error classifier.
 - [ ] **Milestone 2: User + course memory** — the memory tree of decision
   007: elevate tutor profiles into the user-memory root (behavioral,
   cross-course), evolve the course-memory node from a content summary
-  into FOCUS memory as student data accumulates; plus concept/dependency
-  extraction with evidence, inspectable concept pages.
+  into FOCUS memory as student data accumulates. The implemented practice and
+  memory baseline still needs broader effectiveness validation (B-08).
 - [ ] **Milestone 3: Cold probe loop** — diagnostics, confidence capture,
   scoring, error categories, per-concept history.
 - [ ] **Milestone 4: Adaptive recommendations** — transparent "what to study
@@ -308,8 +318,8 @@ for course concepts, a reranker, a probe generator, an error classifier.
 - How will mathematical notation and diagrams be represented and cited?
   (Extraction is text-only; image-only PDFs need local OCR, which is
   planned but not yet bundled.)
-- How much manual review of course-knowledge objects is acceptable?
-- How should a student override an incorrect concept link or mastery inference?
+- How well do passage boundaries and inferred similarity hold up on real courses?
+- How should a student correct an inaccurate map link or mastery inference?
 - What does "mastery" mean for a proof course versus a programming/data course?
 - How well does the default model hold up on the 8 GB floor machine?
 

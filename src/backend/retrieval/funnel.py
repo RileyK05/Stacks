@@ -1,26 +1,4 @@
-"""The retrieval funnel (decision 008, revised): four seams, normalized
-then allocated — not raw-scored.
-
-Seams:
-- keyword: FTS5 bm25 match (works day one, zero model dependency)
-- toc: static matching of the query against entry titles/descriptions,
-  chunks under matched entries' locators (dormant without entries)
-- dependency walk: matched concepts -> 1-hop prereq/dependent chunks
-  (dormant without edges; only trusted edges passed in)
-- embeddings: ranks the merged set by meaning when present (dormant
-  without a provider); absent, a deterministic order applies
-
-Fusion: each seam's ranks are min-max normalized INTO 0..1 (the unit
-accident — ts_rank ~0.06 vs dependency position 8 — made cross-seam
-comparison meaningless before this; bm25 scores have the same problem).
-Every seam ranks "higher is better", so normalization preserves
-direction for all of them. A
-source's relevance is its best chunk's normalized score from any seam;
-the final_k slots are split across sources proportionally (largest
-remainder) with a one-slot floor per contributing source, availability
-clamping, and backfill. Every surviving chunk carries its locator id;
-the layer contribution is returned for the trace.
-"""
+"""Keyword, vector and bounded graph retrieval over the same source passages."""
 
 from __future__ import annotations
 
@@ -34,13 +12,16 @@ from uuid import UUID
 import numpy as np
 from src.backend.common.db import Connection, json_ids
 from src.backend.common.queries import get
+from src.backend.rag import generated
+from src.backend.rag.config import load_policy as load_passage_policy
 from src.backend.retrieval.config import RetrievalPolicy
 
 _FILE = "retrieval"
 
 KEYWORD = "keyword"
-TOC = "toc"
-DEPENDENCY = "dependency"
+GRAPH = "graph"
+CONTEXT = "context"
+GENERATED = "generated_lookup"
 EMBEDDING = "embedding"
 
 # Only letters and digits (of any script) survive keyword tokenization.
@@ -57,20 +38,132 @@ _TOKEN_RE = re.compile(r"[^\W_]+")
 # Snowball English list Postgres used, so ranking behaviour carries over.
 STOPWORDS = frozenset(
     {
-        "a", "about", "above", "after", "again", "against", "all", "am", "an",
-        "and", "any", "are", "as", "at", "be", "because", "been", "before", "being",
-        "below", "between", "both", "but", "by", "can", "could", "did", "do",
-        "does", "doing", "down", "during", "each", "few", "for", "from", "further",
-        "had", "has", "have", "having", "he", "her", "here", "hers", "herself",
-        "him", "himself", "his", "how", "i", "if", "in", "into", "is", "it", "its",
-        "itself", "just", "me", "more", "most", "my", "myself", "no", "nor", "not",
-        "now", "of", "off", "on", "once", "only", "or", "other", "our", "ours",
-        "ourselves", "out", "over", "own", "same", "she", "should", "so", "some",
-        "such", "than", "that", "the", "their", "theirs", "them", "themselves",
-        "then", "there", "these", "they", "this", "those", "through", "to", "too",
-        "under", "until", "up", "very", "was", "we", "were", "what", "when",
-        "where", "which", "while", "who", "whom", "why", "will", "with", "would",
-        "you", "your", "yours", "yourself", "yourselves",
+        "a",
+        "about",
+        "above",
+        "after",
+        "again",
+        "against",
+        "all",
+        "am",
+        "an",
+        "and",
+        "any",
+        "are",
+        "as",
+        "at",
+        "be",
+        "because",
+        "been",
+        "before",
+        "being",
+        "below",
+        "between",
+        "both",
+        "but",
+        "by",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "doing",
+        "down",
+        "during",
+        "each",
+        "few",
+        "for",
+        "from",
+        "further",
+        "had",
+        "has",
+        "have",
+        "having",
+        "he",
+        "her",
+        "here",
+        "hers",
+        "herself",
+        "him",
+        "himself",
+        "his",
+        "how",
+        "i",
+        "if",
+        "in",
+        "into",
+        "is",
+        "it",
+        "its",
+        "itself",
+        "just",
+        "me",
+        "more",
+        "most",
+        "my",
+        "myself",
+        "no",
+        "nor",
+        "not",
+        "now",
+        "of",
+        "off",
+        "on",
+        "once",
+        "only",
+        "or",
+        "other",
+        "our",
+        "ours",
+        "ourselves",
+        "out",
+        "over",
+        "own",
+        "same",
+        "she",
+        "should",
+        "so",
+        "some",
+        "such",
+        "than",
+        "that",
+        "the",
+        "their",
+        "theirs",
+        "them",
+        "themselves",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "through",
+        "to",
+        "too",
+        "under",
+        "until",
+        "up",
+        "very",
+        "was",
+        "we",
+        "were",
+        "what",
+        "when",
+        "where",
+        "which",
+        "while",
+        "who",
+        "whom",
+        "why",
+        "will",
+        "with",
+        "would",
+        "you",
+        "your",
+        "yours",
+        "yourself",
+        "yourselves",
     }
 )
 
@@ -109,19 +202,23 @@ class Candidate:
 
     chunk_id: UUID
     source_id: UUID
-    locator_id: UUID
+    locator_id: UUID | None
     chunk_index: int
     text: str
     layers: frozenset[str]
     rank: float
+    window_start: int = 0
+    window_end: int | None = None
+    text_length: int | None = None
+    partial: bool = False
+    generated_materials: tuple[tuple[str, str, int], ...] = ()
+    context_for: frozenset[UUID] = frozenset()
 
 
 @dataclass(frozen=True)
 class RetrievalResult:
     candidates: tuple[Candidate, ...]
     layer_contribution: dict[str, int] = field(default_factory=dict)
-    matched_concept_ids: tuple[UUID, ...] = ()
-    matched_toc_entry_ids: tuple[UUID, ...] = ()
 
 
 def _rows_to_candidates(
@@ -172,111 +269,6 @@ def keyword_seam(
     return _rows_to_candidates(rows, KEYWORD)
 
 
-def toc_seam(
-    conn: Connection,
-    course_id: UUID,
-    query: str,
-    limit: int,
-    source_ids: Collection[UUID] | None = None,
-) -> tuple[dict[UUID, Candidate], tuple[UUID, ...]]:
-    """Static TOC matching: entries whose title/description full-text match
-    the query tokens, chunks under those entries' locators. Returns the
-    candidates AND the matched entry ids (the trace records them).
-    Dormant without entries. Uses the same strict tokenizer as the keyword
-    seam so query syntax never reaches MATCH."""
-    tokens = _keyword_tokens(query)
-    if not tokens:
-        return {}, ()
-    rows = conn.execute(
-        get(_FILE, "toc_candidates"),
-        {
-            "course_id": course_id,
-            "match": _fts_match(tokens),
-            "limit": limit,
-            "source_ids": json_ids(source_ids) if source_ids is not None else None,
-        },
-    ).fetchall()
-    entry_ids = dict.fromkeys(
-        row["entry_id"] for row in rows if row.get("entry_id") is not None
-    )
-    candidates = {}
-    for row in rows:
-        candidate = Candidate(
-            chunk_id=row["chunk_id"],
-            source_id=row["source_id"],
-            locator_id=row["locator_id"],
-            chunk_index=row["chunk_index"],
-            text=row["text"],
-            layers=frozenset({TOC}),
-            rank=0.0,
-        )
-        candidates[row["chunk_id"]] = candidate
-    return candidates, tuple(entry_ids)
-
-
-def concept_matches(
-    conn: Connection,
-    course_id: UUID,
-    query: str,
-    limit: int,
-) -> list[dict[str, Any]]:
-    """Concepts whose name or a synonym appears in the query as a whole
-    word, case-insensitively (the dependency seam's matcher). No matches =
-    seam stays dormant.
-
-    Concept names are MODEL-EXTRACTED, so each is regex-escaped before
-    matching: unescaped, 'f(x' would raise and take down retrieve(), and
-    'a+b' would silently match 'aaab'. Names like 'O(n)' and 'f(x)' are the
-    common case in maths and CS courses. Single-character names are
-    rejected ('f' or 'R' would match nearly every question)."""
-    if not query.strip():
-        return []
-    query_lower = query.lower()
-    rows = conn.execute(
-        get(_FILE, "course_concepts"), {"course_id": course_id}
-    ).fetchall()
-    matches: list[dict[str, Any]] = []
-    for row in rows:
-        names = [row["name"], *(row["synonyms"] or [])]
-        if any(_whole_word_in(str(name), query_lower) for name in names):
-            matches.append({"concept_id": row["concept_id"], "name": row["name"]})
-            if len(matches) >= limit:
-                break
-    return matches
-
-
-def _whole_word_in(name: str, query_lower: str) -> bool:
-    needle = name.lower().strip()
-    if len(needle) < 2:
-        return False
-    pattern = rf"(^|[^a-z0-9]){re.escape(needle)}([^a-z0-9]|$)"
-    return re.search(pattern, query_lower) is not None
-
-
-def dependency_seam(
-    conn: Connection,
-    course_id: UUID,
-    matched_concept_ids: list[UUID],
-    limit: int,
-    source_ids: Collection[UUID] | None = None,
-) -> dict[UUID, Candidate]:
-    """1-hop dependency walk. Dormant (empty) without matched concepts or
-    edges — the caller passes only concept ids it matched; edge trust is
-    enforced upstream by the extractor's evidence bar."""
-    if not matched_concept_ids:
-        return {}
-    rows = conn.execute(
-        get(_FILE, "dependency_expansion"),
-        {
-            "course_id": course_id,
-            "concept_ids": json_ids(matched_concept_ids),
-            "limit": limit,
-            "source_ids": json_ids(source_ids) if source_ids is not None else None,
-        },
-    ).fetchall()
-    return _rows_to_candidates(rows, DEPENDENCY)
-
-
 def embedding_seam(
     conn: Connection,
     course_id: UUID,
@@ -304,7 +296,8 @@ def embedding_seam(
     ).fetchall()
     dimension = len(query_embedding)
     rows = [
-        row for row in rows
+        row
+        for row in rows
         if row["dimension"] == dimension
         and len(row["embedding"]) == dimension * np.dtype("<f4").itemsize
     ]
@@ -322,34 +315,71 @@ def embedding_seam(
     if not rows:
         return {}
     scores = matrix @ query_vector
-    top = np.argsort(-scores, kind="stable")[:limit]
-    out: dict[UUID, Candidate] = {}
+    top = np.argsort(-scores, kind="stable")
+    selected: list[tuple[int, dict[str, Any]]] = []
+    seen = set()
     for index in top:
         row = rows[int(index)]
+        if row["chunk_id"] in seen:
+            continue
+        if len(selected) >= limit:
+            break
+        seen.add(row["chunk_id"])
+        selected.append((int(index), row))
+    originals = conn.execute(
+        get("passages", "eligible_support"),
+        {
+            "course_id": course_id,
+            "chunk_ids": json_ids(seen),
+            "source_ids": json_ids(source_ids) if source_ids is not None else None,
+        },
+    ).fetchall()
+    texts = {row["chunk_id"]: row["text"] for row in originals}
+    out: dict[UUID, Candidate] = {}
+    for index, row in selected:
+        if row["chunk_id"] not in texts:
+            continue
         out[row["chunk_id"]] = Candidate(
             chunk_id=row["chunk_id"],
             source_id=row["source_id"],
             locator_id=row["locator_id"],
             chunk_index=row["chunk_index"],
-            text=row["text"],
+            text=texts[row["chunk_id"]],
             layers=frozenset({EMBEDDING}),
             rank=float(scores[int(index)]),
+            window_start=row["window_start"],
+            window_end=row["window_end"],
         )
     return out
 
 
-def _normalize(seam: dict[UUID, Candidate]) -> dict[UUID, Candidate]:
-    """Min-max a seam's ranks into 0.0..1.0 without changing its candidates. This
-    is what makes cross-seam comparison legal (the #4 lesson: ts_rank
-    ~0.06 and dependency position 8 were incomparable units).
+def graph_seam(
+    conn: Connection,
+    course_id: UUID,
+    hits: dict[UUID, Candidate],
+    limit: int,
+    model: str,
+    source_ids: Collection[UUID] | None = None,
+) -> dict[UUID, Candidate]:
+    if not hits or limit < 1:
+        return {}
+    params = {
+        "course_id": course_id,
+        "chunk_ids": json_ids(hits),
+        "limit": limit,
+        "model": model,
+        "source_ids": json_ids(source_ids) if source_ids is not None else None,
+    }
+    rows = conn.execute(get(_FILE, "similar_candidates"), params).fetchall()
+    return _rows_to_candidates(rows, GRAPH)
 
-    Every seam's seam-local rank is already "higher is better": keyword
-    is negated bm25, embedding is the dot product, and toc/dependency use
-    arrival position as `-position` (best chunk at position 0). The
-    normalization therefore keeps the direction for ALL seams. (An
-    earlier version flipped keyword/dependency, which inverted their
-    evidence: the best keyword chunk normalized to 0.0 and sank below the
-    worst. Fixed 2026-09-22.)
+
+def _normalize(seam: dict[UUID, Candidate]) -> dict[UUID, Candidate]:
+    """Min-max a seam's ranks into 0.0..1.0 without changing its candidates.
+
+    Every seam's local rank is already higher-is-better: keyword uses
+    negated bm25, while embeddings and similarity use normalized dot products.
+    Normalization preserves that direction across different score ranges.
 
     A seam of one candidate (or all-equal ranks) normalizes to a
     mid-strength 0.5 — it IS weak information, not zero."""
@@ -371,11 +401,11 @@ def _normalize(seam: dict[UUID, Candidate]) -> dict[UUID, Candidate]:
 
 def fuse(
     keyword: dict[UUID, Candidate],
-    toc: dict[UUID, Candidate],
-    dependency: dict[UUID, Candidate],
     embeddings: dict[UUID, Candidate],
+    graph: dict[UUID, Candidate] | None = None,
     *,
     policy: RetrievalPolicy,
+    generated_hits: dict[UUID, Candidate] | None = None,
 ) -> tuple[Candidate, ...]:
     """Normalize each seam to a common 0..1 scale, then allocate the
     final_k slots across sources by relevance (largest remainder), then
@@ -398,23 +428,29 @@ def fuse(
     grounded hits). A single-source course fills naturally — no source
     can starve another when there is no competition."""
     keyword = _normalize(keyword)
-    toc = _normalize(toc)
-    dependency = _normalize(dependency)
+    graph = _normalize(graph or {})
     embeddings = _normalize(embeddings)
+    annotations = {
+        identity: replace(
+            candidate, rank=candidate.rank * policy.generated_lookup_weight
+        )
+        for identity, candidate in _normalize(generated_hits or {}).items()
+    }
 
     merged: dict[UUID, Candidate] = {}
-    for seam in (keyword, toc, dependency, embeddings):
+    for seam in (keyword, embeddings, graph, annotations):
         for chunk_id, candidate in seam.items():
             if chunk_id in merged:
                 existing = merged[chunk_id]
-                merged[chunk_id] = Candidate(
-                    chunk_id=existing.chunk_id,
-                    source_id=existing.source_id,
-                    locator_id=existing.locator_id,
-                    chunk_index=existing.chunk_index,
-                    text=existing.text,
+                merged[chunk_id] = replace(
+                    candidate if candidate.window_end is not None else existing,
                     layers=existing.layers | candidate.layers,
                     rank=max(existing.rank, candidate.rank),
+                    generated_materials=tuple(
+                        dict.fromkeys(
+                            existing.generated_materials + candidate.generated_materials
+                        )
+                    ),
                 )
             else:
                 merged[chunk_id] = candidate
@@ -433,16 +469,15 @@ def fuse(
         )
     k = policy.final_k
     contributing = len(best_by_source)
-    grounded_present = bool(keyword or toc or dependency)
+    grounded_present = bool(keyword or graph)
     if total_weight <= 0 or contributing == 0:
         # Degenerate (all-zero scores): equal split, availability-clamped.
-        quotas = {sid: min(k // contributing, avail) if contributing else 0
-                  for sid, avail in available_by_source.items()}
-    else:
-        raw = {
-            sid: weight / total_weight * k
-            for sid, weight in best_by_source.items()
+        quotas = {
+            sid: min(k // contributing, avail) if contributing else 0
+            for sid, avail in available_by_source.items()
         }
+    else:
+        raw = {sid: weight / total_weight * k for sid, weight in best_by_source.items()}
         # Largest-remainder: floor everything, hand leftover slots to the
         # biggest fractional remainders (Hare quota — deterministic).
         quotas = {
@@ -480,12 +515,10 @@ def fuse(
     taken: dict[UUID, int] = {}
     embedding_only_admitted = 0
     # The quota exists to keep semantic expansion from displacing
-    # grounded (keyword/toc/dependency) hits. When no seam found anything
+    # keyword/similarity hits. When no seam found anything
     # grounded, embeddings are not "expansion" — they are the only
     # evidence there is, so the quota does not apply.
-    embedding_quota = (
-        policy.embedding_only_quota if grounded_present else k
-    )
+    embedding_quota = policy.embedding_only_quota if grounded_present else k
     for candidate in ordered:
         if len(final) >= k:
             break
@@ -508,15 +541,66 @@ def fuse(
             if candidate.chunk_id in allocated_ids:
                 continue
             is_embedding_only = candidate.layers == frozenset({EMBEDDING})
-            if (
-                is_embedding_only
-                and embedding_only_admitted >= embedding_quota
-            ):
+            if is_embedding_only and embedding_only_admitted >= embedding_quota:
                 continue
             if is_embedding_only:
                 embedding_only_admitted += 1
             final.append(candidate)
     return tuple(final)
+
+
+def surrounding_context(
+    conn: Connection,
+    course_id: UUID,
+    anchors: tuple[Candidate, ...],
+    model: str,
+    source_ids: Collection[UUID] | None,
+) -> tuple[Candidate, ...]:
+    policy = load_passage_policy()
+    if not anchors or policy.context_neighbors == 0:
+        return anchors
+    rows = conn.execute(
+        get("passages", "eligible_neighbors"),
+        {
+            "course_id": course_id,
+            "chunk_ids": json_ids(c.chunk_id for c in anchors),
+            "source_ids": json_ids(source_ids) if source_ids is not None else None,
+            "radius": policy.context_neighbors,
+            "limit": len(anchors) * policy.context_neighbors * 2,
+            "model": model,
+        },
+    ).fetchall()
+    result = {c.chunk_id: c for c in anchors}
+    for row in rows:
+        if row["chunk_id"] in {c.chunk_id for c in anchors}:
+            continue
+        a, b = row["anchor_vector"], row["neighbor_vector"]
+        if a and b and row["anchor_dimension"] == row["neighbor_dimension"]:
+            dimension = row["anchor_dimension"]
+            if len(a) != dimension * 4 or len(b) != dimension * 4:
+                continue
+            av, bv = np.frombuffer(a, dtype="<f4"), np.frombuffer(b, dtype="<f4")
+            norm = float(np.linalg.norm(av) * np.linalg.norm(bv))
+            if not np.isfinite(av).all() or not np.isfinite(bv).all() or norm <= 0:
+                continue
+            similarity = float(av @ bv) / norm
+            qualification = re.match(
+                r"\s*(?:however|except|unless|assuming|provided|note that|but)\b",
+                row["text"],
+                re.IGNORECASE,
+            )
+            if similarity < policy.context_similarity and not qualification:
+                continue
+        elif row["distance"] > 1:
+            continue
+        prior = result.get(row["chunk_id"])
+        candidate = _rows_to_candidates([row], CONTEXT)[row["chunk_id"]]
+        result[candidate.chunk_id] = replace(
+            candidate,
+            context_for=(prior.context_for if prior else frozenset())
+            | {row["anchor_id"]},
+        )
+    return tuple(result.values())
 
 
 def retrieve(
@@ -535,17 +619,7 @@ def retrieve(
     `source_ids` narrows each SQL seam before its candidate limit (a chat's
     source selection); None searches the whole course. This ensures noisy,
     unselected sources cannot consume the selected sources' candidate slots."""
-    matched_concepts = concept_matches(conn, course_id, query, policy.dependency_limit)
-    matched_ids = [row["concept_id"] for row in matched_concepts]
-    keyword = keyword_seam(
-        conn, course_id, query, policy.keyword_limit, source_ids
-    )
-    toc, toc_entry_ids = toc_seam(
-        conn, course_id, query, policy.toc_limit, source_ids
-    )
-    dependency = dependency_seam(
-        conn, course_id, matched_ids, policy.dependency_limit, source_ids
-    )
+    keyword = keyword_seam(conn, course_id, query, policy.keyword_limit, source_ids)
     embeddings = embedding_seam(
         conn,
         course_id,
@@ -554,8 +628,36 @@ def retrieve(
         policy.embedding_limit,
         source_ids,
     )
-    final = fuse(
-        keyword, toc, dependency, embeddings, policy=policy
+    graph = graph_seam(
+        conn,
+        course_id,
+        {**keyword, **embeddings},
+        policy.graph_limit,
+        embedding_model or "",
+        source_ids,
+    )
+    final = fuse(keyword, embeddings, graph, policy=policy)
+    generated_rows = generated.lookup(
+        conn, course_id, _keyword_tokens(query), policy.graph_limit, source_ids
+    )
+    if generated_rows:
+        generated_hits = _rows_to_candidates(generated_rows, GENERATED)
+        for row in generated_rows:
+            generated_hits[row["chunk_id"]] = replace(
+                generated_hits[row["chunk_id"]],
+                generated_materials=(
+                    (
+                        str(row["generated_artifact_id"]),
+                        row["generated_title"],
+                        row["generated_version"],
+                    ),
+                ),
+            )
+        final = fuse(
+            keyword, embeddings, graph, policy=policy, generated_hits=generated_hits
+        )
+    final = surrounding_context(
+        conn, course_id, final, embedding_model or "", source_ids
     )
     contribution: dict[str, int] = {}
     for candidate in final:
@@ -564,8 +666,6 @@ def retrieve(
     return RetrievalResult(
         candidates=final,
         layer_contribution=contribution,
-        matched_concept_ids=tuple(matched_ids),
-        matched_toc_entry_ids=tuple(toc_entry_ids),
     )
 
 
@@ -586,7 +686,7 @@ def overview(
     whose words match no particular passage — searching by them returns
     whatever happens to sit nearest to the phrase "study guide"."""
     rows = conn.execute(
-        get(_FILE, "embedding_rows"),
+        get("passages", "course_passages"),
         {
             "course_id": course_id,
             "model": embedding_model or "",
@@ -615,6 +715,4 @@ def overview(
         )
         for row in picked[:limit]
     )
-    return RetrievalResult(
-        candidates=final, layer_contribution={OVERVIEW: len(final)}
-    )
+    return RetrievalResult(candidates=final, layer_contribution={OVERVIEW: len(final)})

@@ -361,10 +361,8 @@ def test_delete_source_removes_row_queue_and_file(client: TestClient) -> None:
     assert _upload(client, course_id, "drop.txt", b"delete me").status_code == 201
 
 
-def test_deleting_a_source_frees_chats_narrowed_to_it(client: TestClient) -> None:
-    """A chat limited to a deleted source would search nothing and answer
-    "nothing matches" forever. The id leaves every selection in the course;
-    a selection left empty falls back to every source."""
+def test_deleting_a_source_does_not_widen_a_narrowed_chat(client: TestClient) -> None:
+    """Remove unavailable IDs while preserving the student's evidence scope."""
     from tests.factories import insert_source
 
     course_id = _course(client)
@@ -395,6 +393,6 @@ def test_deleting_a_source_frees_chats_narrowed_to_it(client: TestClient) -> Non
     assert client.delete(f"/courses/{course_id}/sources/{drop}").status_code == 204
 
     assert selection(both) == [str(keep)]
-    assert selection(only_dropped) is None
+    assert selection(only_dropped) == []
     assert selection(everything) is None
     assert selection(elsewhere, other_course) == [str(foreign)]

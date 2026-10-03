@@ -1,10 +1,10 @@
-"""Row factories for tests that need derived rows (sources, chunks,
-concepts, TOC entries) without running ingestion. Ingestion tests cover
-how those rows are produced; these build them directly."""
+"""Source/passage fixtures for isolated retrieval and saved-history tests.
+
+Ingestion tests cover publication; these construct its stored results directly.
+"""
 
 from __future__ import annotations
 
-import json
 from uuid import UUID, uuid4
 
 import numpy as np
@@ -125,67 +125,6 @@ def chunk_source_locator(chunk_id: UUID) -> tuple[UUID, UUID]:
             "SELECT source_id, locator_id FROM chunks WHERE chunk_id = ?", (chunk_id,)
         ).fetchone()
     return row["source_id"], row["locator_id"]
-
-
-def add_toc_entry(
-    course_id: UUID, chunk_id: UUID, title: str, description: str, position: int = 0
-) -> UUID:
-    source_id, locator_id = chunk_source_locator(chunk_id)
-    with connection() as conn:
-        toc = conn.execute(
-            "SELECT toc_id FROM tables_of_contents WHERE course_id = ?"
-            " ORDER BY version DESC LIMIT 1",
-            (course_id,),
-        ).fetchone()
-        toc_id = toc["toc_id"] if toc else uuid4()
-        if toc is None:
-            conn.execute(
-                "INSERT INTO tables_of_contents (toc_id, course_id, version)"
-                " VALUES (?, ?, 1)",
-                (toc_id, course_id),
-            )
-        entry_id = uuid4()
-        conn.execute(
-            "INSERT INTO toc_entries (entry_id, toc_id, source_id, locator_id, title,"
-            " description, concepts, position) VALUES (?, ?, ?, ?, ?, ?, '[]', ?)",
-            (entry_id, toc_id, source_id, locator_id, title, description, position),
-        )
-        conn.commit()
-    return entry_id
-
-
-def add_concept(
-    course_id: UUID,
-    name: str,
-    synonyms: list[str],
-    *,
-    depends_on: list[UUID] | None = None,
-) -> UUID:
-    concept_id = uuid4()
-    with connection() as conn:
-        conn.execute(
-            "INSERT INTO concepts (concept_id, course_id, name, definition, synonyms)"
-            " VALUES (?, ?, ?, 'def', ?)",
-            (concept_id, course_id, name, json.dumps(synonyms)),
-        )
-        for prereq_id in depends_on or []:
-            conn.execute(
-                "INSERT INTO dependencies (dep_id, prereq_id, dependent_id)"
-                " VALUES (?, ?, ?)",
-                (uuid4(), prereq_id, concept_id),
-            )
-        conn.commit()
-    return concept_id
-
-
-def add_memory_object(concept_id: UUID, source_id: UUID, content: str) -> None:
-    with connection() as conn:
-        conn.execute(
-            "INSERT INTO memory_objects (memory_id, concept_id, source_id, kind,"
-            " content) VALUES (?, ?, ?, 'concept', ?)",
-            (uuid4(), concept_id, source_id, content),
-        )
-        conn.commit()
 
 
 def set_source_status(source_id: UUID, status: str) -> None:

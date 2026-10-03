@@ -56,8 +56,8 @@ def assert_no_learning_or_source_writes(course_id) -> None:
             "core_method_observations",
             "learning_teaching_events",
             "practice_runs",
-            "concepts",
-            "memory_objects",
+            "source_indexes",
+            "passage_windows",
         ):
             count = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
             assert count == 0
@@ -159,9 +159,7 @@ def test_screenshot_dimension_limit_fails_before_ocr(
         lambda *args, **kwargs: calls.append(args),
     )
 
-    response = upload_screenshot(
-        client, path, image_bytes("PNG", size=(11, 10))
-    )
+    response = upload_screenshot(client, path, image_bytes("PNG", size=(11, 10)))
 
     assert response.status_code == 422
     assert "image dimension limit" in response.text
@@ -222,9 +220,7 @@ def test_stale_expected_revision_fails_before_ocr(
         lambda *args, **kwargs: calls.append(args),
     )
 
-    response = upload_screenshot(
-        client, path, image_bytes("PNG"), expected_revision=0
-    )
+    response = upload_screenshot(client, path, image_bytes("PNG"), expected_revision=0)
 
     assert response.status_code == 409
     assert calls == []

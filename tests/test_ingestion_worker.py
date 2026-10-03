@@ -129,31 +129,25 @@ def test_worker_requeue_after_failure(course_id: UUID) -> None:
     assert run_count == 2, "requeue must produce a second run"
 
 
-def test_batch_refreshes_course_memory_once(
-    monkeypatch: pytest.MonkeyPatch, course_id: UUID
-) -> None:
-    """The course-memory summary is rebuilt once per successful batch (not
-    per upload, not per source): two uploads to one course -> one refresh."""
-    calls: list[UUID] = []
-    monkeypatch.setattr(
-        "src.backend.ingest.worker._refresh_course_memory",
-        lambda refreshed: calls.append(refreshed),
-    )
-    _upload(course_id, body=b"first upload body " * 50)
-    _upload(course_id, body=b"second upload body " * 50)
-    attempted, succeeded = worker.process_batch(limit=10)
-    assert (attempted, succeeded) == (2, 2)
-    assert calls == [course_id]
-
-
-def test_batch_refresh_writes_the_summary(course_id: UUID) -> None:
-    _upload(course_id, body=b"memory refresh body " * 50)
-    worker.process_batch(limit=10)
+def test_indexing_does_not_write_course_or_core_memory(course_id: UUID) -> None:
     with connection() as conn:
-        summary = conn.execute(
-            "SELECT summary FROM course_memories WHERE course_id = ?", (course_id,)
-        ).fetchone()["summary"]
-    assert "notes.txt" in summary
+        before = conn.execute(
+            "SELECT * FROM course_memories WHERE course_id = ?", (course_id,)
+        ).fetchone()
+    _upload(course_id, body=b"Limits and derivatives are course facts " * 50)
+    assert worker.process_batch(limit=10) == (1, 1)
+    with connection() as conn:
+        after = conn.execute(
+            "SELECT * FROM course_memories WHERE course_id = ?", (course_id,)
+        ).fetchone()
+        observations = conn.execute(
+            "SELECT count(*) AS n FROM learning_observations"
+        ).fetchone()
+        core = conn.execute(
+            "SELECT count(*) AS n FROM core_method_observations"
+        ).fetchone()
+    assert after == before
+    assert observations["n"] == 0 and core["n"] == 0
 
 
 def test_stale_claims_are_released(course_id: UUID) -> None:

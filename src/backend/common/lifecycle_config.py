@@ -25,9 +25,7 @@ class LifecyclePolicy(BaseModel):
     @model_validator(mode="after")
     def _decompression_covers_uploads(self) -> LifecyclePolicy:
         if self.max_decompressed_bytes < self.max_raw_upload_bytes:
-            raise ValueError(
-                "max_decompressed_bytes must be >= max_raw_upload_bytes"
-            )
+            raise ValueError("max_decompressed_bytes must be >= max_raw_upload_bytes")
         return self
 
 

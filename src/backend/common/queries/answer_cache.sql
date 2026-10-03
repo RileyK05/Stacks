@@ -6,13 +6,15 @@
 -- or re-ingestion changes it.
 SELECT COALESCE(group_concat(part, ','), '') AS fingerprint
 FROM (
-    SELECT source.source_id || ':' || source.file_hash || ':'
+    SELECT source.source_id || ':' || COALESCE(idx.file_hash, source.file_hash, '') || ':'
+           || COALESCE(idx.revision, 'legacy') || ':'
            || COALESCE(MAX(run.completed_at), '') AS part
     FROM sources AS source
+    LEFT JOIN source_indexes idx ON idx.source_id = source.source_id
     LEFT JOIN ingestion_runs AS run
            ON run.source_id = source.source_id AND run.status = 'succeeded'
     WHERE source.course_id = :course_id
-      AND source.status = 'indexed'
+      AND (source.status = 'indexed' OR idx.source_id IS NOT NULL)
     GROUP BY source.source_id
     ORDER BY source.source_id
 );

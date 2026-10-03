@@ -1,6 +1,6 @@
 """Print a version's CHANGELOG section, for the GitHub release notes.
 
-    python -m scripts.release_notes 0.3.0 > release-notes.md
+python -m scripts.release_notes 0.3.0 > release-notes.md
 """
 
 from __future__ import annotations

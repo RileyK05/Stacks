@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import Field, model_validator
@@ -27,20 +27,6 @@ class Course(BaseRecord):
     @property
     def in_trash(self) -> bool:
         return self.deleted_at is not None
-
-
-class StudyPeriod(BaseRecord):
-    """A user-definable sliding time window over a course.
-
-    Replaces the rigid "week": a study period may be a lecture, a month, a
-    semester, or the stretch before an exam. The user sets the granularity.
-    """
-
-    period_id: UUID = Field(default_factory=_new_id)
-    course_id: UUID
-    label: str
-    start_date: date
-    end_date: date
 
 
 class CourseMemory(BaseRecord):

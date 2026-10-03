@@ -31,9 +31,11 @@ from src.backend.common.prompt_registry import (
 )
 from src.backend.common.queries import get
 from src.backend.common.schemas.learning import PracticeQuestion
+from src.backend.rag import generated
+from src.backend.rag.config import load_policy as load_passage_policy
 from src.backend.retrieval import funnel, rerank, trace
 from src.backend.retrieval.config import RetrievalPolicy, load_rerank_policy
-from src.backend.student_model import learning
+from src.backend.student_model import inspection, learning
 from src.backend.tutor.compose import (
     AnswerMode,
     Intent,
@@ -193,7 +195,11 @@ def answer_question(
             fell_back_to_local=any(call.fell_back_to_local for call in calls),
         )
     answer_mode = AnswerMode(providers.load_models_config().generation.answer_mode)
-    cacheable = not conversation and source_ids is None
+    cacheable = (
+        not conversation
+        and source_ids is None
+        and not generated.settings(conn, course_id).include_generated
+    )
     cache = (
         _cache_slot(
             conn,
@@ -259,7 +265,11 @@ def answer_question(
         # A spread of the course is already chosen and ordered: re-ranking it
         # against "make me a study guide" would only shuffle it.
         select=(
-            (lambda _question, candidates: candidates[:generation_k])
+            (
+                lambda _question, candidates: rerank.material_budget(
+                    rerank.bound_passages(candidates[:generation_k])
+                )
+            )
             if overview
             else rerank.select_for_generation
         ),
@@ -274,14 +284,13 @@ def answer_question(
         question,
         used,
         embedding_model=embedding_model,
-        toc_entry_ids=result.matched_toc_entry_ids,
     )
     last = calls[-1]
     answer = Answer(
         text=composed.text,
         chunk_ids=tuple(c.chunk_id for c in composed.candidates),
         trace_id=stored.trace_id,
-        layer_contribution=result.layer_contribution,
+        layer_contribution=stored.layer_contribution,
         model=last.model,
         fell_back_to_local=any(call.fell_back_to_local for call in calls),
     )
@@ -290,7 +299,7 @@ def answer_question(
     previous_teaching = next(
         (
             event
-            for event in learning.rows(conn, "teaching_events", course_id=course_id)
+            for event in inspection.rows(conn, "teaching_events", course_id=course_id)
             if current_sources.intersection(event["source_ids"])
         ),
         None,
@@ -428,6 +437,7 @@ def _cache_slot(
         versions={
             "prompts": load_prompt_policy().prompts_config_version,
             "retrieval": policy.retrieval_config_version,
+            "passages": load_passage_policy().version,
             "models": providers.load_models_config().models_config_version,
             "answer_mode": answer_mode.value,
             "learning": learning_fingerprint,

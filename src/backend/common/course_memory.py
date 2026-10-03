@@ -11,9 +11,8 @@ course's trash purge as the deletion keepsake (golden rule 6).
 experiments produce the student's focus record, retaining source snapshots.
 Courses without student observations retain the material-summary fallback.
 
-NOTE: this is NOT course knowledge. Concepts/dependencies/memory objects/
-TOC live in `schemas/memory.py`, `src/backend/memory/`, and their tables;
-those describe what the course SAYS.
+Original factual evidence lives in the passage store, separately from this
+student focus record. Source indexing never calls `refresh`.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ from src.backend.common.db import Connection
 from src.backend.common.learning_config import load_learning_policy
 from src.backend.common.lifecycle_config import load_lifecycle_policy
 from src.backend.common.queries import get
+from src.backend.student_model import inspection
 
 _FILE = "course_memory"
 DictRow = dict[str, Any]
@@ -37,7 +37,6 @@ DictRow = dict[str, Any]
 CHARS_PER_TOKEN = 4
 
 _EVIDENCE_HEADER = "Evidence snapshot:"
-_SEMANTIC_HEADER = "Concepts and course memory:"
 _SOURCES_HEADER = "Sources:"
 
 
@@ -87,22 +86,19 @@ def _assemble_summary(
     material: dict[str, list[DictRow]],
     name: str,
     token_budget: int,
-) -> tuple[str, list[str]]:
-    """Assemble the bounded summary. The evidence index is reserved first
-    (plan rule: hashes and locators matter more than prose), then semantic
-    content fills the remainder. Excerpts are added back only when the
-    evidence budget has room."""
+) -> str:
+    """Keep a bounded source/evidence fallback when no learning evidence exists.
+
+    Excerpts are included only when the evidence budget has room.
+    """
     total = _character_budget(token_budget)
     header = f"Course: {name}"
     remaining = total - len(header)
 
     sources = list(material["sources"])
-    concepts = list(material["concepts"])
-    memory_objects = list(material["memory_objects"])
     evidence = list(material["evidence"])
 
     sections: list[str] = [header]
-    used = len(header)
 
     if sources:
         section, spent = _fit_lines(
@@ -111,7 +107,6 @@ def _assemble_summary(
             max(remaining // 3, len(_SOURCES_HEADER)),
         )
         sections.append(section)
-        used += spent + 1
         remaining -= spent + 1
 
     if evidence:
@@ -121,29 +116,10 @@ def _assemble_summary(
         excerpted = [_evidence_line(row, with_excerpt=True) for row in evidence]
         compact = [_evidence_line(row, with_excerpt=False) for row in evidence]
         lines = excerpted if _lines_cost(excerpted) <= evidence_budget else compact
-        section, spent = _fit_lines(lines, _EVIDENCE_HEADER, evidence_budget)
+        section, _ = _fit_lines(lines, _EVIDENCE_HEADER, evidence_budget)
         sections.append(section)
-        used += spent + 1
-        remaining -= spent + 1
 
-    semantic_lines = [f"- {row['name']}: {row['definition']}" for row in concepts] + [
-        f"- [{row['kind']}] {row['content']}" for row in memory_objects
-    ]
-    if semantic_lines and remaining > 0:
-        section, spent = _fit_lines(semantic_lines, _SEMANTIC_HEADER, remaining)
-        sections.append(section)
-        used += spent + 1
-        remaining -= spent + 1
-
-    summary = "\n\n".join(sections)
-
-    key_concepts: list[str] = []
-    for row in concepts:
-        if remaining < len(str(row["name"])):
-            break
-        key_concepts.append(str(row["name"]))
-        remaining -= len(str(row["name"])) + 1
-    return summary, key_concepts
+    return "\n\n".join(sections)
 
 
 def _lines_cost(lines: list[str]) -> int:
@@ -156,8 +132,6 @@ def _fetch_material(conn: Connection, course_id: UUID) -> dict[str, list[DictRow
     params = {"course_id": course_id}
     return {
         "sources": conn.execute(get(_FILE, "memory_sources"), params).fetchall(),
-        "concepts": conn.execute(get(_FILE, "memory_concepts"), params).fetchall(),
-        "memory_objects": conn.execute(get(_FILE, "memory_objects"), params).fetchall(),
         "evidence": conn.execute(get(_FILE, "memory_evidence"), params).fetchall(),
     }
 
@@ -173,11 +147,11 @@ def refresh(conn: Connection, course_id: UUID) -> None:
         return
     material = _fetch_material(conn, course_id)
     token_budget = target_tokens(len(material["sources"]))
-    summary, key_concepts = _assemble_summary(material, course["name"], token_budget)
-    from src.backend.student_model import learning
+    summary = _assemble_summary(material, course["name"], token_budget)
+    key_concepts: list[str] = []
 
-    focus = learning.targets(conn, course_id)
-    docket = learning.experiments(conn, course_id)
+    focus = inspection.targets(conn, course_id)
+    docket = inspection.experiments(conn, course_id)
     if focus or docket:
         lines = []
         for target in focus:

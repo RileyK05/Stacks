@@ -22,14 +22,16 @@ RETURNING source_id, course_id, filename, mime_type, source_type, status,
 -- The course's files with their live status, including the failure
 -- reason, so a failed upload is never silent (review catch #6).
 SELECT source_id, course_id, filename, mime_type, source_type, status,
-       error_message, size_bytes, file_hash, created_at
+       error_message, size_bytes, file_hash, created_at,
+       EXISTS (SELECT 1 FROM source_indexes idx WHERE idx.source_id = sources.source_id) AS has_index
 FROM sources
 WHERE course_id = :course_id
 ORDER BY created_at DESC, source_id;
 
 -- name: get_source
 SELECT source_id, course_id, filename, mime_type, source_type, status,
-       error_message, size_bytes, file_hash, created_at
+       error_message, size_bytes, file_hash, created_at,
+       EXISTS (SELECT 1 FROM source_indexes idx WHERE idx.source_id = sources.source_id) AS has_index
 FROM sources
 WHERE source_id = :source_id AND course_id = :course_id;
 
@@ -40,15 +42,12 @@ WHERE source_id = :source_id AND course_id = :course_id
 RETURNING source_id;
 
 -- name: prune_source_from_chats
--- A chat narrowed to a source that no longer exists would search nothing
--- and answer "nothing matches" forever: drop the id from every chat's
--- selection in the course. A selection left empty becomes NULL (every
--- source), the same meaning "choose at least one source" protects.
+-- Deletion may empty an explicit selection; never silently widen it to all.
 UPDATE conversations
 SET source_ids = CASE
         WHEN (SELECT COUNT(*) FROM json_each(conversations.source_ids)
               WHERE value != :source_id) = 0
-        THEN NULL
+        THEN '[]'
         ELSE (SELECT json_group_array(value)
               FROM (SELECT value FROM json_each(conversations.source_ids)
                     WHERE value != :source_id ORDER BY key))
