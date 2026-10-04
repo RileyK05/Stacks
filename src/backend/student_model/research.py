@@ -122,4 +122,7 @@ def inspect_exchange(
             learning.refresh_memory(conn, course_id)
             conn.commit()
     except Exception:
-        logger.warning("learning research unavailable; practice records are unaffected")
+        logger.warning(
+            "learning research unavailable; practice records are unaffected",
+            exc_info=True,
+        )

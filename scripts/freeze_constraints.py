@@ -16,6 +16,7 @@ when a dependency is bumped without re-freezing.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import tomllib
 from importlib.metadata import PackageNotFoundError, version
@@ -54,10 +55,11 @@ def _requirement_names() -> list[str]:
     seen: set[str] = set()
     for group in groups:
         for raw in group:
-            name = raw.split(";", 1)[0].split("[", 1)[0]
-            name = name.split(">=", 1)[0].split("==", 1)[0].split("<", 1)[0]
-            name = name.split("~=", 1)[0].split(">", 1)[0].strip()
-            key = name.lower()
+            match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", raw)
+            if match is None:
+                raise ValueError(f"invalid dependency requirement: {raw}")
+            name = match[1]
+            key = re.sub(r"[-_.]+", "-", name.lower())
             if key and key not in seen:
                 seen.add(key)
                 names.append(name)

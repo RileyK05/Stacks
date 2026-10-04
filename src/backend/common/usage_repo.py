@@ -1,6 +1,6 @@
-"""The usage ledger (plan §7.4): one row per model call with the real
-token counts from the provider's usage response. Informational for local
-calls; for cloud providers an optional user-set monthly token budget
+"""Completion usage and reporting completeness, without estimated billing.
+Counts come from provider responses; missing values are marked. Local usage is
+informational; for cloud providers an optional user-set monthly token budget
 blocks the NEXT call once reached (never cuts off one in flight)."""
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 from src.backend.common import settings_repo
 from src.backend.common.db import connection, utc_now
 from src.backend.common.queries import get
-from src.backend.common.schemas.usage import UsageLedgerEntry
+from src.backend.common.schemas.usage import CloudUsage, UsageLedgerEntry
 
 _FILE = "usage"
 BUDGET_SETTING = "usage.monthly_cloud_token_budget"
@@ -41,6 +41,7 @@ def record(
     output_tokens: int,
     course_id: UUID | None = None,
     is_local: bool | None = None,
+    usage_reported: bool = True,
 ) -> UsageLedgerEntry:
     with connection() as conn:
         row = conn.execute(
@@ -54,6 +55,7 @@ def record(
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "is_local": int(provider == "local" if is_local is None else is_local),
+                "usage_reported": int(usage_reported),
             },
         ).fetchone()
         conn.commit()
@@ -73,11 +75,18 @@ def month_start(now: datetime | None = None) -> datetime:
 
 
 def cloud_tokens_this_month(now: datetime | None = None) -> int:
+    return cloud_usage_this_month(now).reported_tokens
+
+
+def cloud_usage_this_month(now: datetime | None = None) -> CloudUsage:
     with connection() as conn:
         row = conn.execute(
             get(_FILE, "cloud_tokens_since"), {"since": month_start(now)}
         ).fetchone()
-    return int(row["spent"]) if row else 0
+    assert row is not None
+    return CloudUsage(
+        reported_tokens=row["spent"], calls_without_usage=row["calls_without_usage"]
+    )
 
 
 def totals_since(since: datetime) -> list[dict[str, Any]]:

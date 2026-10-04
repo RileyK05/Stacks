@@ -71,6 +71,11 @@ def test_refusal_check_requires_marker() -> None:
     assert not ok and "no refusal marker" in why
 
 
+def test_refusal_citation_number_is_not_a_fabricated_specific():
+    ok, why = refusal_check("I can't answer that from the material [104].")
+    assert ok, why
+
+
 def test_natural_missing_information_refusal_is_recognized() -> None:
     ok, why = refusal_check("I don't have information about the office phone number.")
     assert ok, why

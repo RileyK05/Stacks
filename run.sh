@@ -3,11 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-if [ -x .venv/Scripts/python.exe ]; then
-  :
-elif [ -x .venv/bin/python ]; then
-  :
-else
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) dev_python=.venv/Scripts/python.exe ;;
+  *) dev_python=.venv/bin/python ;;
+esac
+
+if [ ! -x "$dev_python" ]; then
   echo "No .venv found. See README 'Build from source'." >&2
   exit 1
 fi

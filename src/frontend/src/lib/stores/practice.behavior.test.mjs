@@ -69,3 +69,20 @@ test('Explain uses restored session identity; failed help retries and feedback k
   assert.equal(session.rating(0, 'explain').rating, 'good');
   assert.deepEqual(session.run, run);
 });
+
+test('retake clears attempt help while the backend still marks the revealed item assisted', async () => {
+  let submittedHelp;
+  respond = async (request) => {
+    if (request.method === 'GET') return json({ suite, latest_run: run, feedback: [] });
+    submittedHelp = (await request.json()).helped;
+    return json({ ...run, run_id: 'retake', helped: [true] });
+  };
+  const session = new PracticeSession(questions, 'suite');
+  await session.connect('course');
+  session.reset();
+  assert.deepEqual(session.helped, [false]);
+  session.choose(0, 0);
+  await session.submit();
+  assert.deepEqual(submittedHelp, [false]);
+  assert.deepEqual(session.run.helped, [true]);
+});

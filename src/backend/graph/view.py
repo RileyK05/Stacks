@@ -40,7 +40,8 @@ class CourseGraphOut(BaseModel):
 def course_graph(
     course_id: UUID, source_ids: Collection[UUID] | None = None
 ) -> CourseGraphOut:
-    model = load_embedding_policy().model
+    embedding_policy = load_embedding_policy()
+    model = embedding_policy.model
     params = {
         "course_id": course_id,
         "source_ids": json_ids(source_ids) if source_ids is not None else None,
@@ -51,7 +52,12 @@ def course_graph(
         ).fetchall()
         passages = conn.execute(get("passages", "course_passages"), params).fetchall()
         similarities = conn.execute(
-            get("graph", "course_graph_edges"), {"course_id": course_id, "model": model}
+            get("graph", "course_graph_edges"),
+            {
+                "course_id": course_id,
+                "model": model,
+                "dimension": embedding_policy.dimension,
+            },
         ).fetchall()
     nodes = [
         GraphNodeOut(

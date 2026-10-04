@@ -1,5 +1,5 @@
 import createClient, { type Middleware } from 'openapi-fetch';
-import { APP_TOKEN_HEADER, apiBase, appToken } from '$lib/api/backend';
+import { APP_TOKEN_HEADER, apiBase, appToken, backendConnected, backendGeneration } from '$lib/api/backend';
 import { logRequest } from '$lib/stores/debug.svelte';
 import { ApiError } from './errors';
 import type { paths } from './schema';
@@ -13,6 +13,9 @@ function requestPath(request: Request): string {
 
 const appMiddleware: Middleware = {
   async onRequest({ request }) {
+    if (!backendConnected()) {
+      throw new ApiError(0, 'The backend is reconnecting. Wait for the connection to recover, then retry.', 'unavailable');
+    }
     startTimes.set(request, performance.now());
     const token = appToken();
     if (token) request.headers.set(APP_TOKEN_HEADER, token);
@@ -48,13 +51,18 @@ const appMiddleware: Middleware = {
 
 type Client = ReturnType<typeof createClient<paths>>;
 
-// Created on first use: the root layout connects to the backend before any
-// page loads, so by then apiBase() is the desktop backend's address.
+// Recreated when the backend origin or its connection generation changes.
 let rawClient: Client | null = null;
+let rawClientBase = '';
+let rawClientGeneration = -1;
 
 function client(): Client {
-  if (rawClient === null) {
-    rawClient = createClient<paths>({ baseUrl: apiBase() });
+  const baseUrl = apiBase();
+  const generation = backendGeneration();
+  if (rawClient === null || rawClientBase !== baseUrl || rawClientGeneration !== generation) {
+    rawClientBase = baseUrl;
+    rawClientGeneration = generation;
+    rawClient = createClient<paths>({ baseUrl });
     rawClient.use(appMiddleware);
   }
   return rawClient;

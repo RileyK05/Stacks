@@ -30,7 +30,7 @@ def record_trace(
     result: RetrievalResult,
     *,
     embedding_model: str | None = None,
-    cited: tuple[tuple[UUID, int], ...] = (),
+    cited: tuple[tuple[UUID, int], ...] | None = None,
 ) -> StoredTrace:
     """Retain the retrieval path, related context and exact coverage read."""
     per_chunk = [
@@ -58,7 +58,7 @@ def record_trace(
         "per_chunk_layers": per_chunk,
         "layer_contribution": contribution,
     }
-    if cited:
+    if cited is not None:
         # The full candidate list stays above. These are the markers the
         # answer actually printed, in marker order, so the sources list
         # does not renumber them.

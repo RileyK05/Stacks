@@ -128,6 +128,13 @@ impl Backend {
         self.wait_ready()
     }
 
+    pub fn failed(&self) -> bool {
+        let (lock, _) = &*self.status;
+        lock.lock()
+            .map(|status| matches!(*status, Status::Failed(_)))
+            .unwrap_or(true)
+    }
+
     pub fn shutdown(&self) {
         // Closing stdin is the shutdown signal (src/backend/serve.py).
         if let Ok(mut stdin) = self.stdin.lock() {
@@ -159,11 +166,12 @@ impl Backend {
 pub async fn backend_info(app: AppHandle) -> Result<BackendInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let cell: State<'_, BackendCell> = app.state();
-        let guard = cell.0.lock().map_err(|e| e.to_string())?;
-        match guard.as_ref() {
-            Some(backend) => backend.wait_ready(),
-            None => Err("the backend is restarting".into()),
+        let backend = cell.current()?;
+        let info = backend.wait_ready()?;
+        if !cell.is_current(&backend)? {
+            return Err("The backend changed while connecting. Try again.".into());
         }
+        Ok(info)
     })
     .await
     .map_err(|e| e.to_string())?

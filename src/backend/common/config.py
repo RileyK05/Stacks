@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal, cast
 
@@ -16,6 +17,10 @@ DATABASE_FILENAME = "course_assistant.db"
 DEFAULT_OFFICE_PORT = 47831
 
 
+class ConfigurationError(ValueError):
+    pass
+
+
 def _load_dotenv(path: Path) -> None:
     """Minimal .env loader. Sets only keys not already present in the env."""
     if not path.exists():
@@ -26,9 +31,28 @@ def _load_dotenv(path: Path) -> None:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        value = value.strip()
+        if len(value) >= 2 and value[0] in "\"'" and value[-1] == value[0]:
+            value = value[1:-1]
         if key and key not in os.environ:
             os.environ[key] = value
+
+
+@lru_cache(maxsize=1)
+def _load_project_dotenv(path: Path) -> None:
+    _load_dotenv(path)
+
+
+def _office_port() -> int:
+    try:
+        port = int(os.getenv("APP_OFFICE_PORT", str(DEFAULT_OFFICE_PORT)))
+    except ValueError as err:
+        raise ConfigurationError(
+            "APP_OFFICE_PORT must be a whole number between 1024 and 65535."
+        ) from err
+    if not 1024 <= port <= 65535:
+        raise ConfigurationError("APP_OFFICE_PORT must be between 1024 and 65535.")
+    return port
 
 
 class Settings(BaseModel):
@@ -63,7 +87,7 @@ class Settings(BaseModel):
 
 
 def get_settings() -> Settings:
-    _load_dotenv(PROJECT_ROOT / ".env")
+    _load_project_dotenv(PROJECT_ROOT / ".env")
     data_dir = Path(os.getenv("APP_DATA_DIR", str(DEFAULT_DATA_DIR)))
     return Settings(
         app_env=cast(
@@ -81,7 +105,7 @@ def get_settings() -> Settings:
         llm_bigger_model=os.getenv("LLM_BIGGER_MODEL", ""),
         api_token=os.getenv("APP_API_TOKEN", ""),
         office_bridge_token=os.getenv("APP_OFFICE_TOKEN", ""),
-        office_port=int(os.getenv("APP_OFFICE_PORT", str(DEFAULT_OFFICE_PORT))),
+        office_port=_office_port(),
         export_dir=os.getenv("APP_EXPORT_DIR", str(_downloads_dir())),
     )
 

@@ -36,10 +36,10 @@ INLINE_CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
 class QuizQuestion(BaseModel):
-    prompt: str = Field(min_length=1)
+    prompt: str = Field(min_length=1, max_length=5000)
     options: list[str] = Field(min_length=2, max_length=8)
     answer: int
-    explanation: str | None = None
+    explanation: str | None = Field(default=None, max_length=5000)
     sources: list[int] = Field(min_length=1)
     topic: str = Field(default="", max_length=160)
     capability: Capability = "recognition"

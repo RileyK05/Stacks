@@ -55,7 +55,7 @@ def quote_matches(quote: str, chunk_text: str) -> bool:
         found = haystack.find(" " + " ".join(segment) + " ", position)
         if found < 0:
             return False
-        position = found + 1
+        position = found + len(" " + " ".join(segment) + " ")
     return True
 
 

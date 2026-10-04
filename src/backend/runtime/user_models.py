@@ -115,17 +115,29 @@ def gguf_files(
         raise AddModelError(f"couldn't reach Hugging Face: {err}") from err
     files: list[GgufFile] = []
     for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
         path = str(entry.get("path", ""))
         lfs = entry.get("lfs") or {}
+        if not isinstance(lfs, dict):
+            continue
         sha = str(lfs.get("oid", ""))
         if path.lower().endswith(".gguf") and re.fullmatch(r"[0-9a-f]{64}", sha):
-            files.append(
-                GgufFile(
-                    file=path,
-                    size_bytes=int(lfs.get("size") or entry["size"]),
-                    sha256=sha,
+            try:
+                size = lfs.get("size") or entry.get("size")
+                if size is None:
+                    raise ValueError("missing file size")
+                files.append(
+                    GgufFile(
+                        file=path,
+                        size_bytes=int(size),
+                        sha256=sha,
+                    )
                 )
-            )
+            except (TypeError, ValueError) as err:
+                raise AddModelError(
+                    "Hugging Face returned invalid size information for a GGUF file"
+                ) from err
     return sorted(files, key=lambda f: f.size_bytes)
 
 

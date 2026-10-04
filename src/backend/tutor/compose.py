@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
 
+from src.backend.common import generation as generation_control
 from src.backend.common.citations import cited_numbers
 from src.backend.common.prompt_registry import (
     grounded_prompt,
@@ -38,6 +39,7 @@ from src.backend.common.prompt_registry import (
 from src.backend.common.schemas.mind_map import MindMapContent, anchor_map_evidence
 from src.backend.retrieval.funnel import Candidate
 from src.backend.tutor import quotes as quote_anchors
+from src.backend.tutor.materials import DeckDraft, DocumentDraft, has_body
 from src.backend.tutor.workspace import extract_workspace_items
 
 
@@ -130,6 +132,17 @@ _ARTIFACT_REQUEST = re.compile(
     re.IGNORECASE,
 )
 
+_DOCUMENT_REQUEST = re.compile(
+    _LEAD + r"(?:(?:please|could you|can you|would you|will you)\s+)*"
+    r"(?:write|draft|create|make|generate|prepare|produce|give me|"
+    r"i (?:want|need|would like))\s+(?:me\s+)?(?:(?:a|an|the|some)\s+)?"
+    r"(?:(?:short|brief|sample|editable|full|detailed|one[- ]page|"
+    r"\d+[- ](?:word|page))\s+){0,4}"
+    r"(?:essay|paper|document|study guide|(?:study|cheat|review) sheet|"
+    r"notes|outline)\b",
+    re.IGNORECASE,
+)
+
 
 _SMALL_TALK = re.compile(
     r"(?:(?:oh |ok |okay )?(?:hi|hello|hey|hiya|howdy|yo|sup|greetings"
@@ -165,6 +178,8 @@ def classify_intent(question: str) -> Intent:
         return Intent.CHAT
     if not _ARTIFACT_REQUEST.search(question):
         return Intent.ANSWER
+    if _DOCUMENT_REQUEST.search(question):
+        return Intent.DOCUMENT
     for intent, pattern in _INTENT_RULES:
         if pattern.search(question):
             return intent
@@ -429,7 +444,11 @@ def _object(properties: dict[str, Any]) -> dict[str, Any]:
 
 
 def workspace_schema(
-    intent: Intent, material_count: int, quiz_count: int | None = None
+    intent: Intent,
+    material_count: int,
+    quiz_count: int | None = None,
+    *,
+    slide_count: int | None = None,
 ) -> dict[str, Any]:
     sources = _sources_schema(material_count)
     items: dict[Intent, dict[str, Any]] = {
@@ -514,7 +533,22 @@ def workspace_schema(
             {
                 "type": {"const": "document"},
                 "title": _string(120),
-                "content": _string(6000),
+                "sections": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "items": _object(
+                        {
+                            "heading": {"type": "string", "maxLength": 500},
+                            "paragraphs": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 64,
+                                "items": _string(20_000),
+                            },
+                        }
+                    ),
+                },
                 "sources": sources,
             }
         ),
@@ -545,7 +579,22 @@ def workspace_schema(
             {
                 "type": {"const": "slides"},
                 "title": _string(120),
-                "deck": _string(6000),
+                "slides": {
+                    "type": "array",
+                    "minItems": slide_count or 1,
+                    "maxItems": slide_count or 200,
+                    "items": _object(
+                        {
+                            "title": _string(500),
+                            "paragraphs": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 32,
+                                "items": _string(20_000),
+                            },
+                        }
+                    ),
+                },
                 "sources": sources,
             }
         ),
@@ -619,7 +668,7 @@ _QUIZ_UNAVAILABLE = (
 )
 
 
-def requested_quiz_count(question: str) -> int | None:
+def _requested_count(question: str, units: str) -> int | None:
     words = [
         "one",
         "two",
@@ -644,7 +693,7 @@ def requested_quiz_count(question: str) -> int | None:
     ]
     counts = {word: index for index, word in enumerate(words, start=1)}
     match = re.search(
-        r"\b(\d+|" + "|".join(words) + r")[ -]+(?:questions?|problems?)\b",
+        r"\b(\d+|" + "|".join(words) + r")[ -]+(?:" + units + r")\b",
         question,
         re.IGNORECASE,
     )
@@ -652,6 +701,14 @@ def requested_quiz_count(question: str) -> int | None:
         return None
     count = match.group(1).casefold()
     return int(count) if count.isdigit() else counts[count]
+
+
+def requested_quiz_count(question: str) -> int | None:
+    return _requested_count(question, r"questions?|problems?")
+
+
+def requested_slide_count(question: str) -> int | None:
+    return _requested_count(question, r"slides?")
 
 
 def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> bool:
@@ -799,9 +856,18 @@ def _workspace_response(
     intent: Intent,
     material_count: int,
     passages: list[str],
+    *,
+    slide_count: int | None = None,
 ) -> str | None:
     item = parsed.get("item") if parsed else None
     if not isinstance(item, dict) or item.get("type") != intent.value:
+        return None
+    try:
+        if intent is Intent.DOCUMENT and "sections" in item:
+            item = DocumentDraft.model_validate(item).workspace()
+        elif intent is Intent.SLIDES and "slides" in item:
+            item = DeckDraft.model_validate(item).workspace()
+    except ValueError:
         return None
     if intent is Intent.MIND_MAP:
         try:
@@ -833,25 +899,34 @@ def _workspace_response(
         }:
             return None
         if intent in (Intent.DOCUMENT, Intent.SLIDES):
-            substantive = [
-                line.strip()
-                for line in content.splitlines()
-                if line.strip()
-                and not re.match(r"^\s*(?:#{1,6}\s|[-*_]{3,}\s*$)", line)
-            ]
-            if not substantive or all(
-                line.strip(" *_`") == str(item.get("title", "")).strip()
-                for line in substantive
+            units = (
+                re.split(r"^\s*---\s*$", content, flags=re.MULTILINE)
+                if intent is Intent.SLIDES
+                else [content]
+            )
+            if any(not has_body(unit, str(item.get("title", ""))) for unit in units):
+                return None
+            if intent is Intent.SLIDES and len({unit.strip() for unit in units}) != len(
+                units
+            ):
+                return None
+            if (
+                intent is Intent.SLIDES
+                and slide_count is not None
+                and len(units) != slide_count
             ):
                 return None
     reply_value = parsed.get("reply") if parsed else None
     reply = reply_value.strip() if isinstance(reply_value, str) else ""
+    if any(number < 1 or number > material_count for number in cited_numbers(reply)):
+        return None
     block = json.dumps(item, ensure_ascii=False)
     text = f"{reply}\n\n```workspace\n{block}\n```".strip()
     extracted = extract_workspace_items(text, material_count)
     return text if extracted.items and not extracted.withheld else None
 
 
+@generation_control.operation()
 def compose_answer(
     question: str,
     candidates: tuple[Candidate, ...],
@@ -876,6 +951,7 @@ def compose_answer(
         candidates = select(question, candidates)
     intent = classify_intent(question)
     quiz_count = requested_quiz_count(question) if intent is Intent.QUIZ else None
+    slide_count = requested_slide_count(question) if intent is Intent.SLIDES else None
     if quiz_count is not None and not 1 <= quiz_count <= 20:
         return Composed(
             "A practice test supports 1–20 questions. Choose a count in that range.",
@@ -885,6 +961,13 @@ def compose_answer(
         )
     if quiz_count is not None:
         teaching += "\n" + load_prompt("workspace_quiz_count").format(count=quiz_count)
+    if slide_count is not None and not 1 <= slide_count <= 200:
+        return Composed(
+            "A slide deck supports 1–200 slides. Choose a count in that range.",
+            intent,
+            structured=False,
+            candidates=candidates,
+        )
     material = numbered_material(question, candidates, conversation)
     if intent in (Intent.ANSWER, Intent.GRADED):
         teaching += "\n" + load_prompt("background_review")
@@ -910,7 +993,9 @@ def compose_answer(
     prompt = grounded_prompt(
         load_prompt(f"workspace_{intent.value}") + teaching, material
     )
-    schema = workspace_schema(intent, len(candidates), quiz_count)
+    schema = workspace_schema(
+        intent, len(candidates), quiz_count, slide_count=slide_count
+    )
     try:
         raw = generate("artifact_generation", prompt, response_schema=schema)
     except Exception as err:
@@ -967,7 +1052,7 @@ def compose_answer(
                 )
             except Exception as err:
                 if on_schema_rejected is None or not on_schema_rejected(err):
-                    repaired = ""
+                    raise
                 else:
                     repaired = generate(
                         "artifact_generation", repair_prompt + _SCHEMA_REMINDER
@@ -1000,7 +1085,9 @@ def compose_answer(
         }
         parsed = {"reply": reply, "item": item}
     passages = [c.text for c in candidates]
-    workspace_text = _workspace_response(parsed, intent, len(candidates), passages)
+    workspace_text = _workspace_response(
+        parsed, intent, len(candidates), passages, slide_count=slide_count
+    )
     if workspace_text is None and intent is not Intent.QUIZ:
         repair_prompt = grounded_prompt(
             load_prompt(f"workspace_{intent.value}")
@@ -1018,7 +1105,11 @@ def compose_answer(
                 raise
             repaired = generate("artifact_generation", repair_prompt + _SCHEMA_REMINDER)
         workspace_text = _workspace_response(
-            parse_json_object(repaired), intent, len(candidates), passages
+            parse_json_object(repaired),
+            intent,
+            len(candidates),
+            passages,
+            slide_count=slide_count,
         )
     if workspace_text is None:
         return Composed(
@@ -1083,6 +1174,11 @@ def _compose_quoted(
             "tutor_answer",
             grounded_prompt(load_prompt("tutor_answer") + teaching, material),
         )
+        if any(n < 1 or n > len(candidates) for n in cited_numbers(text)):
+            text = (
+                "The answer referred to source material it was not given. "
+                "Try again; this reply was withheld."
+            )
         return Composed(
             strip_fence_echo(text),
             Intent.ANSWER,
@@ -1094,6 +1190,11 @@ def _compose_quoted(
         tuple(candidate.text for candidate in candidates),
     )
     text = quote_anchors.anchor_citations(strip_fence_echo(answer.strip()), verified)
+    if any(n < 1 or n > len(candidates) for n in cited_numbers(text)):
+        text = (
+            "The answer referred to source material it was not given. "
+            "Try again; this reply was withheld."
+        )
     return Composed(
         text,
         Intent.ANSWER,

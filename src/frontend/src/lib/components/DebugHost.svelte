@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import { apiBase, appToken } from '$lib/api/backend';
+import { apiBase, appToken, backendConnected } from '$lib/api/backend';
   import {
     clearDebugLog,
     debugEntries,
@@ -115,7 +115,7 @@
         <dt class="text-slate-500">app token</dt>
         <dd>{appToken() ? 'present' : 'none (development)'}</dd>
         <dt class="text-slate-500">api base</dt>
-        <dd>{apiBase()}</dd>
+        <dd>{backendConnected() ? apiBase() : 'reconnecting'}</dd>
         <dt class="text-slate-500">logged requests</dt>
         <dd>{entries.length}</dd>
       </dl>

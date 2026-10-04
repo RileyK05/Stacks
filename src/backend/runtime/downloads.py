@@ -59,41 +59,58 @@ def download_verified(
         part.unlink()
         done = 0
     if done < size_bytes:
-        headers = {"Range": f"bytes={done}-"} if done else {}
-        with httpx.stream(
-            "GET",
-            url,
-            headers=headers,
-            follow_redirects=True,
-            timeout=httpx.Timeout(60.0, connect=15.0),
-        ) as response:
-            if response.status_code == 206:
-                match = re.fullmatch(
-                    r"bytes (\d+)-(\d+)/(\d+)",
-                    response.headers.get("Content-Range", ""),
+        # A 416 or a mismatched Content-Range means the server can no longer
+        # honour the byte we resumed from (the asset changed, or the .part was
+        # corrupted). A stale .part would otherwise fail identically forever,
+        # so drop it and retry once from the beginning.
+        for attempt in range(2):
+            headers = {"Range": f"bytes={done}-"} if done else {}
+            reset = False
+            with httpx.stream(
+                "GET",
+                url,
+                headers=headers,
+                follow_redirects=True,
+                timeout=httpx.Timeout(60.0, connect=15.0),
+            ) as response:
+                if response.status_code == 416:
+                    reset = True
+                elif response.status_code == 206:
+                    match = re.fullmatch(
+                        r"bytes (\d+)-(\d+)/(\d+)",
+                        response.headers.get("Content-Range", ""),
+                    )
+                    if (
+                        match is None
+                        or int(match[1]) != done
+                        or int(match[3]) != size_bytes
+                        or not done <= int(match[2]) < size_bytes
+                    ):
+                        reset = True
+                elif done:
+                    done = 0  # server ignored the range: start over
+                if not reset:
+                    response.raise_for_status()
+                    with part.open("ab" if done else "wb") as handle:
+                        for block in response.iter_bytes(CHUNK_BYTES):
+                            if cancel is not None and cancel.is_set():
+                                raise DownloadCancelled(f"cancelled: {dest.name}")
+                            if done + len(block) > size_bytes:
+                                raise DownloadError(
+                                    f"{dest.name}: download exceeds expected size"
+                                )
+                            handle.write(block)
+                            done += len(block)
+                            if progress is not None:
+                                progress(done, size_bytes)
+            if not reset:
+                break
+            part.unlink(missing_ok=True)
+            done = 0
+            if attempt == 1:
+                raise DownloadError(
+                    f"{dest.name}: the server rejected the resumed download range"
                 )
-                if (
-                    match is None
-                    or int(match[1]) != done
-                    or int(match[3]) != size_bytes
-                    or not done <= int(match[2]) < size_bytes
-                ):
-                    raise DownloadError(f"{dest.name}: invalid download range")
-            if done and response.status_code != 206:
-                done = 0  # server ignored the range: start over
-            response.raise_for_status()
-            with part.open("ab" if done else "wb") as handle:
-                for block in response.iter_bytes(CHUNK_BYTES):
-                    if cancel is not None and cancel.is_set():
-                        raise DownloadCancelled(f"cancelled: {dest.name}")
-                    if done + len(block) > size_bytes:
-                        raise DownloadError(
-                            f"{dest.name}: download exceeds expected size"
-                        )
-                    handle.write(block)
-                    done += len(block)
-                    if progress is not None:
-                        progress(done, size_bytes)
     if part.stat().st_size != size_bytes:
         raise DownloadError(
             f"{dest.name}: expected {size_bytes} bytes, got {part.stat().st_size}"

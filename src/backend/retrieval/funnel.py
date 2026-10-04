@@ -11,6 +11,7 @@ from uuid import UUID
 
 import numpy as np
 from src.backend.common.db import Connection, json_ids
+from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.common.queries import get
 from src.backend.rag import generated
 from src.backend.rag.config import load_policy as load_passage_policy
@@ -368,6 +369,8 @@ def graph_seam(
     limit: int,
     model: str,
     source_ids: Collection[UUID] | None = None,
+    *,
+    dimension: int | None = None,
 ) -> dict[UUID, Candidate]:
     if not hits or limit < 1:
         return {}
@@ -376,6 +379,9 @@ def graph_seam(
         "chunk_ids": json_ids(hits),
         "limit": limit,
         "model": model,
+        "dimension": (
+            dimension if dimension is not None else load_embedding_policy().dimension
+        ),
         "source_ids": json_ids(source_ids) if source_ids is not None else None,
     }
     rows = conn.execute(get(_FILE, "similar_candidates"), params).fetchall()
@@ -664,6 +670,7 @@ def retrieve(
             policy.graph_limit,
             embedding_model or "",
             source_ids,
+            dimension=load_embedding_policy().dimension,
         ),
         minimum,
     )

@@ -135,6 +135,7 @@ class UsageTotal(BaseModel):
     model: str
     task: str
     calls: int
+    calls_without_usage: int
     input_tokens: int
     output_tokens: int
 
@@ -142,6 +143,7 @@ class UsageTotal(BaseModel):
 class UsageView(BaseModel):
     month_start: datetime
     cloud_tokens_this_month: int
+    cloud_calls_without_usage: int
     monthly_cloud_token_budget: int | None
     totals: list[UsageTotal]
     recent: list[UsageLedgerEntry]
@@ -251,13 +253,14 @@ def add_connection(payload: ConnectionCreate) -> ConnectionView:
             name=payload.name,
             base_url=payload.base_url,
             default_model=payload.default_model,
+            api_key=payload.key.strip()
+            if payload.key and payload.key.strip()
+            else None,
         )
     except UnknownConnectionError as err:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(err)) from err
     except ValueError as err:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(err)) from err
-    if payload.key and payload.key.strip():
-        secrets.set_api_key(connection.id, payload.key.strip())
     return _connection_view(connection)
 
 
@@ -290,6 +293,10 @@ def remove_connection(connection_id: str) -> ProvidersView:
 
 @router.put("/keys/{connection_id}", status_code=status.HTTP_204_NO_CONTENT)
 def set_key(connection_id: str, payload: KeyUpdate) -> None:
+    if not payload.key.strip():
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "enter a nonempty API key"
+        )
     connection = _connection_for_key(connection_id)
     secrets.set_api_key(connection.id, payload.key.strip())
 
@@ -460,9 +467,11 @@ def model_options() -> list[ModelOption]:
 @router.get("/usage", response_model=UsageView)
 def get_usage() -> UsageView:
     start = usage_repo.month_start()
+    cloud_usage = usage_repo.cloud_usage_this_month(start)
     return UsageView(
         month_start=start,
-        cloud_tokens_this_month=usage_repo.cloud_tokens_this_month(),
+        cloud_tokens_this_month=cloud_usage.reported_tokens,
+        cloud_calls_without_usage=cloud_usage.calls_without_usage,
         monthly_cloud_token_budget=usage_repo.monthly_budget(),
         totals=[UsageTotal(**row) for row in usage_repo.totals_since(start)],
         recent=usage_repo.ledger_page(limit=50),

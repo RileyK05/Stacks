@@ -128,7 +128,10 @@ export class PracticeSession {
   reset(): void {
     if (this.saving || this.submissionPending || this.helping || this.ratingBusy) return;
     this.responses = this.questions.map(() => null);
-    this.helped = this.questions.map(() => true);
+    // Help is tracked per attempt. The backend independently marks a repeat
+    // as previously revealed, so carrying this flag forward would conflate
+    // exposure with help used during this attempt.
+    this.helped = this.questions.map(() => false);
     this.runId = crypto.randomUUID();
     this.submitted = false;
     this.run = null;

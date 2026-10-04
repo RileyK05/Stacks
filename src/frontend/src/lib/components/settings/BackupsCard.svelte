@@ -1,7 +1,7 @@
 <script lang="ts">
   import { isTauri } from '@tauri-apps/api/core';
   import { onMount } from 'svelte';
-  import { activateBackup } from '$lib/api/backend';
+  import { activateBackup, backendConnected, restartBackend } from '$lib/api/backend';
   import { api } from '$lib/api/client';
   import type { components } from '$lib/api/schema';
   import Button from '$lib/components/Button.svelte';
@@ -20,6 +20,7 @@
   let activating = $state(false);
   let notice = $state('');
   let activeBackupId = $state('');
+  let needsRestart = $state(false);
   const isTauriApp = isTauri();
 
   onMount(() => { void load(); });
@@ -89,6 +90,16 @@
         // every view fetches data from the new library.
         setTimeout(() => window.location.reload(), 800);
       }
+    } catch (caught) { error = caught; needsRestart = !backendConnected(); }
+    finally { activating = false; }
+  }
+
+  async function retryBackend() {
+    if (activating) return;
+    activating = true;
+    try {
+      await restartBackend();
+      window.location.reload();
     } catch (caught) { error = caught; }
     finally { activating = false; }
   }
@@ -103,6 +114,9 @@
 
 <Card title="Local backups" description="Keep copies of saved course work on this computer. Draft recovery stays on even when automatic backups are off.">
   {#if error}<ErrorBanner {error} />{/if}
+  {#if needsRestart}
+    <Button disabled={activating} onclick={retryBackend}>{activating ? 'Starting…' : 'Restart backend'}</Button>
+  {/if}
   {#if preferences && overview}
     <form onsubmit={(event) => { event.preventDefault(); void save(); }} class="flex flex-col gap-4">
       <label class="flex items-center gap-2 text-sm text-fg"><input type="checkbox" bind:checked={preferences.enabled} disabled={busy} /> Automatic backups while Stacks is open</label>

@@ -91,10 +91,77 @@ def test_excel_package_reads_cells_with_references() -> None:
     assert read.units[1].text == "A2=linearity; B2=preserves"
 
 
+def test_excel_chart_sheet_is_skipped_and_worksheet_order_is_kept() -> None:
+    office_rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    parts = {
+        "xl/workbook.xml": (
+            f'<workbook xmlns="{S_NS}" xmlns:r="{office_rel}"><sheets>'
+            '<sheet name="Chart" sheetId="1" r:id="rId1"/>'
+            '<sheet name="Second" sheetId="2" r:id="rId2"/>'
+            '<sheet name="First" sheetId="3" r:id="rId3"/>'
+            "</sheets></workbook>"
+        ),
+        "xl/_rels/workbook.xml.rels": (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+            'chartsheet" Target="chartsheets/sheet1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+            'worksheet" Target="worksheets/sheet2.xml"/>'
+            '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+            'worksheet" Target="worksheets/sheet1.xml"/>'
+            "</Relationships>"
+        ),
+        "xl/chartsheets/sheet1.xml": "<chartsheet/>",
+        "xl/worksheets/sheet1.xml": (
+            f'<worksheet xmlns="{S_NS}"><sheetData><row r="1">'
+            '<c r="A1" t="inlineStr"><is><t>first</t></is></c>'
+            "</row></sheetData></worksheet>"
+        ),
+        "xl/worksheets/sheet2.xml": (
+            f'<worksheet xmlns="{S_NS}"><sheetData><row r="1">'
+            '<c r="A1" t="inlineStr"><is><t>second</t></is></c>'
+            "</row></sheetData></worksheet>"
+        ),
+    }
+    read = read_package(_zip(parts), kind="excel")
+    assert [unit.text for unit in read.units] == ["A1=second", "A1=first"]
+    assert any("chartsheet 'Chart'" in warning for warning in read.warnings)
+
+
 def test_powerpoint_package_reads_slide_text() -> None:
     read = read_package(_pptx(["Title slide", "Key result"]), kind="powerpoint")
     assert [unit.label for unit in read.units] == ["slide 1", "slide 2"]
     assert read.units[1].text == "Key result"
+
+
+def test_powerpoint_notes_follow_their_slide_not_the_notes_part_number() -> None:
+    # Slide 1's notes live in notesSlide2.xml and slide 2's in notesSlide1.xml;
+    # notes must stay interleaved with the slide they belong to.
+    parts = {
+        "ppt/slides/slide1.xml": f'<root xmlns:a="{A_NS}"><a:t>Slide one</a:t></root>',
+        "ppt/slides/slide2.xml": f'<root xmlns:a="{A_NS}"><a:t>Slide two</a:t></root>',
+        "ppt/slides/_rels/slide1.xml.rels": (
+            '<Relationships><Relationship Id="n1" Type="test/notesSlide" '
+            'Target="../notesSlides/notesSlide2.xml"/></Relationships>'
+        ),
+        "ppt/slides/_rels/slide2.xml.rels": (
+            '<Relationships><Relationship Id="n2" Type="test/notesSlide" '
+            'Target="../notesSlides/notesSlide1.xml"/></Relationships>'
+        ),
+        "ppt/notesSlides/notesSlide1.xml": (
+            f'<root xmlns:a="{A_NS}"><a:t>Notes two</a:t></root>'
+        ),
+        "ppt/notesSlides/notesSlide2.xml": (
+            f'<root xmlns:a="{A_NS}"><a:t>Notes one</a:t></root>'
+        ),
+    }
+    read = read_package(_zip(parts), kind="powerpoint")
+    assert [(unit.label, unit.text) for unit in read.units] == [
+        ("slide 1", "Slide one"),
+        ("speaker notes 1", "Notes one"),
+        ("slide 2", "Slide two"),
+        ("speaker notes 2", "Notes two"),
+    ]
 
 
 def test_a_non_zip_is_refused() -> None:
@@ -187,3 +254,19 @@ def test_screenshot_reader_transcribes_via_the_ocr_seam(
     assert seen["images"] == [b"png-a", b"png-b"]
     assert [unit.label for unit in read.units] == ["image 1", "image 2"]
     assert read.units[1].text == "page two"
+
+
+def test_screenshot_reader_reports_ambiguous_page_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.backend.common import provider
+    from src.backend.common.provider import GenerationResult
+    from src.backend.office_reader.screens import OcrUnavailableError, read_screens
+
+    monkeypatch.setattr(
+        provider,
+        "generate",
+        lambda *args, **kwargs: GenerationResult("merged pages", "test", 1, 1),
+    )
+    with pytest.raises(OcrUnavailableError, match="boundaries"):
+        read_screens([b"png-a", b"png-b"])

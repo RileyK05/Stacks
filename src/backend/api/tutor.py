@@ -51,6 +51,7 @@ class AnswerView(BaseModel):
 
     text: str
     chunk_ids: list[str]
+    material_chunk_ids: list[str] = Field(default_factory=list)
     trace_id: str
     workspace: list[WorkspaceItem] = Field(default_factory=list)
     withheld: list[str] = Field(default_factory=list)
@@ -68,6 +69,7 @@ def answer_view(result: tutor_answer.Answer, *, bigger: bool = False) -> AnswerV
     return AnswerView(
         text=result.body,
         chunk_ids=[str(cid) for cid in result.chunk_ids],
+        material_chunk_ids=[str(cid) for cid in result.material_chunk_ids],
         trace_id=str(result.trace_id) if result.trace_id else "",
         workspace=list(result.workspace_items),
         withheld=list(result.withheld),
@@ -161,23 +163,27 @@ def trace_citations(course_id: UUID, trace_id: UUID) -> list[CitationView]:
         payload = trace["retrieved_chunk_ids"]
         if not isinstance(payload, dict):
             payload = {}
-        stored_ids = [str(cid) for cid in payload.get("chunk_ids", [])]
-        cited_ids = [str(cid) for cid in payload.get("cited_chunk_ids") or []]
-        raw_markers = payload.get("citation_markers") or []
-        if cited_ids:
-            shown_ids = cited_ids
-            marker_by_id = {
-                chunk_id: int(raw_markers[index])
-                if index < len(raw_markers)
-                else index + 1
-                for index, chunk_id in enumerate(cited_ids)
-            }
-        else:
-            shown_ids = stored_ids
-            marker_by_id = {
-                chunk_id: index + 1 for index, chunk_id in enumerate(stored_ids)
-            }
-        chunk_ids = [UUID(cid) for cid in shown_ids]
+        has_cited = "cited_chunk_ids" in payload
+        shown_ids = payload.get("cited_chunk_ids" if has_cited else "chunk_ids", [])
+        raw_markers = payload.get("citation_markers", []) if has_cited else []
+        if not isinstance(shown_ids, list) or not isinstance(raw_markers, list):
+            raise HTTPException(422, "trace has malformed citation metadata")
+        marker_by_id = {}
+        chunk_ids = []
+        try:
+            for index, cid in enumerate(shown_ids):
+                if not isinstance(cid, str):
+                    raise ValueError("invalid passage ID")
+                chunk_id = UUID(cid)
+                marker = (
+                    int(raw_markers[index]) if index < len(raw_markers) else index + 1
+                )
+                if marker < 1:
+                    raise ValueError("invalid citation marker")
+                chunk_ids.append(chunk_id)
+                marker_by_id[str(chunk_id)] = marker
+        except (ValueError, TypeError, OverflowError) as err:
+            raise HTTPException(422, "trace has malformed citation metadata") from err
         if not chunk_ids:
             return []
         rows = conn.execute(

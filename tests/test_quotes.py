@@ -52,6 +52,11 @@ def test_invented_or_altered_quotes_do_not_match(quote: str) -> None:
     assert not quotes.quote_matches(quote, SYLLABUS)
 
 
+def test_ellipsis_segments_cannot_overlap() -> None:
+    passage = "alpha beta gamma delta"
+    assert not quotes.quote_matches("alpha beta gamma ... beta gamma delta", passage)
+
+
 def test_verify_checks_the_named_chunk_and_range() -> None:
     chunks = (SYLLABUS, READING)
     good = quotes.Quote(1, "you may miss three lectures without penalty")
@@ -133,6 +138,39 @@ def test_quotes_mode_falls_back_to_plain_on_unusable_reply() -> None:
     )
     assert composed.text == "Plain answer [1]." and not composed.structured
     assert len(prompts) == 2 and "word-for-word" not in prompts[1]
+
+
+def test_quotes_fallback_with_dangling_marker_is_withheld() -> None:
+    replies = iter(["not json at all", "This source says so [99]."])
+
+    def generate(task: str, prompt: str, *, response_schema: Any = None) -> str:
+        return next(replies)
+
+    composed = compose_answer(
+        "How many lectures can I miss?",
+        _candidates(SYLLABUS),
+        generate,
+        answer_mode=AnswerMode.QUOTES,
+    )
+    assert "referred to source material it was not given" in composed.text
+
+
+def test_rejected_quotes_do_not_leave_dangling_answer_citation() -> None:
+    reply = {
+        "quotes": [{"source": 1, "quote": "invented words that are unsupported"}],
+        "answer": "The passage establishes this claim [99].",
+    }
+
+    def generate(task: str, prompt: str, *, response_schema: Any = None) -> str:
+        return json.dumps(reply)
+
+    composed = compose_answer(
+        "How many lectures can I miss?",
+        _candidates(SYLLABUS),
+        generate,
+        answer_mode=AnswerMode.QUOTES,
+    )
+    assert "referred to source material it was not given" in composed.text
 
 
 def test_quotes_mode_leaves_graded_work_and_workspace_alone() -> None:

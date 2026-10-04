@@ -74,7 +74,7 @@ def safe_stem(title: str) -> str:
 def unique_path(directory: Path, stem: str, extension: str) -> Path:
     candidate = directory / f"{stem}.{extension}"
     counter = 2
-    while candidate.exists():
+    while candidate.exists() or candidate.is_symlink():
         candidate = directory / f"{stem} ({counter}).{extension}"
         counter += 1
     return candidate
@@ -185,12 +185,19 @@ def _table(kind: str, content: dict[str, Any]) -> tuple[list[str], list[list[str
     raise ValueError(f"no table export for {kind}")
 
 
-def to_csv(kind: str, content: dict[str, Any]) -> str:
+def to_csv(
+    kind: str, content: dict[str, Any], sources: Sequence[SourceLabel] = ()
+) -> str:
     columns, rows = _table(kind, content)
     out = io.StringIO()
     writer = csv.writer(out)
     writer.writerow(columns)
     writer.writerows(rows)
+    if sources:
+        padding = [""] * max(0, len(columns) - 1)
+        writer.writerow([""] * len(columns))
+        writer.writerow(["Sources", *padding])
+        writer.writerows([line, *padding] for line in _source_lines(sources))
     return out.getvalue()
 
 
@@ -444,7 +451,7 @@ def render(
     if fmt == "md":
         return to_markdown(kind, title, content, sources).encode("utf-8")
     if fmt == "csv":
-        return to_csv(kind, content).encode("utf-8-sig")
+        return to_csv(kind, content, sources).encode("utf-8-sig")
     if fmt == "txt":
         return str(content.get("code", "")).encode("utf-8")
     if fmt == "html":

@@ -15,8 +15,21 @@ from uuid import UUID, uuid4
 import pytest
 from src.backend.common import courses_repo, sources_repo
 from src.backend.common.db import connection
-from src.backend.common.schemas.base import SourceType
-from src.backend.ingest import runs, worker
+from src.backend.common.provider import (
+    GenerationResult,
+    ProviderRequestRejectedError,
+    ProviderUnavailableError,
+)
+from src.backend.common.schemas.base import IngestionStage, IngestionStatus, SourceType
+from src.backend.ingest import extract, orchestrator, runs, worker
+from src.backend.ingest.extract import (
+    ExtractedSource,
+    RasterizedPage,
+    _join_pages,
+    _pdf_locators,
+    assess_pages,
+)
+from src.backend.ingest.pipeline import StageWarning
 
 BODY = "\n\n".join(
     f"Paragraph {i}: the mitochondria is the powerhouse of the cell {i}." * 3
@@ -99,6 +112,190 @@ def test_worker_indexes_text_sources_and_clears_the_queue(course_id: UUID) -> No
         )
 
 
+def test_mixed_source_indexes_when_malformed_ocr_only_affects_blank_pages(
+    course_id: UUID, monkeypatch
+) -> None:
+    pages = ["The course definition remains readable. " * 8 for _ in range(50)] + [
+        "",
+        "",
+    ]
+    report = assess_pages(pages, min_page_chars=20, quality_floor=0.35)
+    extracted = ExtractedSource(
+        _join_pages(pages), _pdf_locators(pages), tuple(pages), report
+    )
+    monkeypatch.setattr(extract, "extract", lambda *args, **kwargs: extracted)
+    rendered_batches = []
+
+    def render(*args, pages, **kwargs):
+        rendered_batches.append(tuple(pages))
+        return [RasterizedPage(index, b"png") for index in pages]
+
+    monkeypatch.setattr(extract, "rasterize_pages_with_ids", render)
+    monkeypatch.setattr(
+        orchestrator.provider,
+        "generate",
+        lambda *args, **kwargs: GenerationResult(
+            "one response for two pages without a boundary", "test", 1, 1
+        ),
+    )
+    stored = _upload(course_id, b"fixture", mime_type="text/plain")
+    attempted, succeeded = worker.process_batch(limit=10)
+    assert (attempted, succeeded) == (1, 1)
+    assert rendered_batches == [(50, 51)]
+    assert _source_status(stored.source_id) == "indexed"
+    with connection() as conn:
+        coverage = conn.execute(
+            "SELECT pages_total, pages_empty, pages_ocr FROM source_indexes"
+            " WHERE source_id = ?",
+            (stored.source_id,),
+        ).fetchone()
+        stage = conn.execute(
+            "SELECT status, error_message FROM ingestion_stage_runs"
+            " WHERE run_id = (SELECT run_id FROM ingestion_runs WHERE source_id = ?)"
+            " AND stage = ?",
+            (stored.source_id, IngestionStage.OCR.value),
+        ).fetchone()
+    assert (
+        coverage["pages_total"],
+        coverage["pages_empty"],
+        coverage["pages_ocr"],
+    ) == (52, 2, 0)
+    assert stage["status"] == IngestionStatus.SUCCEEDED.value
+    assert (
+        "warning:" in stage["error_message"]
+        and "unresolved pages 51, 52" in stage["error_message"]
+    )
+
+
+def test_ocr_batches_continue_after_failure_and_keep_rendered_page_ids(
+    monkeypatch,
+) -> None:
+    pages = ["", "", "", ""]
+    report = assess_pages(pages, min_page_chars=20, quality_floor=0.35)
+    extracted = ExtractedSource(
+        _join_pages(pages), _pdf_locators(pages), tuple(pages), report
+    )
+    source = orchestrator.SourceRow(uuid4(), uuid4(), "text/plain", "identity")
+    handlers = orchestrator.IngestionHandlers(
+        None, source, ocr_max_pages=4, ocr_scale=1, ocr_batch_pages=2
+    )
+    handlers.extracted = extracted
+    handlers.needs_ocr = True
+    calls = []
+
+    def render(*args, pages, **kwargs):
+        return [RasterizedPage(index, b"png") for index in pages]
+
+    def generate(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ProviderRequestRejectedError("batch rejected")
+        return GenerationResult(
+            "third page words clearly recognized\n---\n"
+            "fourth page words clearly recognized",
+            "test",
+            1,
+            1,
+        )
+
+    monkeypatch.setattr(extract, "rasterize_pages_with_ids", render)
+    monkeypatch.setattr(orchestrator.provider, "generate", generate)
+    with pytest.raises(StageWarning, match="unresolved pages 1, 2"):
+        handlers.ocr()
+    assert calls == [1, 1]
+    assert handlers.extracted.page_texts == (
+        "",
+        "",
+        "third page words clearly recognized",
+        "fourth page words clearly recognized",
+    )
+
+
+def test_missing_rendered_page_id_does_not_shift_ocr_text(monkeypatch) -> None:
+    pages = ["", "", ""]
+    extracted = ExtractedSource(
+        _join_pages(pages),
+        _pdf_locators(pages),
+        tuple(pages),
+        assess_pages(pages, min_page_chars=20, quality_floor=0.35),
+    )
+    source = orchestrator.SourceRow(uuid4(), uuid4(), "text/plain", "identity")
+    handlers = orchestrator.IngestionHandlers(
+        None, source, ocr_max_pages=3, ocr_scale=1, ocr_batch_pages=3
+    )
+    handlers.extracted = extracted
+    handlers.needs_ocr = True
+    monkeypatch.setattr(
+        extract,
+        "rasterize_pages_with_ids",
+        lambda *args, **kwargs: [RasterizedPage(0, b"a"), RasterizedPage(2, b"c")],
+    )
+    monkeypatch.setattr(
+        orchestrator.provider,
+        "generate",
+        lambda *args, **kwargs: GenerationResult(
+            "first rendered page recognized clearly\n---\n"
+            "third rendered page recognized clearly",
+            "test",
+            1,
+            1,
+        ),
+    )
+    with pytest.raises(StageWarning, match="unresolved pages 2"):
+        handlers.ocr()
+    assert handlers.extracted.page_texts == (
+        "first rendered page recognized clearly",
+        "",
+        "third rendered page recognized clearly",
+    )
+
+
+def test_ocr_retries_only_the_transient_failed_batch(monkeypatch) -> None:
+    pages = [""]
+    extracted = ExtractedSource(
+        "",
+        _pdf_locators(pages),
+        tuple(pages),
+        assess_pages(pages, min_page_chars=20, quality_floor=0.35),
+    )
+    source = orchestrator.SourceRow(uuid4(), uuid4(), "text/plain", "identity")
+    delays = []
+    handlers = orchestrator.IngestionHandlers(
+        None,
+        source,
+        ocr_max_pages=1,
+        ocr_scale=1,
+        ocr_batch_pages=1,
+        ocr_max_attempts=2,
+        retry_backoff_seconds=0.25,
+        sleeper=delays.append,
+    )
+    handlers.extracted = extracted
+    handlers.needs_ocr = True
+    monkeypatch.setattr(
+        extract,
+        "rasterize_pages_with_ids",
+        lambda *args, **kwargs: [RasterizedPage(0, b"png")],
+    )
+    calls = []
+
+    def generate(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise ProviderUnavailableError("could not reach provider endpoint")
+        return GenerationResult(
+            "A legible page transcript with sufficient words.", "test", 1, 1
+        )
+
+    monkeypatch.setattr(orchestrator.provider, "generate", generate)
+    handlers.ocr()
+    assert calls == [1, 1]
+    assert delays == [0.25]
+    assert handlers.extracted.page_texts == (
+        "A legible page transcript with sufficient words.",
+    )
+
+
 def test_worker_records_failures_without_zombies(course_id: UUID) -> None:
     stored = _upload(course_id, b"PK\x03\x04junk", mime_type="application/zip")
     attempted, succeeded = worker.process_batch(limit=10)
@@ -111,6 +308,38 @@ def test_worker_records_failures_without_zombies(course_id: UUID) -> None:
             (stored.source_id,),
         ).fetchone()["error_message"]
     assert "no text extraction handler" in message, "the user sees the real cause"
+
+
+def test_ocr_byte_budget_splits_requests_without_shifting_page_identity(
+    monkeypatch,
+) -> None:
+    handlers = orchestrator.IngestionHandlers(
+        None,
+        orchestrator.SourceRow(uuid4(), uuid4(), "application/pdf", "identity"),
+        ocr_max_pages=4,
+        ocr_scale=1,
+        ocr_max_request_image_bytes=150,
+    )
+    calls = []
+
+    def generate(*args, images, **kwargs):
+        calls.append(images)
+        return GenerationResult(f"Transcript {len(calls)}", "test", 1, 1)
+
+    monkeypatch.setattr(orchestrator.provider, "generate", generate)
+    recognized, failures = {}, []
+    handlers._recognize_batch(
+        [
+            RasterizedPage(2, b"one"),
+            RasterizedPage(7, b"two"),
+            RasterizedPage(9, b"x" * 100),
+        ],
+        recognized,
+        failures,
+    )
+    assert calls == [[b"one"], [b"two"]]
+    assert recognized == {2: "Transcript 1", 7: "Transcript 2"}
+    assert "page 10 exceeds" in failures[0]
 
 
 def test_worker_requeue_after_failure(course_id: UUID) -> None:

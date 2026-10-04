@@ -16,10 +16,10 @@ on ONNX Runtime. See `docs/project.md` for the product plan,
 `docs/plan-notebook.md` for the release plan and handoff (**start at its
 "Current handoff" section**). Read them before making structural decisions.
 
-> The seven working docs (this file, `project.md`, `system.md`, `notes.md`,
-> `plan-notebook.md`, `docket.md`, and `backlog.md`) all live in `docs/`.
-> `docket.md` holds active defects, acceptance gaps and tradeoff decisions;
-> `backlog.md` holds optional ideas and unconfirmed candidates. Older
+> The six working docs (this file, `project.md`, `system.md`, `notes.md`,
+> `plan-notebook.md`, and `docket.md`) all live in `docs/`.
+> `docket.md` is the only queue for outstanding defects, acceptance gaps,
+> review checks, feature work and tradeoff decisions. Older
 > decision records and plans were removed on 2026-09-25 and survive in git
 > history; code and docs that cite "decision 0NN", `docs/decisions/` or
 > `plan-local-first.md` refer to those (`git log --all -- <path>`).
@@ -125,8 +125,7 @@ docs/
   system.md      # architecture
   notes.md       # append-only decision log (never delete entries)
   plan-notebook.md # current release plan; start here
-  docket.md      # triaged bug/release ledger; verify candidates before acting
-  backlog.md     # optional capabilities and unconfirmed candidates
+  docket.md      # only outstanding-work queue; verify claims before acting
 ```
 
 Subsystem packages own their feature flows. Cross-cutting code
@@ -222,10 +221,11 @@ mechanical, prompt version is stamped into every run log under `runs/`.
 
 ## Documentation lifecycle
 
-- Keep the seven working docs listed above as the durable home. `system.md` owns
-  implemented behavior; `project.md` owns product scope; `docket.md` owns open
-  issues/decisions; `backlog.md` owns deferred ideas and unconfirmed candidates;
-  `plan-notebook.md` owns the current handoff and release gates.
+- Keep the six working docs listed above as the durable home. `system.md` owns
+  implemented behavior; `project.md` owns product scope; `docket.md` owns all
+  outstanding issues, review checks, feature work and decisions;
+  `plan-notebook.md` owns the current handoff and release gates. Do not create a
+  separate backlog or duplicate issue queue.
 - Temporary task plans/reviews are allowed while work is active. On completion,
   transfer only lasting contracts and remaining work into those existing docs,
   then delete the temporary file and fix current references. Do not leave a
@@ -233,6 +233,11 @@ mechanical, prompt version is stamped into every run log under `runs/`.
 - Completion requires the intended behavior and relevant evidence, not merely
   green tests. Native/semantic verification gaps remain open after implementation.
   Unverified review claims stay candidates until reproduced or cleared.
+- At the user's request (2026-10-04), retain every bug entry after implementation
+  and mark it **Fixed in code — awaiting verification** with the relevant evidence.
+  Do not delete the bug until the user confirms its retest. This overrides earlier
+  docket cleanup instructions; temporary duplicate narrative reviews can still be
+  consolidated when their findings and statuses remain in the docket.
 - Keep handoffs current rather than appending a new report for every pass.
   Existing dated notes are append-only historical records; append only concise
   consequential decisions/dispositions, not routine tool logs or repeated counts.

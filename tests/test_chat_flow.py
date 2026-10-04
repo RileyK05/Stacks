@@ -61,6 +61,28 @@ def _no_search(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(provider, "embed_query", embedded)
 
 
+def test_fence_echo_is_removed_from_rolling_chat_summary(monkeypatch):
+    from src.backend.common.prompt_registry import UNTRUSTED_END
+
+    saved = []
+    monkeypatch.setattr(
+        chat.provider,
+        "generate",
+        lambda *args, **kwargs: provider.GenerationResult(
+            f"Useful summary.\n\n{UNTRUSTED_END}", "fixture", 1, 1
+        ),
+    )
+    monkeypatch.setattr(
+        chat.conversations_repo,
+        "set_summary",
+        lambda conversation_id, summary, through: saved.append(summary),
+    )
+    chat.summarize(
+        uuid4(), uuid4(), chat.PendingSummary("", "A student asks about linearity.", 5)
+    )
+    assert saved == ["Useful summary."]
+
+
 # -- small talk ---------------------------------------------------------
 
 
@@ -386,11 +408,20 @@ def test_two_empty_replies_in_a_row_still_fail_and_record_nothing(
     assert opened["messages"] == [], "so the same question can simply be sent again"
 
 
-def test_an_answer_cut_off_at_the_output_limit_is_asked_for_again_briefly(
+def test_an_answer_cut_off_is_regenerated_with_same_scope_and_evidence(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     course_id = _course(client, "linearity means preserving addition and scaling.")
     configure_test_provider(monkeypatch, ANSWER)
+    from src.backend.common import model_profiles
+
+    monkeypatch.setattr(
+        model_profiles,
+        "profile_for",
+        lambda *_: model_profiles.ModelProfile(
+            model="test", max_output_tokens=2048, output_token_limit=8192
+        ),
+    )
     prompts: list[str] = []
 
     def cut_off(task, endpoint, prompt, *, images=None, response_schema=None):
@@ -403,7 +434,60 @@ def test_an_answer_cut_off_at_the_output_limit_is_asked_for_again_briefly(
     chat_id = _chat(client, course_id)
     turn = _send(client, course_id, chat_id, "What is linearity?")
     assert turn.status_code == 200, turn.text
-    assert "much more briefly" in prompts[1] and "much more briefly" not in prompts[0]
+    assert len(prompts) == 2 and prompts[1] == prompts[0]
+
+
+def test_exhausted_quiz_cutoffs_publish_no_chat_cache_artifact_or_practice(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.backend.common import model_profiles
+
+    course_id = _course(client, "linearity means preserving addition and scaling.")
+    configure_test_provider(monkeypatch, ANSWER)
+    monkeypatch.setattr(
+        model_profiles,
+        "profile_for",
+        lambda *_: model_profiles.ModelProfile(
+            model="test", max_output_tokens=2048, output_token_limit=8192
+        ),
+    )
+    limits = []
+
+    def cutoff(task, endpoint, prompt, **kwargs):
+        from src.backend.common import generation
+
+        limits.append(generation.output_allowance())
+        raise provider.ModelOutputTruncatedError(
+            "model hit its output limit", partial_text='{"item":{"questions":['
+        )
+
+    monkeypatch.setattr(provider, "_call_provider", cutoff)
+    chat_id = _chat(client, course_id)
+    response = _send(
+        client, course_id, chat_id, "Make a two-question quiz about linearity"
+    )
+    assert response.status_code == 503
+    assert "questions" not in response.json()["detail"]
+    assert limits[:2] == [2048, 4096]
+    assert 4096 < limits[2] < 8192, "the bundled context reserves prompt/schema space"
+    assert (
+        client.get(f"/courses/{course_id}/conversations/{chat_id}").json()["messages"]
+        == []
+    )
+    with connection() as conn:
+        for table in (
+            "answer_cache",
+            "artifacts",
+            "artifact_versions",
+            "practice_suites",
+            "practice_runs",
+        ):
+            assert (
+                conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()[
+                    "count"
+                ]
+                == 0
+            )
 
 
 def test_a_missing_embedding_model_degrades_to_keyword_search(

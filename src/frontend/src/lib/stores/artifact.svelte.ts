@@ -1,4 +1,6 @@
 import { api } from '$lib/api/client';
+import { deliverExport, requestArtifactExport } from '$lib/api/export';
+import { isTauri } from '@tauri-apps/api/core';
 import type { components } from '$lib/api/schema';
 import type { IconName } from '$lib/components/Icon.svelte';
 import {
@@ -147,12 +149,14 @@ export class OpenArtifact {
   private proposalBaseRevision: number | null = null;
   private recoveredFrom: ArtifactDraft | null = null;
   private pendingSave: DraftSaveIntent | null = null;
+  private flushAndDisposePromise: Promise<boolean> | null = null;
   private saveInFlight: Promise<boolean> | null = null;
   private persistenceQueue: Promise<void> = Promise.resolve();
   private destroyed = false;
   private deleting = false;
   private removed = false;
   versions = $state<VersionView[]>([]);
+  versionsError = $state<unknown>(null);
   private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(courseId: string, artifactId: string, private drafts: DraftStorage = artifactDraftStorage) {
@@ -292,6 +296,13 @@ export class OpenArtifact {
       if (!saved) return false;
     }
     return (await flushDirtyEdits(() => this.dirty, () => this.conflict, () => this.save())) && !this.saveError;
+  }
+
+  flushAndDispose(): Promise<boolean> {
+    if (this.flushAndDisposePromise) return this.flushAndDisposePromise;
+    const closing = this.flush().finally(() => this.dispose());
+    this.flushAndDisposePromise = closing;
+    return closing;
   }
 
   async save(options: { author?: 'you' | 'model'; note?: string; sources?: string[] } = {}): Promise<boolean> {
@@ -466,8 +477,11 @@ export class OpenArtifact {
         params: { path: this.path }
       });
       this.versions = data ?? [];
+      this.versionsError = null;
     } catch (caught) {
-      this.error = caught;
+      // A failed version fetch must not replace the working editor with an
+      // un-dismissable error; the artifact itself loaded fine.
+      this.versionsError = caught;
     }
   }
 
@@ -595,11 +609,15 @@ export class OpenArtifact {
     }
   }
 
-  async exportTo(format: string, path: string | null): Promise<{ path: string; filename: string }> {
+  async exportTo(format: string): Promise<{ path: string; filename: string } | null> {
     if (!(await this.flush())) throw new Error('Save your current edits before exporting.');
+    if (isTauri()) {
+      const file = await requestArtifactExport(this.courseId, this.artifactId, format);
+      return deliverExport(file);
+    }
     const { data, error } = await api.POST('/courses/{course_id}/artifacts/{artifact_id}/export', {
       params: { path: this.path },
-      body: { format, path }
+      body: { format, path: null }
     });
     if (error || !data) throw error ?? new Error('unexpected empty response');
     return data;

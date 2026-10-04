@@ -27,7 +27,13 @@ import { readExcelDocument } from './readers/excel.js';
 import { readPowerPointDocument } from './readers/powerpoint.js';
 import { LivePane } from './live-pane.js';
 
-const BRIDGE = resolveBridgeBase(window.location.search, window.location.origin);
+let BRIDGE = '';
+let bridgeConfigurationError = null;
+try {
+  BRIDGE = resolveBridgeBase(window.location.search, window.location.origin);
+} catch (error) {
+  bridgeConfigurationError = error;
+}
 const TOKEN = new URLSearchParams(window.location.search).get('token') || '';
 // Excel selections can be whole columns; the model reads the first cells.
 const MAX_ROWS = 100;
@@ -68,6 +74,7 @@ const livePane = new LivePane({
   read: readWorkingDocument,
   poll: (id, externalId) => pollLive(fetch, BRIDGE, id, externalId, TOKEN),
   complete: (id, request) => completeLive(fetch, BRIDGE, id, request, TOKEN),
+  disconnect: (id) => disconnectLive(fetch, BRIDGE, id, TOKEN),
   onSnapshot: (result, binding) => {
     try { localStorage.setItem(binding.storage_key, JSON.stringify({ session_id: binding.session_id, revision: result.revision })); } catch { }
   },
@@ -77,8 +84,7 @@ const livePane = new LivePane({
 function stopLive() {
   pollCycle++;
   clearTimeout(pollTimer);
-  const binding = livePane.stop();
-  if (binding) void disconnectLive(fetch, BRIDGE, binding.connection_id, TOKEN).catch(() => {});
+  livePane.stop();
 }
 
 async function pollConnection(cycle) {
@@ -95,7 +101,7 @@ async function readWorkingDocument(options) {
   try {
     result = await readers[host](options);
   } catch (error) {
-    if (error.code !== 'UNSUPPORTED_HOST' || host === 'excel' || !supports('CompressedFile', '1.1')) throw error;
+    if (!(error && error.code === 'UNSUPPORTED_HOST') || host === 'excel' || !supports('CompressedFile', '1.1')) throw error;
     const bytes = await wholePackage(Office.context.document);
     let binary = '';
     for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
@@ -362,6 +368,7 @@ function renderCitations(citations) {
 }
 
 async function ask(action) {
+  if (bridgeConfigurationError) return;
   const courseId = el.course.value;
   if (!courseId) {
     setStatus('Pick a course first.', 'error');
@@ -428,6 +435,11 @@ function remember(courseId) {
 }
 
 async function connect() {
+  if (bridgeConfigurationError) {
+    setStatus(bridgeConfigurationError.message, 'error');
+    el.retry.hidden = true;
+    return;
+  }
   setBusy(true);
   el.retry.hidden = true;
   setStatus('Connecting to Stacks…');
@@ -456,20 +468,23 @@ async function connect() {
 }
 
 async function connectWork() {
-  if (busy || !el.course.value) return;
+  if (bridgeConfigurationError || busy || !el.course.value) return;
   setBusy(true);
   setStatus('Reading the whole document for your companion…');
+  const course = el.course.value;
+  const changed = () => el.course.value !== course;
   try {
     stopLive();
     const policy = await livePolicy(fetch, BRIDGE, TOKEN);
+    if (changed()) { setStatus(''); return; }
     pollInterval = policy.poll_interval_ms;
     const externalId = identity();
-    const storageKey = `stacks.work:${el.course.value}:${externalId}`;
+    const storageKey = `stacks.work:${course}:${externalId}`;
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch { }
     if (saved?.session_id) {
       try {
-        const latest = await getWork(fetch, BRIDGE, el.course.value, saved.session_id, TOKEN);
+        const latest = await getWork(fetch, BRIDGE, course, saved.session_id, TOKEN);
         saved = latest.document?.origin === 'office' && latest.document.external_id === externalId
           ? { session_id: latest.session_id, revision: latest.revision } : null;
       } catch (error) {
@@ -477,11 +492,15 @@ async function connectWork() {
         saved = null;
       }
     }
-    const common = { course_id: el.course.value, purpose: el.workPurpose.value, session_id: saved?.session_id ?? null, expected_revision: saved?.revision ?? 0 };
+    if (changed()) { setStatus(''); return; }
+    const common = { course_id: course, purpose: el.workPurpose.value, session_id: saved?.session_id ?? null, expected_revision: saved?.revision ?? 0 };
     const document = await readWorkingDocument(policy.reader);
+    if (changed()) { setStatus(''); return; }
     const result = await publishDocument(fetch, BRIDGE, { ...common, document }, TOKEN);
+    if (changed()) { setStatus(''); return; }
     try { localStorage.setItem(storageKey, JSON.stringify({ session_id: result.session_id, revision: result.revision })); } catch { }
-    const connection = await registerLive(fetch, BRIDGE, { course_id: common.course_id, session_id: result.session_id, host, external_id: externalId }, TOKEN);
+    const connection = await registerLive(fetch, BRIDGE, { course_id: course, session_id: result.session_id, host, external_id: externalId }, TOKEN);
+    if (changed()) { setStatus(''); return; }
     livePane.bind({ connection_id: connection.connection_id, session_id: result.session_id, external_id: externalId, storage_key: storageKey });
     void pollConnection(pollCycle);
     setStatus(`Connected to the companion. Select “${result.title}” there; typing a message refreshes this document.`, 'ok');
@@ -524,6 +543,11 @@ Office.onReady(async (info) => {
     return;
   }
   document.body.dataset.host = host;
+  if (bridgeConfigurationError) {
+    setStatus(bridgeConfigurationError.message, 'error');
+    el.retry.hidden = true;
+    return;
+  }
   wire();
   await connect();
   await refreshSelection();

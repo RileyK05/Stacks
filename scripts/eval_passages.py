@@ -28,11 +28,15 @@ def main() -> int:
         "--output", type=Path, default=Path("runs/rag-rebuild/passage-evaluation.json")
     )
     args = parser.parse_args()
+    cases = json.loads(args.cases.read_text(encoding="utf-8"))
+    try:
+        _validate_cases(cases)
+    except ValueError as err:
+        parser.error(str(err))
     embedding = load_embedding_policy()
     spec = EMBEDDING_SPECS[embedding.model]
     if not all((encoder_dir(spec) / file.path).is_file() for file in spec.files):
         parser.error("the configured encoder must already be installed")
-    cases = json.loads(args.cases.read_text(encoding="utf-8"))
     budget = cases["budget_tokens"]
     policy = load_policy()
     reports = []
@@ -47,6 +51,7 @@ def main() -> int:
                 encode=provider.embed_chunks,
                 token_count=provider.embedding_token_count,
             )
+            segmentation_seconds = time.perf_counter() - started
             spans = [
                 (p.start + a, p.start + b)
                 for p in segmented.passages
@@ -57,9 +62,13 @@ def main() -> int:
                     token_count=provider.embedding_token_count,
                 )
             ]
+            if not spans:
+                raise ValueError(
+                    f"{document['id']}: segmentation produced no searchable spans"
+                )
             vectors = np.asarray(provider.embed_chunks([text[a:b] for a, b in spans]))
             for case, query in zip(document["checks"], queries, strict=True):
-                start = text.index(case["evidence"])
+                start = case.get("evidence_start", text.index(case["evidence"]))
                 end = start + len(case["evidence"])
                 a, b = spans[int(np.argmax(vectors @ np.asarray(query)))]
                 overlap = max(0, min(end, b) - max(start, a))
@@ -75,7 +84,7 @@ def main() -> int:
                         "relevant_fraction": overlap / (b - a),
                         "tokens": provider.embedding_token_count(text[a:b]),
                         "span": [a, b],
-                        "segmentation_seconds": time.perf_counter() - started,
+                        "segmentation_seconds": segmentation_seconds,
                     }
                 )
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -102,6 +111,42 @@ def main() -> int:
         )
     print(f"Report: {args.output}")
     return 0
+
+
+def _validate_cases(cases: dict) -> None:
+    documents = cases.get("documents")
+    if not isinstance(documents, list) or not documents:
+        raise ValueError("passage evaluation needs at least one document")
+    for document in documents:
+        identity = document.get("id", "unnamed document")
+        text = document.get("text")
+        checks = document.get("checks")
+        if (
+            not isinstance(text, str)
+            or not text
+            or not isinstance(checks, list)
+            or not checks
+        ):
+            raise ValueError(f"{identity}: supply nonempty text and evidence checks")
+        for case in checks:
+            evidence = case.get("evidence")
+            if not isinstance(evidence, str) or not evidence or evidence not in text:
+                raise ValueError(
+                    f"{identity}: evidence is empty or absent from the document"
+                )
+            start = case.get("evidence_start")
+            if start is None and text.count(evidence) > 1:
+                raise ValueError(
+                    f"{identity}: repeated evidence requires evidence_start"
+                )
+            if start is not None and (
+                not isinstance(start, int)
+                or start < 0
+                or text[start : start + len(evidence)] != evidence
+            ):
+                raise ValueError(
+                    f"{identity}: evidence_start does not identify the evidence"
+                )
 
 
 if __name__ == "__main__":

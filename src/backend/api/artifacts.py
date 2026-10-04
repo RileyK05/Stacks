@@ -15,9 +15,11 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import Response
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -172,8 +174,12 @@ class ExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     format: str = Field(min_length=1, max_length=8)
-    # A path chosen in the app's save dialog; otherwise the export folder.
+    # Legacy clients may send null. Native destinations belong to the shell.
     path: str | None = Field(default=None, max_length=2000)
+
+
+class MessageExportRequest(FromMessage):
+    format: str = Field(min_length=1, max_length=8)
 
 
 class ExportView(BaseModel):
@@ -278,23 +284,9 @@ def save_from_message(course_id: UUID, payload: FromMessage) -> ArtifactView:
     Kind, title, and citation numbering come from the stored message. Only
     an editable item's content may be replaced by the student's draft.
     """
-    require_course(course_id)
-    message = conversations_repo.message_in_course(course_id, payload.message_id)
-    if message is None or message.role != "assistant":
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found")
-    items = message.payload.get("workspace") or []
-    if payload.item_index >= len(items):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "that answer has no such item")
-    try:
-        item = _WORKSPACE_ITEM.validate_python(items[payload.item_index])
-        kind, title, original, item_sources = artifact_content.from_workspace_item(item)
-        _, _, raw, _ = artifact_content.from_workspace_item(item, draft=payload.draft)
-        edited = raw != original
-        numbered = [UUID(str(value)) for value in message.payload.get("chunk_ids", [])]
-        compacted, sources = artifact_content.compact(raw, numbered, also=item_sources)
-    except (ValidationError, UnknownCitationError, ValueError) as err:
-        raise _unprocessable(f"that item can't be saved: {err}") from err
-    content = _checked(course_id, kind, compacted, sources)
+    message, kind, title, content, sources, edited = _message_content(
+        course_id, payload
+    )
     try:
         created = artifacts_repo.adopt_message_item(
             course_id,
@@ -318,6 +310,41 @@ def save_from_message(course_id: UUID, payload: FromMessage) -> ArtifactView:
     except LookupError as err:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(err)) from err
     return _view(created)
+
+
+def _message_content(
+    course_id: UUID, payload: FromMessage
+) -> tuple[conversations_repo.Message, str, str, dict[str, Any], list[UUID], bool]:
+    require_course(course_id)
+    message = conversations_repo.message_in_course(course_id, payload.message_id)
+    if message is None or message.role != "assistant":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found")
+    items = message.payload.get("workspace") or []
+    if not isinstance(items, list) or payload.item_index >= len(items):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "that answer has no such item")
+    try:
+        item = _WORKSPACE_ITEM.validate_python(items[payload.item_index])
+        kind, title, original, item_sources = artifact_content.from_workspace_item(item)
+        _, _, raw, _ = artifact_content.from_workspace_item(item, draft=payload.draft)
+        edited = raw != original
+        numbered = [
+            UUID(str(value))
+            for value in message.payload.get(
+                "material_chunk_ids", message.payload.get("chunk_ids", [])
+            )
+        ]
+        compacted, sources = artifact_content.compact(raw, numbered, also=item_sources)
+    except (ValidationError, UnknownCitationError, ValueError) as err:
+        raise _unprocessable(f"that item can't be saved: {err}") from err
+    content = _checked(course_id, kind, compacted, sources)
+    return message, kind, title, content, sources, edited
+
+
+@router.post("/export-from-message", response_class=Response)
+def export_from_message(course_id: UUID, payload: MessageExportRequest) -> Response:
+    _, kind, title, content, sources, _ = _message_content(course_id, payload)
+    data, filename = _render_export(kind, payload.format, title, content, sources)
+    return _download(data, filename)
 
 
 @router.get("/{artifact_id}", response_model=ArtifactView)
@@ -550,41 +577,86 @@ def export_artifact(
     course_id: UUID, artifact_id: UUID, payload: ExportRequest
 ) -> ExportView:
     artifact = _require_artifact(course_id, artifact_id)
-    fmt = payload.format.lower().lstrip(".")
-    if fmt not in artifact_export.FORMATS.get(artifact.kind, ()):
-        raise _unprocessable(f"a {artifact.kind} can't be exported as .{fmt}")
-    extension = artifact_export.extension_for(artifact.kind, fmt, artifact.content)
-    if payload.path:
-        target = Path(payload.path)
-        if target.suffix.lower() != f".{extension}":
-            target = target.with_name(f"{target.name}.{extension}")
-        if not target.parent.is_dir():
-            raise _unprocessable("that folder doesn't exist")
-    else:
+    if payload.path is not None:
+        raise _unprocessable("Choose the destination in the desktop Save dialog.")
+    data, filename = _render_export(
+        artifact.kind,
+        payload.format,
+        artifact.title,
+        artifact.content,
+        artifact.sources,
+    )
+    try:
         directory = Path(get_settings().export_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        target = artifact_export.unique_path(
-            directory, artifact_export.safe_stem(artifact.title), extension
-        )
+        stem, extension = filename.rsplit(".", 1)
+        # Reserve the chosen name exclusively; another export cannot overwrite it.
+        while True:
+            target = artifact_export.unique_path(directory, stem, extension)
+            try:
+                output = target.open("xb")
+                break
+            except FileExistsError:
+                continue
+        try:
+            with output:
+                output.write(data)
+        except OSError:
+            target.unlink(missing_ok=True)
+            raise
+    except OSError as err:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"couldn't write the export: {err.strerror or err}. "
+            "Close it in any other program, or pick another name.",
+        ) from err
+    return ExportView(path=str(target), filename=target.name)
+
+
+@router.post("/{artifact_id}/download", response_class=Response)
+def download_artifact(
+    course_id: UUID, artifact_id: UUID, payload: ExportRequest
+) -> Response:
+    artifact = _require_artifact(course_id, artifact_id)
+    if payload.path is not None:
+        raise _unprocessable("Choose the destination in the desktop Save dialog.")
+    data, filename = _render_export(
+        artifact.kind,
+        payload.format,
+        artifact.title,
+        artifact.content,
+        artifact.sources,
+    )
+    return _download(data, filename)
+
+
+def _render_export(
+    kind: str,
+    fmt: str,
+    title: str,
+    content: dict[str, Any],
+    sources: list[UUID] | tuple[UUID, ...],
+) -> tuple[bytes, str]:
+    fmt = fmt.lower().lstrip(".")
+    if fmt not in artifact_export.FORMATS.get(kind, ()):
+        raise _unprocessable(f"a {kind} can't be exported as .{fmt}")
+    extension = artifact_export.extension_for(kind, fmt, content)
+    filename = f"{artifact_export.safe_stem(title)}.{extension}"
     labels = [
         artifact_export.SourceLabel(
             number=view.number,
             filename=view.citation.filename if view.citation else "(removed source)",
             label=view.citation.label if view.citation else "",
         )
-        for view in _citations(artifact.sources)
+        for view in _citations(tuple(sources))
     ]
-    data = artifact_export.render(
-        artifact.kind, fmt, artifact.title, artifact.content, labels
+    return artifact_export.render(kind, fmt, title, content, labels), filename
+
+
+def _download(data: bytes, filename: str) -> Response:
+    encoded = quote(filename, safe="")
+    return Response(
+        data,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded}"},
     )
-    try:
-        target.write_bytes(data)
-    except OSError as err:
-        # Overwriting a file that is open in Word or Excel is a
-        # PermissionError on Windows; without this the user got a bare 500.
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"couldn't write {target.name}: {err.strerror or err}. "
-            "Close it in any other program, or pick another name.",
-        ) from err
-    return ExportView(path=str(target), filename=target.name)

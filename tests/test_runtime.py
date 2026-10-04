@@ -163,6 +163,34 @@ def test_download_rejects_a_checksum_mismatch(
     assert not (tmp_path / "m.gguf.part").exists(), "a bad file never lingers"
 
 
+def test_download_retries_from_scratch_when_the_resume_range_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = b"gguf-model-bytes-0123456789"
+    dest = tmp_path / "m.gguf"
+    (tmp_path / "m.gguf.part").write_bytes(payload[:10])  # stale partial
+    requests: list[dict] = []
+
+    def fake_stream(method, url, headers=None, **kwargs):
+        requests.append(dict(headers or {}))
+        if headers:
+            # The stored asset changed: the server can no longer serve our
+            # offset, so it answers 416. A stale .part used to fail forever.
+            return _FakeStream(416, b"")
+        return _FakeStream(200, payload)
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    downloads.download_verified(
+        "http://x/m.gguf",
+        dest,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size_bytes=len(payload),
+    )
+    assert dest.read_bytes() == payload
+    assert requests == [{"Range": "bytes=10-"}, {}], "reset once, then full GET"
+    assert not (tmp_path / "m.gguf.part").exists()
+
+
 # --- model lookup -----------------------------------------------------------
 
 
@@ -174,6 +202,29 @@ def test_locate_prefers_the_apps_own_copy() -> None:
     own.parent.mkdir(parents=True, exist_ok=True)
     own.write_bytes(payload)
     assert model_store.locate(model, verify=False) == (own, "app")
+
+
+def test_delete_model_check_and_removal_are_atomic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A concurrent start_download must never slip between the "no active
+    # download" guard and the unlink: the state pop happens under the lock.
+    payload = b"delete-me"
+    model = _model(payload)
+    own = model_store.owned_path(model)
+    own.parent.mkdir(parents=True, exist_ok=True)
+    own.write_bytes(payload)
+    observed: dict[str, bool] = {}
+
+    class _RecordingDict(dict):
+        def pop(self, *args: Any, **kwargs: Any) -> Any:
+            observed["pop_locked"] = model_store._lock.locked()
+            return super().pop(*args, **kwargs)
+
+    monkeypatch.setattr(model_store, "_downloads", _RecordingDict())
+    assert model_store.delete_model(model) is True
+    assert not own.exists()
+    assert observed["pop_locked"] is True
 
 
 def test_external_copy_is_verified_once_then_remembered(
@@ -296,6 +347,55 @@ def test_start_refuses_a_model_that_is_not_downloaded(
     manager._job = None
     with pytest.raises(server.RuntimeUnavailableError, match="not downloaded"):
         manager.start("minicpm5-2b")
+
+
+def test_unexpected_prelaunch_failure_does_not_strand_starting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A busy settings DB / unavailable hardware probe before the launch loop
+    # used to escape with state still "starting", which the supervisor never
+    # recovers. It must surface as a failed, reported state instead.
+    commands = _fake_launch(monkeypatch, tmp_path, {"windows-x64-vulkan": None})
+    real_get = server.settings_repo.get_setting
+
+    def flaky_setting(key: str) -> Any:
+        if key == server.BACKEND_SETTING:
+            raise RuntimeError("database is locked")
+        return real_get(key)
+
+    monkeypatch.setattr(server.settings_repo, "get_setting", flaky_setting)
+    manager = server.LlamaServer()
+    manager._job = None
+    with pytest.raises(server.RuntimeUnavailableError, match="database is locked"):
+        manager.start("minicpm5-2b")
+    status = manager.status()
+    assert status.state == "failed"
+    assert status.error == "database is locked"
+    assert commands == []
+
+
+def test_launch_survives_an_unkillable_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # _stop_locked is called from the launch error handler; if waiting after
+    # kill() times out it must not raise and re-strand the state machine.
+    manager = server.LlamaServer()
+    manager._job = None
+
+    class _StuckProcess(_FakeProcess):
+        def terminate(self) -> None:
+            pass
+
+        def wait(self, timeout: float | None = None) -> int:
+            raise subprocess.TimeoutExpired("llama-server", timeout or 0)
+
+        def kill(self) -> None:
+            pass
+
+    manager._process = _StuckProcess(None)  # type: ignore[assignment]
+    manager._state = "starting"
+    manager._stop_locked()
+    assert manager.status().state == "stopped"
 
 
 # --- generation seam + API --------------------------------------------------

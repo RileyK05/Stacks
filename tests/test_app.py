@@ -143,4 +143,5 @@ def test_the_webview_can_read_the_pdf_page_count_header() -> None:
 
     client = TestClient(create_app())
     response = client.get("/api/health", headers={"Origin": "http://tauri.localhost"})
-    assert response.headers["access-control-expose-headers"] == "X-Page-Count"
+    exposed = set(response.headers["access-control-expose-headers"].split(", "))
+    assert exposed == {"X-Page-Count", "Content-Disposition"}

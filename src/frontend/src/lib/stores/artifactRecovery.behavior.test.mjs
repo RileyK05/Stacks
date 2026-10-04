@@ -147,3 +147,30 @@ test('removal waits for an active save and blocks late edits from sending anothe
   assert.equal(fetchCalls.filter((call) => call.method === 'DELETE').length, 1);
   open.dispose();
 });
+
+test('route close flushes dirty edits once before disposing the store', async () => {
+  const storage = new MemoryDrafts();
+  let putCount = 0;
+  respond = async (request) => {
+    const path = new URL(request.url).pathname;
+    if (request.method === 'GET' && artifactPath(request)) return jsonResponse(artifactView());
+    if (request.method === 'GET' && path.endsWith('/citations')) return jsonResponse([]);
+    if (request.method === 'PUT') {
+      putCount += 1;
+      const body = await request.json();
+      return jsonResponse(artifactView(2, body.content));
+    }
+    return jsonResponse({ detail: 'unexpected request' }, 404);
+  };
+
+  const open = new OpenArtifact('course-1', 'artifact-1', storage);
+  await open.load();
+  open.content.markdown = 'saved as the route closes';
+  open.touch();
+  const closing = open.flushAndDispose();
+  assert.equal(open.flushAndDispose(), closing);
+  assert.equal(await closing, true);
+  assert.equal(putCount, 1);
+  assert.equal(open.dirty, false);
+  assert.equal(await open.save(), false);
+});

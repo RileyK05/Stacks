@@ -1,4 +1,8 @@
 import pytest
+from src.backend.common.provider import (
+    ProviderRateLimitedError,
+    ProviderUnavailableError,
+)
 from src.backend.common.schemas.base import IngestionStage, IngestionStatus
 from src.backend.ingest.pipeline import (
     PIPELINE_STAGES,
@@ -29,11 +33,13 @@ def test_pipeline_retries_failed_stage_then_continues() -> None:
         attempts += 1
         calls.append(IngestionStage.EXTRACT_TEXT)
         if attempts == 1:
-            raise RuntimeError("temporary parser failure")
+            raise ProviderUnavailableError("provider did not answer in time")
 
     handlers[IngestionStage.EXTRACT_TEXT] = flaky_extract
-    result = execute_pipeline(handlers, max_attempts=2)
+    delays = []
+    result = execute_pipeline(handlers, max_attempts=2, sleeper=delays.append)
     assert attempts == 2
+    assert delays == [0.5]
     assert result.stages[0].attempts == 2
     assert calls[:2] == [IngestionStage.EXTRACT_TEXT, IngestionStage.EXTRACT_TEXT]
 
@@ -44,7 +50,7 @@ def test_pipeline_stops_after_second_failure() -> None:
 
     def broken_extract() -> None:
         calls.append(IngestionStage.EXTRACT_TEXT)
-        raise RuntimeError("parser unavailable")
+        raise ProviderUnavailableError("could not reach provider endpoint")
 
     handlers[IngestionStage.EXTRACT_TEXT] = broken_extract
     transitions = []
@@ -73,7 +79,7 @@ def test_failed_attempt_is_rolled_back_recorded_and_retried() -> None:
         attempts["extract"] += 1
         calls.append(IngestionStage.EXTRACT_TEXT)
         if attempts["extract"] == 1:
-            raise RuntimeError("temporary parser failure")
+            raise ProviderUnavailableError("provider did not answer in time")
 
     events: list[str] = []
 
@@ -126,3 +132,78 @@ def test_skipped_stage_is_recorded_as_succeeded_with_reason() -> None:
         IngestionStatus.SUCCEEDED,
         "skipped: no table of contents yet",
     ) in recorded
+
+
+def test_deterministic_failure_is_not_retried() -> None:
+    calls = []
+    handlers = _handlers(calls)
+
+    def invalid_source() -> None:
+        calls.append(IngestionStage.EXTRACT_TEXT)
+        raise ValueError("invalid source format")
+
+    handlers[IngestionStage.EXTRACT_TEXT] = invalid_source
+    with pytest.raises(IngestionPipelineError) as caught:
+        execute_pipeline(handlers, max_attempts=3, sleeper=lambda _: pytest.fail())
+    assert caught.value.attempts == 1
+    assert calls == [IngestionStage.EXTRACT_TEXT]
+
+
+def test_unreadable_provider_reply_is_not_retried() -> None:
+    calls = []
+    handlers = _handlers(calls)
+
+    def unreadable_reply() -> None:
+        calls.append(IngestionStage.EXTRACT_TEXT)
+        raise ProviderUnavailableError("provider sent a reply Stacks could not read")
+
+    handlers[IngestionStage.EXTRACT_TEXT] = unreadable_reply
+    with pytest.raises(IngestionPipelineError) as caught:
+        execute_pipeline(handlers, max_attempts=3, sleeper=lambda _: pytest.fail())
+    assert caught.value.attempts == 1
+    assert calls == [IngestionStage.EXTRACT_TEXT]
+
+
+def test_rate_limit_is_retried_with_configured_backoff() -> None:
+    calls = []
+    handlers = _handlers(calls)
+    attempts = 0
+
+    def rate_limited_once() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ProviderRateLimitedError("rate limited")
+
+    handlers[IngestionStage.OCR] = rate_limited_once
+    delays = []
+    execute_pipeline(
+        handlers,
+        max_attempts=2,
+        retry_backoff_seconds=0.25,
+        sleeper=delays.append,
+    )
+    assert attempts == 2
+    assert delays == [0.25]
+
+
+def test_stage_warning_records_success_with_warning_without_retry() -> None:
+    from src.backend.ingest.pipeline import StageWarning
+
+    calls = []
+    handlers = _handlers(calls)
+    handlers[IngestionStage.OCR] = lambda: (_ for _ in ()).throw(
+        StageWarning("pages 3 and 4 remain unread")
+    )
+    transitions = []
+    execute_pipeline(
+        handlers,
+        max_attempts=3,
+        observe=lambda *transition: transitions.append(transition),
+    )
+    warning_transition = [
+        transition for transition in transitions if transition[0] == IngestionStage.OCR
+    ][-1]
+    assert warning_transition[1] == 1
+    assert warning_transition[2] == IngestionStatus.SUCCEEDED
+    assert warning_transition[3] == "warning: pages 3 and 4 remain unread"

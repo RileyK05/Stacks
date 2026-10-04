@@ -17,10 +17,11 @@ function deferred() {
 
 function harness(overrides = {}) {
   let externalId = bindingA.external_id;
-  const calls = { read: [], poll: [], complete: [], snapshots: [], lost: [] };
+  const calls = { read: [], poll: [], complete: [], disconnect: [], snapshots: [], lost: [] };
   const read = overrides.read ?? (async () => ({ text: "current document", coverage: "document", warnings: [] }));
   const poll = overrides.poll ?? (async () => ({ command: null }));
   const complete = overrides.complete ?? (async () => ({ status: "complete", revision: 3 }));
+  const disconnect = overrides.disconnect ?? (async () => {});
   const pane = new LivePane({
     identity: () => externalId,
     read: async (policy) => {
@@ -34,6 +35,10 @@ function harness(overrides = {}) {
     complete: async (...args) => {
       calls.complete.push(args);
       return complete(...args);
+    },
+    disconnect: async (...args) => {
+      calls.disconnect.push(args);
+      return disconnect(...args);
     },
     onSnapshot: (...args) => calls.snapshots.push(args),
     onLost: (...args) => calls.lost.push(args),
@@ -203,6 +208,39 @@ test("a poll network failure loses the binding", async () => {
   assert.equal(calls.lost[0][0].message, "Bridge offline");
   assert.equal(calls.lost[0][1], true);
   assert.deepEqual(calls.read, []);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.disconnect, [[bindingA.connection_id]]);
+});
+
+test("manual stop and a late poll failure disconnect the old binding only once", async () => {
+  const pollGate = deferred();
+  const pollStarted = deferred();
+  const { pane, calls } = harness({
+    poll: async () => { pollStarted.resolve(); return pollGate.promise; },
+    disconnect: async () => { throw new Error("Bridge disconnected during cleanup"); },
+  });
+  const ticking = pane.tick();
+  await pollStarted.promise;
+  pane.stop();
+  pane.bind(bindingB);
+  await new Promise((resolve) => setImmediate(resolve));
+  pollGate.reject(new Error("Poll failed after stop"));
+  await ticking;
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(calls.disconnect, [[bindingA.connection_id]]);
+  assert.equal(pane.binding, bindingB);
+  assert.deepEqual(calls.lost, []);
+});
+
+test("a same-connection rebind cancels pending cleanup instead of deleting its fresh owner", async () => {
+  const freshBinding = { ...bindingA, external_id: "document-b" };
+  const { pane, calls } = harness();
+  pane.stop();
+  pane.bind(freshBinding);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.disconnect, []);
+  assert.equal(pane.binding, freshBinding);
 });
 
 test("onSnapshot only receives successful completion for the current binding", async () => {

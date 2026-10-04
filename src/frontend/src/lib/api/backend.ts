@@ -22,23 +22,40 @@ interface BackendInfo {
 let origin = '';
 let token: string | null = null;
 let connecting: Promise<void> | null = null;
+let generation = 0;
+
+function useBackend(info: BackendInfo): void {
+  origin = info.url;
+  token = info.token;
+  generation += 1;
+}
+
+function clearBackend(): void {
+  origin = '';
+  token = null;
+  connecting = null;
+  generation += 1;
+}
 
 /** Resolves once the backend answers. Safe to call repeatedly; a failed
  * attempt is forgotten so the next call tries again. */
 export function connectBackend(): Promise<void> {
+  const startedGeneration = generation;
   connecting ??= (async () => {
     if (!isTauri()) return;
     const info = await invoke<BackendInfo>('backend_info');
-    origin = info.url;
-    token = info.token;
+    if (generation !== startedGeneration) throw new Error('The backend changed while connecting. Try again.');
+    useBackend(info);
   })().catch((error: unknown) => {
-    connecting = null;
+    if (generation === startedGeneration) connecting = null;
     throw new Error(typeof error === 'string' ? error : String(error));
   });
   return connecting;
 }
 
 export function apiBase(): string {
+  if (!isTauri()) return '/api';
+  if (!origin) return '';
   return `${origin}/api`;
 }
 
@@ -46,10 +63,25 @@ export function appToken(): string | null {
   return token;
 }
 
+export function backendGeneration(): number {
+  return generation;
+}
+
+export function backendConnected(): boolean {
+  return !isTauri() || Boolean(origin);
+}
+
 interface ActivationOutcome {
   ok: boolean;
   message: string;
   backend: BackendInfo | null;
+}
+
+export async function restartBackend(): Promise<void> {
+  if (!isTauri()) throw new Error('Restart is only available in the desktop app.');
+  clearBackend();
+  const info = await invoke<BackendInfo>('restart_backend');
+  useBackend(info);
 }
 
 /** Activate a recovered backup (B-14). The shell stops the backend, runs
@@ -60,12 +92,25 @@ export async function activateBackup(
   backupId: string
 ): Promise<ActivationOutcome> {
   if (!isTauri()) throw new Error('Activation is only available in the desktop app.');
-  const outcome = await invoke<ActivationOutcome>('activate_backup', {
-    backupId,
-  });
-  origin = '';
-  token = null;
-  connecting = null;
-  if (outcome.ok) await connectBackend();
-  return outcome;
+  clearBackend();
+  let outcome: ActivationOutcome | null = null;
+  let activationError: unknown = null;
+  try {
+    outcome = await invoke<ActivationOutcome>('activate_backup', { backupId });
+  } catch (error) {
+    activationError = error;
+  }
+  try {
+    if (outcome?.backend) useBackend(outcome.backend);
+    else await connectBackend();
+  } catch (reconnectError) {
+    const reconnectMessage = reconnectError instanceof Error ? reconnectError.message : String(reconnectError);
+    const activationMessage = activationError instanceof Error ? activationError.message :
+      activationError === null ? outcome?.message ?? 'Backup activation failed.' : String(activationError);
+    throw new Error(`${activationMessage} Reconnecting to the backend also failed: ${reconnectMessage}`);
+  }
+  if (activationError !== null) {
+    throw new Error(activationError instanceof Error ? activationError.message : String(activationError));
+  }
+  return outcome!;
 }

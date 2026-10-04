@@ -6,6 +6,7 @@
   import { isTauri } from '@tauri-apps/api/core';
   import { openUrl } from '@tauri-apps/plugin-opener';
   import { onMount } from 'svelte';
+  import { restartBackend } from '$lib/api/backend';
   import Button from '$lib/components/Button.svelte';
   import ConfirmHost from '$lib/components/ConfirmHost.svelte';
   import DebugHost from '$lib/components/DebugHost.svelte';
@@ -15,6 +16,21 @@
   import '../app.css';
 
   let { data, children } = $props();
+  let retrying = $state(false);
+  let retryError = $state('');
+
+  async function retryBackend() {
+    if (retrying) return;
+    retrying = true;
+    retryError = '';
+    try {
+      if (isTauri()) await restartBackend();
+      location.reload();
+    } catch (error) {
+      retryError = error instanceof Error ? error.message : String(error);
+      retrying = false;
+    }
+  }
 
   onMount(() => {
     document.getElementById('boot-splash')?.remove();
@@ -43,11 +59,12 @@
       <h1 class="font-display text-2xl font-semibold text-fg">Stacks couldn't start</h1>
       <p class="mt-3 text-sm text-muted">{data.backendError}</p>
       <p class="mt-3 text-sm text-muted">
-        Quit Stacks and open it again. If this keeps happening, the log file says why.
+        Try starting the backend again. If this keeps happening, the log file says why.
       </p>
       <div class="mt-6 flex justify-center">
-        <Button onclick={() => location.reload()}>Try again</Button>
+        <Button disabled={retrying} onclick={retryBackend}>{retrying ? 'Starting…' : 'Try again'}</Button>
       </div>
+      {#if retryError}<p class="mt-3 text-sm text-danger-text">{retryError}</p>{/if}
     </div>
   </main>
 {:else}

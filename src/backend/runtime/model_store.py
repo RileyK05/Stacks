@@ -185,8 +185,8 @@ def start_download(model_id: str) -> DownloadState:
 def cancel_download(model_id: str) -> None:
     with _lock:
         state = _downloads.get(model_id)
-    if state is not None:
-        state.cancel.set()
+        if state is not None:
+            state.cancel.set()
 
 
 def _run_download(model: CatalogModel, state: DownloadState) -> None:
@@ -222,13 +222,16 @@ def delete_model(model: CatalogModel) -> bool:
     paths = [own, own.with_name(own.name + ".part")]
     if legacy.is_file() and sha256_of(legacy) == model.sha256:
         paths.append(legacy)
+    # Hold the lock across the check and the deletion so a concurrent
+    # start_download cannot slip a fresh DownloadState (and writes) in
+    # between the guard and the unlink.
     with _lock:
         state = _downloads.get(model.id)
         if state is not None and state.status in ("downloading", "verifying"):
             raise ValueError("Cancel the download before removing this model.")
         _downloads.pop(model.id, None)
-    for path in paths:
-        if path.exists():
-            path.unlink()
-            removed = True
+        for path in paths:
+            if path.exists():
+                path.unlink()
+                removed = True
     return removed

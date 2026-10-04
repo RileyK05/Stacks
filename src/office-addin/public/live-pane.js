@@ -1,27 +1,49 @@
 /** Commands poll for presence; only an explicit refresh reads the document. */
 export class LivePane {
-  constructor({ identity, read, poll, complete, onSnapshot, onLost }) {
+  constructor({ identity, read, poll, complete, disconnect = async (_connectionId) => {}, onSnapshot, onLost }) {
     this.identity = identity;
     this.read = read;
     this.poll = poll;
     this.complete = complete;
+    this.disconnect = disconnect;
     this.onSnapshot = onSnapshot;
     this.onLost = onLost;
     this.binding = null;
     this.generation = 0;
     this.inFlight = false;
+    this.disconnecting = new WeakMap();
+    this.disconnected = new WeakSet();
   }
 
   bind(binding) {
+    const previous = this.binding;
     this.generation++;
     this.binding = binding;
+    if (previous && previous.connection_id !== binding.connection_id) this.disconnectOnce(previous);
   }
 
   stop() {
     const binding = this.binding;
     this.generation++;
     this.binding = null;
+    if (binding) this.disconnectOnce(binding);
     return binding;
+  }
+
+  disconnectOnce(binding) {
+    const id = binding.connection_id;
+    if (this.disconnected.has(binding) || this.disconnecting.has(binding)) return;
+    const marker = {};
+    this.disconnecting.set(binding, marker);
+    void Promise.resolve().then(() => {
+      // A fast rebind may have adopted the same server connection while its
+      // former local owner was closing. In that case it is still live.
+      if (this.binding?.connection_id === id) return;
+      this.disconnected.add(binding);
+      return this.disconnect(id);
+    }).catch(() => {}).finally(() => {
+      if (this.disconnecting.get(binding) === marker) this.disconnecting.delete(binding);
+    });
   }
 
   async tick() {

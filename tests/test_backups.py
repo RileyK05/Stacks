@@ -233,7 +233,8 @@ def _seed_data() -> tuple[str, str, bytes]:
             ),
         )
         conn.execute(
-            "INSERT INTO usage_ledger(ledger_id,task,provider,model) VALUES(?,?,?,?)",
+            "INSERT INTO usage_ledger(ledger_id,task,provider,model,usage_reported) "
+            "VALUES(?,?,?,?,0)",
             (str(uuid4()), "answer", "local", "local-model"),
         )
         conn.execute(
@@ -372,6 +373,9 @@ def test_tiers_preserve_actual_data_and_restore_exact_sources(
         assert origin["model"] == "local-model"
         if tier == "full":
             assert json.loads(saved_settings["learning.preferred_method"]) == "visual"
+            assert (
+                db.execute("SELECT usage_reported FROM usage_ledger").fetchone()[0] == 0
+            )
             assert (
                 db.execute("SELECT text FROM messages").fetchone()[0]
                 == "hidden chat text"

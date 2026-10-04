@@ -1,6 +1,6 @@
 # System design
 
-Updated 2026-10-03. This document describes the current local-first desktop
+Updated 2026-10-04. This document describes the current local-first desktop
 system. Hosted accounts, Postgres, enrollment, tiers, and shared courses were
 retired and remain only in git history.
 
@@ -219,6 +219,15 @@ attempt, quizzes up to two. Placeholder output is withheld. Python artifacts
 are compiled for syntax without execution. These gates do not prove factual
 or functional correctness; independently reviewed acceptance remains B-06.
 
+Document/deck generation uses transient section/slide arrays with paragraph arrays
+instead of asking a constrained string to preserve all Markdown boundaries.
+The app assembles them into the existing document `content` or slide `deck` before
+workspace citation validation; storage, adoption, editing, archives and exports
+retain their existing contracts. Empty/title-only units, duplicate slides and
+incorrect explicitly requested slide counts are withheld. Legacy Markdown output
+still passes through the same gate. This structure does not add multi-call cutoff
+recovery or establish academic correctness.
+
 `POST /api/companion/assist` reuses the Office assistant request and response
 contract. The companion therefore shares the same source-grounding and graded
 work rules as the Office pane. Saved document assistance uses work sessions described in section 13.
@@ -265,6 +274,11 @@ clearing browser data can erase drafts, and library backups include saved work
 only. Persistence failures are visible. Disposal cancels timers/listeners.
 Browser unload can warn before a draft is durable but cannot await HTTP saves;
 native window-close/crash behavior remains an installed-platform gate.
+
+Workspace/saved sheet body cells and quiz editor options use wrapping textareas
+that grow after input/value changes and width changes, including read-only cells.
+Saved sheet Enter moves to the next row, Shift+Enter inserts a newline and
+Alt+Arrow moves between rows; plain arrows and IME commits remain text editing.
 
 ### Interactive mind maps
 
@@ -329,6 +343,45 @@ to a provider choice stored in local settings:
 API keys live in the OS keychain. A cloud provider is used only after the user
 selects it and sees the disclosure. Usage is written to a local ledger and can
 be limited by a monthly token budget.
+
+`common/generation.py` owns bounded output recovery behind that seam. A nested
+operation shares logical-call, HTTP-request, elapsed-time and estimated requested
+token allowances from `configs/generation.toml`; schema fallbacks/content repairs
+cannot reset them. Composition, artifact proposals and each OCR batch open an
+operation; ordinary tutor/quiz-help/Office/companion calls open one at the provider.
+Provider choice is pinned per task class/explicit choice until the operation ends.
+A successful rate-limit fallback remains visible on later repair results.
+
+Model profiles specify preferred output and optional output/context limits.
+The bundled runtime's actual 8,192-token context allocation takes precedence over
+a larger profile. Prompt/schema/framing costs use an explicit UTF-8 byte estimate
+plus a context margin, not encoder tokens or an exact generation tokenizer.
+Unknown context/output capacities stay unknown; the unprofiled fallback is 2,048
+tokens. MiMo's exact round-2 model ID now has the empirically used 16,384-token
+preference without an invented capacity claim. Reasoning profiles retain their
+preferred allowance even for short answers.
+
+Cutoff or reasoning-only responses may regenerate the same complete unit with a
+wider allowance when the configured ceiling and estimated context permit it.
+Incomplete JSON is never concatenated or published. Empty responses have a
+separate one-retry bound; background summary/research/judge calls do not recover.
+Image token costs are unknown, so image calls cannot widen within a known context
+window. Cancellation and provider errors propagate; late replies fail without
+publishing. HTTP timeouts are clamped to remaining time, and cloud budget is
+checked before each HTTP attempt. Provider-reported usage is recorded before
+validation; missing usage is flagged on `GenerationResult`/operation diagnostics
+and in the persisted ledger. Migration 022 keeps historical reporting status
+unknown; new rows distinguish complete reporting from incomplete/malformed usage.
+Supplied partial counts remain in totals, while unavailable values contribute zero
+without claiming a measured zero. Settings labels totals as reported usage and
+shows incomplete/unverified request counts by model and for the cloud month.
+Local requests are excluded from cloud counts. Full backups preserve reporting
+status; reduced tiers omit usage as before. Optional malformed usage cannot
+discard a usable answer; unreadable completion shapes remain actionable failures.
+HTTP 200 failure envelopes retain supplied usage before failure; unreadable 200
+replies record unknown usage rather than disappearing from the ledger.
+These internal operation reservations are not a financial cap. Independent
+material units/checkpoints, prose continuation and input compaction remain planned.
 
 Uploaded material is untrusted data. It is fenced by
 `prompt_registry.grounded_prompt` and cannot supply system instructions.
@@ -778,14 +831,24 @@ similarity edges and rebuild them after recovery; citation passages remain.
 
 Text input streams through a configured decoded-byte limit, recognizes Unicode
 BOMs and rejects binary signatures. Broken PDF font digits are never guessed;
-low-quality pages request OCR. Ambiguous OCR separators fail rather than silently
-misassigning pages. Bitmap/PIL resources close; pixel/batch bounds remain open.
+low-quality pages request OCR ahead of blank pages. OCR keeps page identities and
+uses bounded batches: four pages, eight million pixels per rendered page and twelve
+million bytes of encoded request images by default. Ambiguous separators leave
+pages unresolved; failures preserve usable mixed-PDF text and record warnings.
+Bitmap/PIL resources close. Pipeline 6 / structured-v3 normalization precedes
+locator offsets; blank passages are not embedded or published. Sources must be
+reindexed to receive these changes.
 Ingestion claims one source at a time, heartbeats long stages and records retry
 and failure history. Late failure cannot replace an already published index.
 
 Citation validation and renumbering share a parser for compound/range markers
 that excludes literal Markdown code. Workspace options and sheet cells are
 checked too. Quotes retain verified passages and reconcile their markers.
+Answers keep `material_chunk_ids` as the full numbered evidence space and
+`chunk_ids` as the actual cited subset, including accepted workspace declarations.
+Saved quiz/map/material and export flows use the numbered space; learner evidence
+uses the cited subset. Explicit empty citation metadata differs from a legacy trace
+without attribution. Portable archives remap both spaces without changing slots.
 Edits retain existing cited material, including beyond the normal retrieval cap.
 These checks establish provenance/structure, not factual entailment.
 
@@ -793,8 +856,9 @@ Explicit numeric or one-through-twenty quiz counts set the generation schema's
 count within the existing 20-question workspace limit. Verified repairs are not
 clipped to three. An incomplete requested suite is withheld with an honest count;
 it does not become a practice suite. Title-only documents/decks are withheld.
-Study sheets route to documents. Long-output recovery remains planned (§7 and
-`plan-notebook.md`); unknown models still use the conservative default allowance.
+Study sheets route to documents. Budgeted whole-unit output recovery is implemented
+(§8); long-material splitting/checkpoints remain planned in `plan-notebook.md`.
+Unknown models still use the default allowance without invented larger ceilings.
 
 Prior teaching evidence must come from the quiz's own conversation, not another
 chat sharing sources. Migration 021 invalidates unsupported associations in
@@ -819,9 +883,27 @@ request bytes are bounded. Slides/worksheets follow authored relationships;
 speaker notes follow their slide relationship, with unlinked notes labelled
 uncertain. Snapshot coherence during an actively edited Office read remains open.
 Archives stream retained sources and reserve export names without overwriting.
+Source similarity refresh scores the configured model/dimension cohort before
+atomically replacing course edges; inbound top-k relations survive source updates.
+Scoring failure preserves the prior graph, and an empty valid cohort clears stale
+edges. CPU cost is O(n²) per refresh; score memory is bounded by row blocks.
+
+Office renewal stages a candidate certificate cohort before changing live files.
+One lifecycle lock coordinates status, connect, disconnect and shutdown; failed
+steps compensate registration, trust, files, intent and the previous host. Pending
+trust cleanup retains public CA/thumbprint identity and is inspectable/retryable.
+Native fault behavior remains to be verified.
 
 Course-route changes remount bound stores. Pending Enter reports an unsent chat
-draft; exports report their actual path. Confirmation dialogs cycle keyboard focus
+draft; exports report their actual path. Native destinations are chosen and written
+inside the shell, with replacement confirmation and file-change checks; arbitrary
+API write paths are rejected. The backend supplies cited file bytes. Workspace
+exports include the current draft and original provenance without adoption or
+learning writes; CSV exports include a source legend. Browser development exports
+reserve names in the configured export folder. Confirmation dialogs cycle keyboard focus
 and restore it on close. Flashcard edits reset study order/review marks rather than
 applying stale indices to new content. Native lifecycle source fixes remain
-uncompiled; semantic and installed-platform acceptance stays in `docket.md`.
+uncompiled in this pass; semantic and installed-platform acceptance stays in
+`docket.md`. Backend startup/restart failure has an explicit retry path, and slow
+shutdown/readiness waits run outside the shell's short backend-state mutex. API
+connection generations reject stale credentials/ports after library activation.

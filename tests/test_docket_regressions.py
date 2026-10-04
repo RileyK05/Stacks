@@ -82,6 +82,27 @@ def test_ocr_does_not_discard_or_misalign_overflow() -> None:
         split_ocr_pages(OCR_PAGE_BOUNDARY.join(["first", "second", "lost"]), 2)
 
 
+def test_ocr_accepts_line_separator_variants_and_trailing_boundary() -> None:
+    assert split_ocr_pages("first\n---\nsecond", 2) == ["first", "second"]
+    assert split_ocr_pages("first\r\n\r\n---\r\n\r\nsecond", 2) == [
+        "first",
+        "second",
+    ]
+    assert split_ocr_pages("first\n\n---\n\nsecond\n---\n", 2) == [
+        "first",
+        "second",
+    ]
+
+
+def test_ocr_keeps_a_real_last_blank_page() -> None:
+    assert split_ocr_pages("recognized\n---\n", 2) == ["recognized", ""]
+
+
+def test_ocr_refuses_to_guess_multiple_pages_without_boundaries() -> None:
+    with pytest.raises(ValueError, match="boundaries"):
+        split_ocr_pages("two pages merged into one response", 2)
+
+
 def _upload(course_id, body: bytes):
     return sources_repo.upload_source(
         course_id,

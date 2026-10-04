@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 from src.backend.common import provider
 from src.backend.common.db import connection
+from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.graph.view import course_graph
 from src.backend.ingest.extract import ExtractedSource, LocatorSpan
 from src.backend.rag import store
@@ -125,6 +126,23 @@ def test_failed_encoding_keeps_the_previous_index(monkeypatch) -> None:
             store.prepare(conn, source, _extracted("A replacement."), load_policy())
         hits = keyword_seam(conn, course.course_id, "derivatives", 10)
     assert set(hits) == {p["chunk_id"] for p in before.passages}
+
+
+def test_whitespace_only_passages_are_not_stored_or_embedded(monkeypatch) -> None:
+    embedded = []
+
+    def capture(texts):
+        embedded.extend(texts)
+        return np.ones(
+            (len(texts), load_embedding_policy().dimension), dtype=np.float32
+        )
+
+    monkeypatch.setattr(provider, "embed_chunks", capture)
+    text = "Opening definition.\n\n" + ("\n" * 12)
+    _, _, prepared = _publish(text)
+    assert prepared.passages
+    assert all(row["text"].strip() for row in prepared.passages)
+    assert embedded and all(value.strip() for value in embedded)
 
 
 def test_failed_publication_rolls_back_every_index_row() -> None:

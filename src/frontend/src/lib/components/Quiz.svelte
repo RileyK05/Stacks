@@ -9,7 +9,7 @@
 
   interface Props {
     session: QuizSession;
-    sources: SourceRef[];
+    sources: (SourceRef | null)[];
     onfollowup?: (question: string) => void;
     courseId?: string;
   }
@@ -88,12 +88,12 @@
 
   {#each questions as question, questionIndex (questionIndex)}
     {@const help = session.assistance[questionIndex]}
-    <fieldset class="flex flex-col gap-2">
-      <legend class="mb-2">
+    <fieldset class="flex min-w-0 flex-col gap-2">
+      <legend class="mb-2 max-w-full">
         <span class="block text-[11px] font-semibold uppercase tracking-[0.1em] text-subtle">
           Question {questionIndex + 1} of {questions.length}
         </span>
-        <span class="mt-1 block text-[15px] font-medium leading-snug text-fg">{question.prompt}</span>
+        <span class="mt-1 block whitespace-pre-wrap text-[15px] font-medium leading-snug text-fg [overflow-wrap:anywhere]">{question.prompt}</span>
       </legend>
       {#each question.options as option, optionIndex (optionIndex)}
         {@const state = optionState(questionIndex, optionIndex)}
@@ -115,7 +115,7 @@
               {String.fromCharCode(65 + optionIndex)}
             {/if}
           </span>
-          <span class="pt-0.5 leading-snug">{option}</span>
+          <span class="min-w-0 flex-1 whitespace-pre-wrap pt-0.5 leading-snug [overflow-wrap:anywhere]">{option}</span>
         </button>
       {/each}
       {#if session.submitted}
@@ -125,7 +125,7 @@
         {#if question.explanation}
           <p class="mt-1 flex gap-2 rounded-lg bg-surface-2 px-3 py-2.5 text-[13px] leading-relaxed text-muted">
             <Icon name="info" class="mt-0.5 h-3.5 w-3.5 text-subtle" />
-            <span>{question.explanation}</span>
+            <span class="min-w-0 whitespace-pre-wrap [overflow-wrap:anywhere]">{question.explanation}</span>
           </p>
         {/if}
         <SourceChips cited={question.sources ?? []} sources={session.evidence.length ? session.evidence : sources} />
@@ -145,7 +145,7 @@
           {#if help.fell_back_to_local}<p class="text-xs text-muted">Your provider was unavailable; the local model supplied this help.</p>{/if}
           <SourceChips cited={help.content.sources} sources={session.evidence} />
           {#each help.content.sources as number}
-            <details class="text-xs text-muted"><summary class="cursor-pointer">Read passage [{number}] · {session.evidence[number - 1]?.label}</summary><p class="mt-2 whitespace-pre-wrap">{session.passages[number - 1]}</p></details>
+            <details class="text-xs text-muted"><summary class="cursor-pointer">Read passage [{number}] · {session.evidence[number - 1]?.label}</summary><p class="mt-2 whitespace-pre-wrap">{session.passages[number - 1] ?? 'This passage is no longer available.'}</p></details>
           {/each}
           <QuizFeedback {session} index={questionIndex} target={help.kind} />
         </div>

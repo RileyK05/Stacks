@@ -3887,3 +3887,74 @@ Final same-pass validation: 845 backend tests passed; Python lint/format and
 145-file mypy passed. Frontend check and 19 tests passed after the UI changes;
 Office.js check and 55 tests passed. Native compilation/packaging and live-model
 semantic acceptance were not performed. Temporary triage tooling was removed.
+
+## 2026-10-03 — One outstanding-work docket
+
+At the user's request, the separate backlog was removed and its remaining entries
+consolidated into `docket.md`. The docket is now the sole work queue; earlier
+notes describing two queues are historical. The round-2 report at `92be710` is
+reconciled there, including all 48 STK findings and seven new findings, reopened
+extraction failures and pending GUI checks. Evidence status remains explicit;
+this documentation reconciliation implements no code fixes.
+
+## 2026-10-04 — Review fixes retain retest status
+
+At the user's request, implemented bugs now remain in the docket as **Fixed in
+code — awaiting verification** until the user confirms retesting. This supersedes
+earlier removal instructions. The AR review is consolidated into the same docket,
+retaining all 71 original findings and separating cleared claims from fixes.
+
+Answers distinguish the original numbered evidence space from actually cited
+evidence; saved materials, practice, maps, exports and portable archives retain
+that numbering. Explicit empty trace attribution does not become all retrieved
+sources. Ingestion 6 stages page-aware bounded OCR, preserves usable mixed text
+on failure, normalizes before assigning spans and omits blank passages.
+
+Native Save selection belongs to the shell, including replacement confirmation;
+the backend provides cited bytes and refuses arbitrary write paths. Workspace
+draft export writes no artifact or learner observation. Backup startup/restart
+has a retry path with short state locking. Office setup uses staged certificate
+cohorts and compensated lifecycle steps; failed cleanup keeps public trust identity
+for inspection/retry. Graph source refresh rebuilds the full valid course cohort
+to preserve inbound top-k edges; O(n²) CPU cost remains a scale-acceptance concern.
+
+Mechanical checks are implementation evidence. Native Save/recovery/Office fault
+journeys, the affected PDF corpus and semantic generation gates remain open.
+
+## 2026-10-04 — Preserve generated material boundaries
+
+Documents/decks use transient section/slide arrays with paragraph arrays for model
+responses; the app inserts Markdown boundaries before the existing workspace
+citation gate. Saved-material/storage/export contracts remain unchanged. Explicit
+recognized slide counts, title-only units, exact duplicate slides and intro
+citations are validated before delivery. This repairs structure independently of
+the still-planned shared output budget/recovery controller; real-model correctness
+and cutoff recovery remain open. Companion sheet cells/quiz options now wrap and
+support multiline editing; installed visual acceptance remains pending.
+
+## 2026-10-04 — Shared whole-unit output recovery
+
+The provider transport performs one completion per call; a common controller now
+bounds nested output/schema/content/HTTP recovery and pins the chosen endpoint for
+the operation. Cutoffs regenerate the same bounded unit with configured headroom,
+preserving scope/evidence rather than shortening the request. Partial output never
+becomes a saved answer/material/practice item. Failed completions record supplied
+usage before validation, with cloud budget rechecked between HTTP requests.
+
+Optional profile ceilings and the managed runtime context constrain widening;
+unknown capacities stay unknown. MiMo's exact retest ID ships the empirically used
+16k preference. Input costs remain estimates and visual costs unknown. Missing
+usage is explicit in results/operation accounting but its persisted ledger flag,
+multi-unit generation/checkpoints and context compaction remain open in the docket.
+These internal operation budgets do not resolve the financial reservation tradeoff.
+
+## 2026-10-04 — Usage completeness survives storage
+
+Migration 022 records new completions' reporting completeness while retaining
+historical rows as unverified, without guessing whether old zeros were measured.
+Known partial counts are preserved; missing or malformed counts contribute zero
+and an explicit incomplete status rather than estimated billing. Settings exposes
+the incomplete/unverified request count and calls its totals reported usage.
+Full backup recovery preserves the flag; reduced snapshots still omit usage.
+Optional provider metadata cannot discard an otherwise usable answer. Monthly
+budget remains a stop between requests; hard concurrent reservations stay C-63.

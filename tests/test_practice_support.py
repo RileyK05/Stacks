@@ -74,6 +74,42 @@ def test_hint_is_grounded_cached_and_reload_cannot_hide_assistance(
     assert _target(client, course, "application")["independent_items"] == 1
 
 
+def test_helped_answer_remains_assisted_on_a_new_attempt_without_new_mastery(
+    client, quiz, monkeypatch
+):
+    course, suite, _ = quiz
+    stub(monkeypatch)
+    first_run = uuid4()
+    help_result = client.post(
+        help_url(course, suite),
+        json={"run_id": str(first_run), "kind": "hint"},
+    )
+    assert help_result.status_code == 200, help_result.text
+    first = _submit(
+        client,
+        course,
+        suite,
+        [0, 1],
+        run_id=first_run,
+        helped=[True, False],
+    )
+    assert first.status_code == 200, first.text
+    mastery_before = _target(client, course, "recognition")
+    retake = _submit(
+        client,
+        course,
+        suite,
+        [0, 1],
+        run_id=uuid4(),
+        helped=[False, False],
+    )
+    assert retake.status_code == 200, retake.text
+    assert retake.json()["helped"] == [True, True]
+    mastery_after = _target(client, course, "recognition")
+    assert mastery_after["independent_items"] == mastery_before["independent_items"]
+    assert mastery_after["proficiency"] == mastery_before["proficiency"]
+
+
 def test_quiz_help_respects_its_saved_chat_model_choice(client, quiz, monkeypatch):
     course, suite, _ = quiz
     chat = conversations_repo.create(course, "Pinned model")

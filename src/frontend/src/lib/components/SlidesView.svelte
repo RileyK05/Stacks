@@ -8,7 +8,7 @@
 
   interface Props {
     session: SlidesSession;
-    sources: SourceRef[];
+    sources: (SourceRef | null)[];
   }
 
   let { session, sources }: Props = $props();

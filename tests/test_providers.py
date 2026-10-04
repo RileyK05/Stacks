@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 import pytest
-from src.backend.common import provider, providers, usage_repo
+from src.backend.common import model_profiles, provider, providers, usage_repo
 from src.backend.common.providers import ProviderChoice, ResolvedProvider, TaskClass
 from tests.conftest import configure_test_provider
 
@@ -150,7 +150,7 @@ def test_empty_provider_output_fails_closed(monkeypatch: pytest.MonkeyPatch) -> 
     configure_test_provider(monkeypatch, "   ")
     with pytest.raises(provider.EmptyModelError):
         provider.generate("tutor_answer", "prompt")
-    assert len(usage_repo.ledger_page()) == 1
+    assert len(usage_repo.ledger_page()) == 2
     assert usage_repo.ledger_page()[0].output_tokens == 5
 
 
@@ -282,7 +282,7 @@ class _Response:
 def _capture_post(monkeypatch: pytest.MonkeyPatch, response: _Response) -> list[dict]:
     captured: list[dict] = []
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(url, headers=None, json=None, timeout=None, follow_redirects=False):
         captured.append({"url": url, "headers": headers, "json": json})
         return response
 
@@ -372,27 +372,38 @@ def test_longcat_profile_requests_a_reasoning_budget() -> None:
 def test_null_content_with_stop_is_reasoning_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payload = {"choices": [{"message": {"content": None}, "finish_reason": "stop"}]}
+    payload = {
+        "choices": [
+            {
+                "message": {"content": None, "reasoning_content": "private thoughts"},
+                "finish_reason": "stop",
+            }
+        ]
+    }
     _capture_post(monkeypatch, _Response(200, payload))
     with pytest.raises(provider.ModelReasoningOnlyError, match="only reasoning"):
         REAL_CALL("tutor_answer", _endpoint(), "prompt")
 
 
-def test_length_with_reasoning_tokens_retries_once_with_a_larger_budget(
+def test_transport_cutoff_has_no_hidden_retry_and_keeps_private_partial_internal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     length = {
-        "choices": [{"message": {"content": None}, "finish_reason": "length"}],
+        "choices": [
+            {
+                "message": {"content": "<think>private</think>unfinished"},
+                "finish_reason": "length",
+            }
+        ],
         "usage": {"completion_tokens_details": {"reasoning_tokens": 1800}},
     }
-    done = {
-        "choices": [{"message": {"content": "the deck"}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 3, "completion_tokens": 9},
-    }
-    captured = _sequence_post(monkeypatch, _Response(200, length), _Response(200, done))
-    assert REAL_CALL("tutor_answer", _endpoint(), "prompt")[0] == "the deck"
+    captured = _sequence_post(monkeypatch, _Response(200, length))
+    with pytest.raises(provider.ModelOutputTruncatedError) as error:
+        REAL_CALL("tutor_answer", _endpoint(), "prompt")
+    assert len(captured) == 1
+    assert error.value.partial_text == "unfinished"
+    assert "unfinished" not in str(error.value) and "private" not in str(error.value)
     assert captured[0]["max_tokens"] == 2048
-    assert captured[1]["max_tokens"] == 8192
 
 
 def test_transport_rejects_truncated_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -408,6 +419,10 @@ def test_generate_records_truncated_and_reasoning_retry_usage(monkeypatch) -> No
     endpoint = _endpoint(name="custom", is_local=False)
     monkeypatch.setattr(provider, "_call_provider", REAL_CALL)
     monkeypatch.setattr(providers, "resolve", lambda *_: endpoint)
+    profile = model_profiles.ModelProfile(
+        model=endpoint.model, max_output_tokens=2048, output_token_limit=8192
+    )
+    monkeypatch.setattr(model_profiles, "profile_for", lambda *_: profile)
     cut_off = {
         "choices": [{"message": {"content": None}, "finish_reason": "length"}],
         "usage": {
@@ -425,7 +440,13 @@ def test_generate_records_truncated_and_reasoning_retry_usage(monkeypatch) -> No
     )
     assert provider.generate("tutor_answer", "prompt").text == "Answer"
     assert len(calls) == 2
+    assert [call["max_tokens"] for call in calls] == [2048, 4096]
     assert usage_repo.cloud_tokens_this_month() == 45
+    monkeypatch.setattr(
+        model_profiles,
+        "profile_for",
+        lambda *_: profile.model_copy(update={"output_token_limit": 2048}),
+    )
     _sequence_post(
         monkeypatch,
         _Response(
@@ -461,7 +482,7 @@ def _sequence_post(monkeypatch: pytest.MonkeyPatch, *responses: Any) -> list[dic
     captured: list[dict] = []
     queue = list(responses)
 
-    def fake_post(url, headers=None, json=None, timeout=None):
+    def fake_post(url, headers=None, json=None, timeout=None, follow_redirects=False):
         captured.append(dict(json))
         return queue.pop(0)
 

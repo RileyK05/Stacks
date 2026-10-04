@@ -39,9 +39,25 @@ function jsonResponse(body, ok = true, status = 200) {
   return { ok, status, json: async () => body };
 }
 
-test('the bridge is the pane’s own origin unless ?bridge= overrides it', () => {
+test('the bridge defaults to its own origin and permits scoped loopback overrides', () => {
   assert.equal(resolveBridgeBase('', ORIGIN), ORIGIN);
-  assert.equal(resolveBridgeBase('?bridge=https://box.local:9000/', ORIGIN), 'https://box.local:9000');
+  assert.equal(resolveBridgeBase(`?bridge=${encodeURIComponent(ORIGIN + '/')}`, ORIGIN), ORIGIN);
+  assert.equal(resolveBridgeBase('?bridge=http://localhost:9000/', ORIGIN), 'http://localhost:9000');
+  assert.equal(resolveBridgeBase('?bridge=http://127.0.0.1:9000', ORIGIN), 'http://127.0.0.1:9000');
+  assert.equal(resolveBridgeBase('?bridge=http://[::1]:9000', ORIGIN), 'http://[::1]:9000');
+});
+
+test('bridge overrides reject remote hosts, credentials, and unsafe schemes', () => {
+  for (const bridge of [
+    'https://attacker.example',
+    'https://localhost.attacker.example',
+    'https://attacker.example@localhost:9000',
+    'ftp://localhost:9000',
+    'javascript:alert(1)',
+    'http://127.0.0.2:9000'
+  ]) {
+    assert.throws(() => resolveBridgeBase(`?bridge=${encodeURIComponent(bridge)}`, ORIGIN), /pane’s origin or a loopback/);
+  }
 });
 
 test('Office host names map to the three supported apps', () => {

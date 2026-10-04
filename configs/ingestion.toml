@@ -1,5 +1,7 @@
-pipeline_version = "5"
+pipeline_version = "6"
 max_attempts = 2
+retry_backoff_seconds = 0.5
+retry_backoff_multiplier = 2.0
 # The ingestion worker's own poll interval (review catch #7: it was
 # sharing lifecycle's maintenance_interval_seconds = 3600, so uploads
 # waited up to an hour). This knob is the ingestion loop's; the worker
@@ -14,11 +16,14 @@ poll_interval_seconds = 5
 [ocr]
 max_pages = 50
 scale = 2.0
+batch_pages = 4
+max_image_pixels = 8000000
+max_request_image_bytes = 12000000
 
 # A page with fewer than min_page_chars of stripped text is blank and is
 # queued for OCR. A longer page whose readable-prose score is below
-# quality_floor is a garbled text layer and joins the same queue. Blank
-# pages are recognized first; the OCR cap still applies to the queue.
+# quality_floor is a garbled text layer and joins the same queue. Garbled
+# pages are prioritized ahead of blank pages when the total cap applies.
 [text]
 min_page_chars = 20
 quality_floor = 0.35
@@ -26,11 +31,11 @@ max_decode_bytes = 67108864
 
 [[stages]]
 name = "extract_text"
-handler_version = "2"
+handler_version = "3"
 
 [[stages]]
 name = "ocr"
-handler_version = "1"
+handler_version = "2"
 
 [[stages]]
 name = "prepare_passages"

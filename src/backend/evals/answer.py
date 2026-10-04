@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from src.backend.common.citations import cited_numbers, strip_citations
 from src.backend.common.db import Connection
 from src.backend.common.queries import get
 from src.backend.retrieval.funnel import Candidate
@@ -63,8 +64,6 @@ SEMANTIC_KINDS = frozenset(
         "semantic_explanation",
     }
 )
-
-CITATION_RE = re.compile(r"\[(\d+)\]")
 
 # Distinctive-content heuristic (review catch #8): a refusal case is
 # seeded with chunks whose texts do NOT contain the answer. A specific-
@@ -270,7 +269,7 @@ def load_semantic_cases(path: Path | None = None) -> list[AnswerCase]:
 def citation_validity(answer_text: str, provided: int) -> tuple[bool, str]:
     """Every [n] must index a provided chunk; at least one citation is
     required for grounded answers."""
-    citations = [int(n) for n in CITATION_RE.findall(answer_text)]
+    citations = sorted(cited_numbers(answer_text))
     if not citations:
         return False, "no citations present"
     bad = [n for n in citations if n < 1 or n > provided]
@@ -318,7 +317,7 @@ def refusal_check(
     chunk are invented."""
     if not _own_markers(REFUSAL_MARKER_RE, answer_text, chunk_texts):
         return False, "no refusal marker"
-    for token in FABRICATED_SPECIFIC_RE.findall(answer_text):
+    for token in FABRICATED_SPECIFIC_RE.findall(strip_citations(answer_text)):
         if not any(token in text for text in chunk_texts):
             return False, f"fabricated specifics not in material: {token!r}"
     return True, "refused without fabricating evidence"
@@ -344,7 +343,7 @@ def workspace_check(answer_text: str, provided: int) -> tuple[bool, str]:
     if not extracted.items:
         return False, "no workspace block produced"
     kinds = ", ".join(item.type for item in extracted.items)
-    if CITATION_RE.search(extracted.body):
+    if cited_numbers(extracted.body):
         ok, why = citation_validity(extracted.body, provided)
         if not ok:
             return False, f"workspace {kinds} ok, prose: {why}"
@@ -401,7 +400,7 @@ def _score(
     kind = case.kind
     if kind == "green_grounded":
         if not case.expectation.get("citations_required", True):
-            if CITATION_RE.search(answer_text):
+            if cited_numbers(answer_text):
                 ok, why = citation_validity(answer_text, len(chunk_texts))
                 return ok, f"green (citations optional): {why}"
             return True, "green (citations optional): none needed"

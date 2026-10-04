@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field, ValidationError
 from src.backend.artifacts import attribution
 from src.backend.artifacts import content as artifact_content
 from src.backend.artifacts.content import UnknownCitationError
+from src.backend.common import generation as generation_control
 from src.backend.common import provider
 from src.backend.common.artifacts_repo import Artifact
 from src.backend.common.db import Connection, json_ids
@@ -309,7 +310,7 @@ def _attribute(
         )
         return {**edited, "markdown": result.text}, result.uncited
     if kind == "slides" and isinstance(edited.get("slides"), list):
-        before = json.dumps(shown, ensure_ascii=False)
+        before = _slide_prose(shown)
         uncited = 0
         slides = []
         for slide in edited["slides"]:
@@ -330,7 +331,7 @@ def _strip_echo(
 ) -> dict[str, Any]:
     """Drop course material the model pasted back instead of writing
     (attribution.strip_echo)."""
-    before = _render(kind, shown)
+    before = _slide_prose(shown) if kind == "slides" else _render(kind, shown)
     if kind == "doc":
         return {
             **edited,
@@ -354,6 +355,20 @@ def _strip_echo(
             ],
         }
     return edited
+
+
+def _slide_prose(shown: Any) -> str:
+    slides = shown.get("slides", []) if isinstance(shown, dict) else shown
+    if isinstance(slides, dict):
+        slides = [slides]
+    if not isinstance(slides, list):
+        return ""
+    return "\n".join(
+        str(slide.get(key, ""))
+        for slide in slides
+        if isinstance(slide, dict)
+        for key in ("title", "body", "notes")
+    )
 
 
 # --- material ------------------------------------------------------------------
@@ -458,6 +473,7 @@ def _combine(kind: str, shown: Any, added: dict[str, Any]) -> dict[str, Any]:
     return {"slides": [*existing, *added.get("slides", [])]}
 
 
+@generation_control.operation()
 def propose_edit(
     conn: Connection,
     course_id: UUID,

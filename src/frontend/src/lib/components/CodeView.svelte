@@ -10,7 +10,7 @@
 
   interface Props {
     item: WorkspaceCode;
-    sources: SourceRef[];
+    sources: (SourceRef | null)[];
   }
 
   let { item, sources }: Props = $props();

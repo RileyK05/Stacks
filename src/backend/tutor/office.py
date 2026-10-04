@@ -34,6 +34,7 @@ from typing import Any
 from uuid import UUID
 
 from src.backend.common import provider
+from src.backend.common.citations import cited_numbers
 from src.backend.common.db import Connection, json_ids
 from src.backend.common.prompt_registry import (
     grounded_prompt,
@@ -149,7 +150,9 @@ def is_graded_request(instruction: str, context: str) -> bool:
 
 
 def _citations(
-    conn: Connection, candidates: Sequence[funnel.Candidate]
+    conn: Connection,
+    candidates: Sequence[funnel.Candidate],
+    markers: set[int] | None = None,
 ) -> tuple[Citation, ...]:
     chunk_ids = [c.chunk_id for c in candidates]
     if not chunk_ids:
@@ -161,6 +164,8 @@ def _citations(
     by_id = {row["chunk_id"]: row for row in rows}
     citations: list[Citation] = []
     for number, candidate in enumerate(candidates, start=1):
+        if markers is not None and number not in markers:
+            continue
         chunk_id = candidate.chunk_id
         row = by_id.get(chunk_id)
         if row is None:
@@ -253,6 +258,9 @@ def answer(
         "tutor_answer", prompt, course_id=course_id, choice=choice
     )
     text = strip_fence_echo(generation.text)
+    markers = cited_numbers(text)
+    if any(number < 1 or number > len(candidates) for number in markers):
+        raise ValueError("the answer cited source material it was not given")
     used = dataclasses.replace(result, candidates=tuple(candidates))
     stored = trace.record_trace(
         conn,
@@ -260,8 +268,13 @@ def answer(
         query,
         used,
         embedding_model=embedding_model,
+        cited=tuple(
+            (candidate.chunk_id, number)
+            for number, candidate in enumerate(candidates, start=1)
+            if number in markers
+        ),
     )
-    cited = _citations(conn, candidates)
+    cited = _citations(conn, candidates, markers)
     return OfficeAnswer(
         action=action,
         text=text,

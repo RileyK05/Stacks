@@ -45,9 +45,14 @@ class FakeMac:
         content = manifest_path.read_bytes()
         for app in self.installed:
             self.registered[app] = content
+            destination = macos._manifest_path(app, addin_id)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
 
     def unregister(self, addin_id: str) -> None:
         self.registered.clear()
+        for app in self.installed:
+            macos._manifest_path(app, addin_id).unlink(missing_ok=True)
 
     def is_registered(self, addin_id: str, manifest_path: Path) -> bool:
         if not self.installed or not manifest_path.is_file():
@@ -90,11 +95,25 @@ class FakeBroker:
 @pytest.fixture
 def mac_service(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> tuple[FakeMac, FakeHost, FakeBroker]:
     platform = FakeMac()
     host = FakeHost()
     broker = FakeBroker()
-    monkeypatch.setattr(service, "_platform", lambda: platform)
+    monkeypatch.setattr(service, "_platform", lambda: macos)
+    monkeypatch.setattr(macos, "SUPPORTED", True)
+    monkeypatch.setattr(macos, "installed_apps", platform.installed_apps)
+    monkeypatch.setattr(macos, "is_trusted", platform.is_trusted)
+    monkeypatch.setattr(macos, "trust", platform.trust)
+    monkeypatch.setattr(macos, "untrust", platform.untrust)
+    monkeypatch.setattr(macos, "register", platform.register)
+    monkeypatch.setattr(macos, "unregister", platform.unregister)
+    monkeypatch.setattr(macos, "launch", platform.launch)
+    monkeypatch.setattr(
+        macos,
+        "_manifest_path",
+        lambda app, addin_id: tmp_path / "mac-containers" / f"{app}-{addin_id}.xml",
+    )
     monkeypatch.setattr(
         service,
         "_registered",

@@ -7,7 +7,8 @@ locator after the first drifts. Markdown sections skip fenced code blocks
 (a `#` inside a code fence is content, not a heading). Unsupported mime
 types raise `UnsupportedSourceTypeError` at dispatch — nothing silently
 decodes a zip as text. Decoding strips the BOM (utf-8-sig) and falls back
-to cp1252 for legacy lecture notes before failing.
+to cp1252 for legacy lecture notes, retaining undefined bytes through a
+warned latin-1 fallback.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import codecs
 import io
 import logging
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -139,7 +141,7 @@ def resolve_mime_type(filename: str, declared: str | None) -> str:
 class ExtractionReport:
     """How much of a PDF's text layer survived extraction.
 
-    `ocr_pages` is the blank pages first, then the garbled ones worst-first.
+    `ocr_pages` is garbled pages worst-first, then blank pages.
     `pages_ocr` is how many of those were replaced by a later OCR pass.
     Non-PDF sources leave the report unset.
     """
@@ -175,6 +177,12 @@ class LocatorSpan:
     end: int
     label: str
     description: str | None = None
+
+
+@dataclass(frozen=True)
+class RasterizedPage:
+    page_index: int
+    image: bytes
 
 
 class UnsupportedSourceTypeError(RuntimeError):
@@ -237,13 +245,17 @@ def read_decoded(
                 chosen = "utf-16"
             else:
                 sample = first[:4096]
-                if sample.startswith((b"%PDF-", b"PK\x03\x04")) or (
-                    sample and sample.count(b"\x00") > len(sample) / 10
+                bomless_utf16 = _bomless_utf16_encoding(sample)
+                if bomless_utf16 is not None:
+                    chosen = bomless_utf16
+                elif sample.startswith((b"%PDF-", b"PK\x03\x04")) or (
+                    len(sample) >= 8 and sample.count(b"\x00") > len(sample) / 10
                 ):
                     raise ValueError(
                         "this file contains binary data rather than readable text"
                     )
-                chosen = "utf-8-sig"
+                else:
+                    chosen = "utf-8-sig"
         decoder = codecs.getincrementaldecoder(chosen)(errors="strict")
         try:
             parts = [decoder.decode(first)]
@@ -264,10 +276,27 @@ def read_decoded(
     except UnicodeDecodeError:
         try:
             return decode("cp1252")
-        except UnicodeDecodeError as err:
-            raise ValueError(
-                "this text file has an unsupported or damaged encoding"
-            ) from err
+        except UnicodeDecodeError:
+            logger.warning(
+                "text source %s contains bytes undefined by cp1252; decoding "
+                "those bytes as latin-1",
+                source_id,
+            )
+            return decode("latin-1")
+
+
+def _bomless_utf16_encoding(sample: bytes) -> str | None:
+    if len(sample) < 4:
+        return None
+    even = sample[0::2]
+    odd = sample[1::2]
+    even_nuls = even.count(0)
+    odd_nuls = odd.count(0)
+    if even_nuls >= 2 and even_nuls / len(even) >= 0.5 and odd_nuls / len(odd) <= 0.1:
+        return "utf-16-be"
+    if odd_nuls >= 2 and odd_nuls / len(odd) >= 0.5 and even_nuls / len(even) <= 0.1:
+        return "utf-16-le"
+    return None
 
 
 def _line_of(line_starts: list[int], offset: int) -> int:
@@ -345,7 +374,7 @@ def _markdown_locators(text: str) -> tuple[LocatorSpan, ...]:
     if not headings:
         return _line_locators(text)
     first_start = headings[0].start()
-    if text[:first_start].strip():
+    if first_start > 0:
         spans.extend(
             span for span in _line_locators(text[:first_start]) if span.end > span.start
         )
@@ -375,9 +404,15 @@ def clean_text(text: str) -> str:
     """Text the database can store. A PDF with a broken font map (or a model
     that answered with half an emoji) yields lone UTF-16 surrogates, which
     cannot be encoded as UTF-8: the insert then failed the whole file at the
-    build stage. NUL is dropped for the same reason `read_decoded` drops it.
-    Broken glyph names stay visible for quality detection and OCR."""
-    without_controls = text.replace("\x00", "").replace("\u00a0", " ")
+    build stage. NUL and extraction sentinels are removed. Broken glyph
+    names stay visible for quality detection and OCR."""
+    without_controls = (
+        text.replace("\r\n", "\n")
+        .replace("\x00", "")
+        .replace("\u00a0", " ")
+        .replace("\ufffe", "")
+        .replace("\u00ad", "")
+    )
     return without_controls.encode("utf-8", "replace").decode("utf-8")
 
 
@@ -425,7 +460,7 @@ def _text_limits() -> tuple[int, float]:
 def assess_pages(
     page_texts: Sequence[str], *, min_page_chars: int, quality_floor: float
 ) -> ExtractionReport:
-    """Blank pages first, then garbled pages from worst score to best."""
+    """Prioritize known garbling before blank pages when OCR is capped."""
     empty: list[int] = []
     low: list[tuple[float, int]] = []
     for index, text in enumerate(page_texts):
@@ -440,7 +475,7 @@ def assess_pages(
         pages_total=len(page_texts),
         pages_empty=len(empty),
         pages_low_quality=len(low),
-        ocr_pages=tuple(empty + [index for _score, index in low]),
+        ocr_pages=tuple([index for _score, index in low] + empty),
     )
 
 
@@ -498,7 +533,7 @@ def extract(
             raise ScannedPdfNeedsOcrError(source_id)
         return _source_from_pages(page_texts, report)
     if mime_type in _TEXT_MIME_EXACT:
-        text = read_decoded(course_id, source_id, stored_encoding)
+        text = clean_text(read_decoded(course_id, source_id, stored_encoding))
         if not text.strip():
             raise EmptyExtractionError(source_id)
         if mime_type in ("text/markdown", "text/x-markdown"):
@@ -521,7 +556,7 @@ def _extract_office(
 
     raw = read_pdf_bytes(course_id, source_id, stored_encoding)
     if mime_type == _DOCX_MIME:
-        text = office.docx_text(raw)
+        text = clean_text(office.docx_text(raw))
         if not text.strip():
             raise EmptyExtractionError(source_id)
         return ExtractedSource(text=text, locators=_markdown_locators(text))
@@ -529,7 +564,7 @@ def _extract_office(
     pages = read_pages(raw)
     if not any(text.strip() for _label, text in pages):
         raise EmptyExtractionError(source_id)
-    page_texts = [text for _label, text in pages]
+    page_texts = [clean_text(text) for _label, text in pages]
     return ExtractedSource(
         text=_join_pages(page_texts),
         locators=_pdf_locators(
@@ -704,7 +739,7 @@ def _normalize_layout_tables(layout: str) -> tuple[str, bool]:
     return "\n".join(normalized), True
 
 
-def rasterize_pages(
+def rasterize_pages_with_ids(
     course_id: UUID,
     source_id: UUID,
     stored_encoding: str | None,
@@ -712,7 +747,8 @@ def rasterize_pages(
     max_pages: int,
     scale: float,
     pages: Sequence[int] | None = None,
-) -> list[bytes]:
+    max_pixels: int = 8_000_000,
+) -> list[RasterizedPage]:
     """Render a PDF's pages to PNG bytes for the multimodal OCR model.
 
     Bounded by construction: at most `max_pages` are rendered (a 500-page
@@ -735,15 +771,17 @@ def rasterize_pages(
             indexes: Sequence[int] = range(min(len(pdf), max_pages))
         else:
             indexes = [index for index in pages if 0 <= index < len(pdf)][:max_pages]
-        renders: list[bytes] = []
+        renders: list[RasterizedPage] = []
         for index in indexes:
             page = pdf[index]
             try:
-                bitmap = page.render(scale=scale)
+                width, height = page.get_size()
+                render_scale = _bounded_render_scale(width, height, scale, max_pixels)
+                bitmap = page.render(scale=render_scale)
                 try:
                     with bitmap.to_pil() as image, io.BytesIO() as buffer:
                         image.save(buffer, format="PNG")
-                        renders.append(buffer.getvalue())
+                        renders.append(RasterizedPage(index, buffer.getvalue()))
                 finally:
                     bitmap.close()
             finally:
@@ -751,6 +789,61 @@ def rasterize_pages(
         return renders
     finally:
         pdf.close()
+
+
+def _bounded_render_scale(
+    width: float, height: float, scale: float, max_pixels: int
+) -> float:
+    if (
+        not all(math.isfinite(value) and value > 0 for value in (width, height, scale))
+        or max_pixels < 1
+    ):
+        raise ValueError("PDF page dimensions or OCR rendering limits are invalid")
+    scale = min(scale, math.sqrt(max_pixels / (width * height)))
+    while math.ceil(width * scale) * math.ceil(height * scale) > max_pixels:
+        scale *= 0.99
+    return scale
+
+
+def pdf_page_count(
+    course_id: UUID, source_id: UUID, stored_encoding: str | None
+) -> int:
+    import pypdfium2 as pdfium
+
+    raw = storage.read_stored(
+        course_id,
+        source_id,
+        stored_encoding,
+        max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+    )
+    pdf = pdfium.PdfDocument(io.BytesIO(raw))
+    try:
+        return len(pdf)
+    finally:
+        pdf.close()
+
+
+def rasterize_pages(
+    course_id: UUID,
+    source_id: UUID,
+    stored_encoding: str | None,
+    *,
+    max_pages: int,
+    scale: float,
+    pages: Sequence[int] | None = None,
+) -> list[bytes]:
+    """Image-only compatibility wrapper around the identity-preserving renderer."""
+    return [
+        page.image
+        for page in rasterize_pages_with_ids(
+            course_id,
+            source_id,
+            stored_encoding,
+            max_pages=max_pages,
+            scale=scale,
+            pages=pages,
+        )
+    ]
 
 
 def ocr_extracted_source(page_texts: list[str]) -> ExtractedSource:

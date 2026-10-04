@@ -165,7 +165,13 @@ def test_connection_test_tries_the_default_model(
     monkeypatch.setattr(provider, "_call_provider", REAL_CALL)
     posts: list[str] = []
 
-    def fake_post(url: str, headers: Any = None, json: Any = None, timeout: Any = None):
+    def fake_post(
+        url: str,
+        headers: Any = None,
+        json: Any = None,
+        timeout: Any = None,
+        follow_redirects: bool = False,
+    ):
         posts.append(json["model"])
         return httpx.Response(
             200, json={"choices": [{"message": {"content": "ok"}}], "usage": {}}

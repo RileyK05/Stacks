@@ -7,6 +7,7 @@
   import RichText from '$lib/components/RichText.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
+  import { createBusyOwner } from '$lib/utils/busyOwner';
 
   type Course = paths['/courses']['get']['responses'][200]['content']['application/json'][number];
   type Work = components['schemas']['WorkSession'];
@@ -29,6 +30,7 @@
   let documentTitle = $state('Working document');
   let connecting = $state(false);
   let busy = $state(false);
+  const operationBusy = createBusyOwner((value) => { busy = value; });
   let loading = $state(true);
   let error = $state<unknown>(null);
   let pinned = $state(false);
@@ -125,6 +127,9 @@
     try { localStorage.removeItem(key); } catch { }
   }
   function current(token: number) { return !disposed && token === epoch; }
+  const claimBusy = () => operationBusy.claim();
+  const releaseBusy = (owner: number) => operationBusy.release(owner);
+  const resetBusy = () => operationBusy.reset();
   function remember() {
     if (work) writeSaved(`companion-work:${courseId}`, work.session_id);
   }
@@ -173,7 +178,7 @@
     const token = ++epoch;
     resetLiveRefresh();
     courseId = id; work = null; sessions = []; question = ''; selection = ''; pending = null;
-    connecting = false; pastedText = ''; busy = false; error = null;
+    connecting = false; pastedText = ''; resetBusy(); error = null;
     if (!id) return;
     writeSaved('companion-course', id);
     try {
@@ -189,7 +194,7 @@
   async function openSession(id: string) {
     const token = ++epoch;
     resetLiveRefresh();
-    work = null; question = ''; selection = ''; pending = null; error = null; busy = false;
+    work = null; question = ''; selection = ''; pending = null; error = null; resetBusy();
     connecting = false; pastedText = '';
     try {
       const response = await api.GET('/companion/courses/{course_id}/work/{session_id}', { params: { path: { course_id: courseId, session_id: id } } });
@@ -222,8 +227,8 @@
 
   async function createSession() {
     if (!title.trim() || !courseId || busy) return;
-    const token = epoch;
-    busy = true; error = null;
+    const token = epoch, owner = claimBusy();
+    error = null;
     try {
       const response = await api.POST('/companion/courses/{course_id}/work', {
         params: { path: { course_id: courseId } }, body: { title: title.trim(), purpose }
@@ -233,7 +238,7 @@
         pending = null; connecting = true; remember();
       }
     } catch (caught) { if (current(token)) error = caught; }
-    finally { if (current(token)) busy = false; }
+    finally { releaseBusy(owner); }
   }
 
   async function connectDocument(doc: Document) {
@@ -247,13 +252,13 @@
 
   async function operation(task: () => Promise<Work | null | undefined>) {
     if (busy || pending) return;
-    const token = epoch;
-    busy = true; error = null;
+    const token = epoch, owner = claimBusy();
+    error = null;
     try {
       const updated = await task();
       if (current(token) && updated) { work = updated; connecting = false; pastedText = ''; selection = ''; resetLiveRefresh(); remember(); }
     } catch (caught) { if (current(token)) error = caught; }
-    finally { if (current(token)) busy = false; }
+    finally { releaseBusy(owner); }
   }
 
   async function upload(file: File) {
@@ -301,15 +306,14 @@
 
   async function ask(action: Action = 'review') {
     if (!work?.document || busy) return;
-    const token = epoch, id = work.session_id, course = courseId;
-    busy = true; error = null;
-    if (!pending && !(await refreshDocument())) { if (current(token)) busy = false; return; }
-    if (!current(token) || work?.session_id !== id) return;
-    const request: Ask = pending ?? { request_id: crypto.randomUUID(), action, instruction: question.trim(), selection: selection.trim(), expected_revision: work.revision };
-    pending = request;
-    writeSaved(pendingKey(), JSON.stringify(request));
-    busy = true; error = null;
+    const token = epoch, id = work.session_id, course = courseId, owner = claimBusy();
+    error = null;
     try {
+      if (!pending && !(await refreshDocument())) return;
+      if (!current(token) || work?.session_id !== id) return;
+      const request: Ask = pending ?? { request_id: crypto.randomUUID(), action, instruction: question.trim(), selection: selection.trim(), expected_revision: work.revision };
+      pending = request;
+      writeSaved(pendingKey(), JSON.stringify(request));
       await api.POST('/companion/courses/{course_id}/work/{session_id}/ask', { params: { path: { course_id: course, session_id: id } }, body: request });
       removeSaved(`companion-request:${id}`);
       if (!current(token)) return;
@@ -321,18 +325,21 @@
         if (current(token)) conversationEnd?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
     } catch (caught) { if (current(token)) error = caught; }
-    finally { if (current(token)) busy = false; }
+    finally { releaseBusy(owner); }
   }
 
   async function removeSession() {
     if (!work || busy) return;
+    const id = work.session_id, course = courseId, token = epoch;
     if (!(await confirmDialog({ title: 'Delete this work session?', message: 'Its document snapshots and conversations will be removed. Your course sources and learning memory stay intact.', confirmLabel: 'Delete session', danger: true }))) return;
-    const id = work.session_id, token = epoch;
+    if (!current(token) || courseId !== course || work?.session_id !== id || busy) return;
+    const owner = claimBusy();
     try {
-      await api.DELETE('/companion/courses/{course_id}/work/{session_id}', { params: { path: { course_id: courseId, session_id: id } } });
+      await api.DELETE('/companion/courses/{course_id}/work/{session_id}', { params: { path: { course_id: course, session_id: id } } });
       if (current(token)) { resetLiveRefresh(); work = null; pending = null; sessions = sessions.filter(s => s.session_id !== id); }
       removeSaved(`companion-request:${id}`);
     } catch (caught) { if (current(token)) error = caught; }
+    finally { releaseBusy(owner); }
   }
 
   async function togglePin() {
@@ -368,7 +375,7 @@
         </select>
       </label>
       <div class="flex items-center gap-2">
-        <select aria-label="Work session" value={work?.session_id ?? ''} onchange={e => { if (e.currentTarget.value) void openSession(e.currentTarget.value); else { epoch++; resetLiveRefresh(); work = null; question = ''; selection = ''; pending = null; busy = false; } }} class="min-w-0 flex-1 rounded-lg border border-line bg-surface p-2 text-sm">
+        <select aria-label="Work session" value={work?.session_id ?? ''} onchange={e => { if (e.currentTarget.value) void openSession(e.currentTarget.value); else { epoch++; resetLiveRefresh(); work = null; question = ''; selection = ''; pending = null; resetBusy(); } }} class="min-w-0 flex-1 rounded-lg border border-line bg-surface p-2 text-sm">
           <option value="">New work session</option>
           {#each sessions as session}<option value={session.session_id}>{session.title} · {session.purpose}</option>{/each}
         </select>

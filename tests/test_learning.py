@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -95,6 +95,85 @@ def test_revealed_retake_is_not_independent_even_if_browser_reloads(client):
     assert _target(client, course.course_id, "application")["proficiency"] == 50
 
 
+def test_sparse_workspace_marker_keeps_full_material_slot_mapping(client, monkeypatch):
+    import json
+
+    from src.backend.common.db import connection
+    from src.backend.retrieval import funnel, labels
+    from src.backend.retrieval.config import load_retrieval_policy
+    from src.backend.retrieval.funnel import Candidate, RetrievalResult
+    from src.backend.tutor import answer as tutor_answer
+    from src.backend.tutor.compose import Composed, Intent
+    from tests.factories import chunk_source_locator
+
+    course_id = UUID(
+        client.post("/courses", json={"name": "Sparse quiz"}).json()["course_id"]
+    )
+    chunk_ids = [
+        add_chunk(course_id, f"Course passage {index} explains a property.")
+        for index in range(1, 4)
+    ]
+    candidates = []
+    for index, chunk_id in enumerate(chunk_ids):
+        source_id, locator_id = chunk_source_locator(chunk_id)
+        candidates.append(
+            Candidate(
+                chunk_id=chunk_id,
+                source_id=source_id,
+                locator_id=locator_id,
+                chunk_index=index,
+                text=f"Course passage {index + 1} explains a property.",
+                layers=frozenset({"keyword"}),
+                rank=1.0,
+            )
+        )
+    all_candidates = tuple(candidates)
+    quiz = {
+        "type": "quiz",
+        "title": "Sparse source test",
+        "questions": [
+            {
+                "prompt": "Which property does passage three explain?",
+                "options": ["A property", "No property"],
+                "answer": 0,
+                "explanation": "Passage three explains a property.",
+                "sources": [3],
+            }
+        ],
+    }
+    text = "```workspace\n" + json.dumps(quiz) + "\n```"
+    monkeypatch.setattr(
+        funnel,
+        "retrieve",
+        lambda *args, **kwargs: RetrievalResult(all_candidates),
+    )
+    monkeypatch.setattr(labels, "attach_passage_context", lambda conn, items: items)
+    monkeypatch.setattr(
+        tutor_answer,
+        "compose_answer",
+        lambda *args, **kwargs: Composed(
+            text, Intent.QUIZ, True, candidates=all_candidates
+        ),
+    )
+    with connection() as conn:
+        result = tutor_answer.answer_question(
+            conn,
+            course_id,
+            "Make a quiz about passage three",
+            load_retrieval_policy(),
+        )
+        conn.commit()
+    assert result.chunk_ids == (chunk_ids[2],)
+    assert result.material_chunk_ids == tuple(chunk_ids)
+    assert result.workspace_items[0].questions[0].sources == [3]
+    practice_id = result.workspace_items[0].practice_id
+    assert practice_id is not None
+    with connection() as conn:
+        saved = learning.suite(conn, course_id, practice_id)
+    assert saved.questions[0].sources == [3]
+    assert saved.evidence[2]["chunk_id"] == str(chunk_ids[2])
+
+
 def test_submission_retry_is_idempotent_and_conflicting_answers_are_rejected(client):
     course = make_course()
     chunk = add_chunk(course.course_id, "Course evidence.")
@@ -115,6 +194,27 @@ def test_submission_retry_is_idempotent_and_conflicting_answers_are_rejected(cli
         == 422
     )
     assert _target(client, course.course_id, "application")["observations"] == 1
+
+
+def test_suite_creation_retry_matches_json_normalized_origin():
+    course = make_course()
+    chunk = add_chunk(course.course_id, "Linearity preserves addition and scaling.")
+    question = PracticeQuestion(
+        prompt="Which property defines linearity?",
+        options=["Preserves addition and scaling", "Preserves lengths"],
+        answer=0,
+        sources=[1],
+    )
+    origin = {"message_id": uuid4(), "created_at": datetime.now(UTC)}
+    with connection() as conn:
+        first = learning.create_suite(
+            conn, course.course_id, "Retry", [question], (chunk,), origin
+        )
+        second = learning.create_suite(
+            conn, course.course_id, "Retry", [question], (chunk,), origin
+        )
+        conn.commit()
+    assert first == second
 
 
 @pytest.mark.parametrize(
@@ -444,7 +544,7 @@ def test_upgrade_keeps_capability_history_and_only_valid_method_associations(
     assert _submit(client, course.course_id, suite_id, [0, 1]).status_code == 200
     with connection() as conn:
         assert len(inspection.rows(conn, "core_observations")) == 2
-    assert migrations.migrate(path) == ["021"]
+    assert migrations.migrate(path) == ["021", "022"]
     with connection() as conn:
         observations = inspection.rows(conn, "observations", course_id=course.course_id)
         assert len(observations) == 2 and all(row["correct"] for row in observations)

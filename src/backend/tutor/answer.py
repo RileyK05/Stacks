@@ -91,6 +91,7 @@ class Answer:
         model: str = "",
         fell_back_to_local: bool = False,
         cached: bool = False,
+        material_chunk_ids: tuple[UUID, ...] | None = None,
     ) -> None:
         self.text = strip_fence_echo(text)
         self.chunk_ids = chunk_ids
@@ -99,7 +100,8 @@ class Answer:
         self.model = model
         self.fell_back_to_local = fell_back_to_local
         self.cached = cached
-        extracted = extract_workspace_items(self.text, len(chunk_ids))
+        self.material_chunk_ids = material_chunk_ids or chunk_ids
+        extracted = extract_workspace_items(self.text, len(self.material_chunk_ids))
         self.body = extracted.body
         self.workspace_items: tuple[WorkspaceItem, ...] = extracted.items
         self.withheld = extracted.withheld
@@ -169,7 +171,7 @@ def answer_question(
     def generate(
         task: str, prompt: str, *, response_schema: dict[str, Any] | None = None
     ) -> str:
-        generation = _generate(
+        generation = provider.generate(
             task,
             prompt,
             course_id=course_id,
@@ -288,7 +290,24 @@ def answer_question(
         scope_note=scope_note,
     )
     used = dataclasses.replace(result, candidates=composed.candidates)
-    cited = _cited_passages(composed.text, composed.candidates)
+    extracted = extract_workspace_items(composed.text, len(composed.candidates))
+    workspace_numbers: list[int] = []
+    for item in extracted.items:
+        if isinstance(item, WorkspaceQuiz):
+            workspace_numbers.extend(
+                number for question in item.questions for number in question.sources
+            )
+        elif isinstance(item, WorkspaceMindMap):
+            workspace_numbers.extend(
+                number
+                for element in (*item.nodes, *item.edges)
+                for number in getattr(element, "sources", ())
+            )
+        else:
+            workspace_numbers.extend(getattr(item, "sources", ()))
+    cited = _cited_passages(
+        composed.text, composed.candidates, workspace_numbers=workspace_numbers
+    )
     stored = trace.record_trace(
         conn,
         course_id,
@@ -297,15 +316,14 @@ def answer_question(
         embedding_model=embedding_model,
         cited=cited,
     )
-    last = calls[-1]
     answer = Answer(
         text=composed.text,
-        chunk_ids=tuple(chunk_id for chunk_id, _marker in cited)
-        or tuple(c.chunk_id for c in composed.candidates),
+        chunk_ids=tuple(chunk_id for chunk_id, _marker in cited),
         trace_id=stored.trace_id,
         layer_contribution=stored.layer_contribution,
-        model=last.model,
+        model=calls[-1].model if calls else "",
         fell_back_to_local=any(call.fell_back_to_local for call in calls),
+        material_chunk_ids=tuple(c.chunk_id for c in composed.candidates),
     )
     evidence = learning.evidence_for(conn, answer.chunk_ids)
     current_sources = {str(row["source_id"]) for row in evidence}
@@ -355,7 +373,7 @@ def answer_question(
                 course_id,
                 item.title or "Practice test",
                 selected,
-                answer.chunk_ids,
+                answer.material_chunk_ids,
                 {
                     "trace_id": str(stored.trace_id),
                     "teaching_context": previous_teaching,
@@ -365,8 +383,12 @@ def answer_question(
             item = item.model_copy(update={"practice_id": suite_id})
         items.append(item)
     answer.workspace_items = tuple(items)
-    if method and not any(
-        isinstance(item, (WorkspaceQuiz, WorkspaceMindMap)) for item in items
+    if (
+        method
+        and answer.chunk_ids
+        and not any(
+            isinstance(item, (WorkspaceQuiz, WorkspaceMindMap)) for item in items
+        )
     ):
         conn.execute(
             get("learning", "teach"),
@@ -397,38 +419,21 @@ def answer_question(
     return answer
 
 
-_CUT_OFF_RETRY = (
-    "\n\nYour previous reply was cut off for length. Reply again, much more briefly."
-)
-
-
 def _cited_passages(
-    text: str, candidates: Sequence[Any]
+    text: str, candidates: Sequence[Any], *, workspace_numbers: Sequence[int] = ()
 ) -> tuple[tuple[UUID, int], ...]:
     """Markers the answer printed, in marker order. Empty when it cited nothing."""
     from src.backend.tutor.workspace import _inline_citations
 
     seen: set[int] = set()
     markers: list[int] = []
-    for number in _inline_citations(text):
+    for number in (*_inline_citations(text), *workspace_numbers):
         if number in seen or not 1 <= number <= len(candidates):
             continue
         seen.add(number)
         markers.append(number)
     markers.sort()
     return tuple((candidates[number - 1].chunk_id, number) for number in markers)
-
-
-def _generate(task: str, prompt: str, **options: Any) -> provider.GenerationResult:
-    """One model call, with one automatic second try for the two failures a
-    second try often fixes and the student cannot: a reply with no text
-    (common with small and free models) and one cut off at the output limit."""
-    try:
-        return provider.generate(task, prompt, **options)
-    except provider.EmptyModelError:
-        return provider.generate(task, prompt, **options)
-    except provider.ModelOutputTruncatedError:
-        return provider.generate(task, prompt + _CUT_OFF_RETRY, **options)
 
 
 @dataclasses.dataclass(frozen=True)

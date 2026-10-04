@@ -8,6 +8,7 @@ import re
 from uuid import UUID
 
 from src.backend.common import provider, work_repo
+from src.backend.common.citations import cited_numbers
 from src.backend.common.companion_config import load_companion_policy
 from src.backend.common.db import connection
 from src.backend.common.prompt_registry import (
@@ -224,7 +225,7 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
                 f"**Proposed replacement**\n\n{proposed_edit.replacement}\n\n"
                 f"**Why this edit**\n\n{proposed_edit.explanation}"
             )
-        numbers = {int(n) for n in re.findall(r"(?<!D)\[(\d+)\]", cited_text)}
+        numbers = cited_numbers(cited_text)
         if (
             not text.strip()
             or not numbers.issubset({c.number for c in citations})
@@ -237,8 +238,12 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
             raise ValueError(
                 "The answer contained an unsupported source reference. Try again."
             )
+        citations = [citation for citation in citations if citation.number in numbers]
     with connection() as conn:
-        stored = trace.record_trace(conn, course_id, search, used)
+        cited = tuple(
+            (UUID(citation.chunk_id), citation.number) for citation in citations
+        )
+        stored = trace.record_trace(conn, course_id, search, used, cited=cited)
         reply = WorkReply(
             text=text,
             model=model,

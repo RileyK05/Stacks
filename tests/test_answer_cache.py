@@ -35,6 +35,29 @@ def test_normalised_question() -> None:
     )
 
 
+def test_uncited_answer_does_not_claim_every_retrieved_chunk(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course_id = client.post("/courses", json={"name": "No citation"}).json()[
+        "course_id"
+    ]
+    add_chunk(course_id, "Linearity preserves addition and scaling.")
+    configure_test_provider(monkeypatch, "Linearity preserves structure.")
+    answer = _ask(client, course_id, "What is linearity?")
+    assert answer["chunk_ids"] == []
+
+
+def test_fifty_question_request_returns_explanation_without_model_call(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course_id = client.post("/courses", json={"name": "Quiz count"}).json()["course_id"]
+    add_chunk(course_id, "Linearity preserves addition and scaling.")
+    calls = configure_test_provider(monkeypatch, "should not be used")
+    answer = _ask(client, course_id, "Make me a 50-question quiz about linearity")
+    assert "1–20" in answer["text"]
+    assert calls == []
+
+
 def test_same_question_is_answered_from_the_cache(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

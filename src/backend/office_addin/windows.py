@@ -35,6 +35,7 @@ APP_NAMES: dict[OfficeApp, str] = {
     "powerpoint": "PowerPoint",
 }
 _NO_WINDOW = 0x0800_0000
+COMMAND_TIMEOUT_SECONDS = 30
 
 
 def installed_apps() -> list[OfficeApp]:
@@ -75,12 +76,19 @@ def trust(ca_path: Path) -> bool:
     confirmation dialog; returns False if the user declines it."""
     if sys.platform != "win32":
         return False
-    result = subprocess.run(
-        ["certutil", "-user", "-addstore", "-f", "Root", str(ca_path)],
-        capture_output=True,
-        creationflags=_NO_WINDOW,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["certutil", "-user", "-addstore", "-f", "Root", str(ca_path)],
+            capture_output=True,
+            creationflags=_NO_WINDOW,
+            check=False,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise OSError(
+            "Windows certificate trust timed out. "
+            "Retry and respond to the Windows prompt."
+        ) from err
     return result.returncode == 0
 
 
@@ -88,12 +96,19 @@ def untrust(thumbprint: str) -> None:
     """Remove the CA from the user's trusted roots (Windows confirms)."""
     if sys.platform != "win32":
         return
-    result = subprocess.run(
-        ["certutil", "-user", "-delstore", "Root", thumbprint],
-        capture_output=True,
-        creationflags=_NO_WINDOW,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["certutil", "-user", "-delstore", "Root", thumbprint],
+            capture_output=True,
+            creationflags=_NO_WINDOW,
+            check=False,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as err:
+        raise OSError(
+            "Windows certificate removal timed out. "
+            "Retry and respond to the Windows prompt."
+        ) from err
     if result.returncode != 0:
         raise OSError("Windows could not remove the Stacks certificate trust.")
 

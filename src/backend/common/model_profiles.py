@@ -18,7 +18,7 @@ import tomllib
 from functools import cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from src.backend.common.config import PROJECT_ROOT
 
 PROFILES_DIR = PROJECT_ROOT / "configs" / "models"
@@ -29,8 +29,20 @@ class ModelProfile(BaseModel):
     aliases: tuple[str, ...] = ()
     reasoning: bool = False
     max_output_tokens: int | None = Field(default=None, ge=1)
+    output_token_limit: int | None = Field(default=None, ge=1)
+    context_window_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     notes: str = ""
+
+    @model_validator(mode="after")
+    def output_limit_covers_profile_maximum(self) -> ModelProfile:
+        if (
+            self.max_output_tokens is not None
+            and self.output_token_limit is not None
+            and self.max_output_tokens > self.output_token_limit
+        ):
+            raise ValueError("max_output_tokens cannot exceed output_token_limit")
+        return self
 
 
 @cache

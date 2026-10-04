@@ -128,12 +128,12 @@
     {#if usage}
       <Card
         title="Usage"
-        description="Tokens used this month. Local-model calls are free; cloud calls count toward the optional budget."
+        description="Reported usage this month. Local-model calls are free; reported cloud tokens count toward the optional budget."
       >
         <div class="flex flex-col gap-5">
           <div class="flex flex-wrap items-end gap-6">
             <div>
-              <p class="text-xs uppercase tracking-wide text-subtle">Cloud tokens this month</p>
+              <p class="text-xs uppercase tracking-wide text-subtle">Cloud tokens reported this month</p>
               <p class="mt-1 font-display text-2xl text-fg">
                 {tokens(usage.cloud_tokens_this_month)}
                 {#if usage.monthly_cloud_token_budget}
@@ -147,6 +147,14 @@
             </form>
           </div>
 
+          {#if usage.cloud_calls_without_usage > 0}
+            <p class="text-sm text-muted" role="status">
+              Token counts are incomplete or unverified for {usage.cloud_calls_without_usage}
+              cloud {usage.cloud_calls_without_usage === 1 ? 'request' : 'requests'}.
+              This total may be incomplete. The budget stops new requests once reported usage reaches it.
+            </p>
+          {/if}
+
           {#if usage.totals.length > 0}
             <table class="w-full text-left text-sm">
               <thead class="text-xs uppercase tracking-wide text-subtle">
@@ -154,7 +162,7 @@
                   <th class="pb-2 font-medium">Model</th>
                   <th class="pb-2 font-medium">Task</th>
                   <th class="pb-2 text-right font-medium">Calls</th>
-                  <th class="pb-2 text-right font-medium">Tokens in / out</th>
+                  <th class="pb-2 text-right font-medium">Reported tokens in / out</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-line">
@@ -163,7 +171,12 @@
                     <td class="py-2 text-fg">{row.model} <span class="text-subtle">· {row.provider}</span></td>
                     <td class="py-2 text-muted">{row.task.replace(/_/g, ' ')}</td>
                     <td class="py-2 text-right text-muted">{row.calls}</td>
-                    <td class="py-2 text-right text-muted">{tokens(row.input_tokens)} / {tokens(row.output_tokens)}</td>
+                    <td class="py-2 text-right text-muted">
+                      {tokens(row.input_tokens)} / {tokens(row.output_tokens)}
+                      {#if row.calls_without_usage > 0}
+                        <span class="block text-xs text-subtle">Incomplete or unverified for {row.calls_without_usage} {row.calls_without_usage === 1 ? 'request' : 'requests'}</span>
+                      {/if}
+                    </td>
                   </tr>
                 {/each}
               </tbody>

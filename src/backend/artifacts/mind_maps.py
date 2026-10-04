@@ -67,7 +67,11 @@ def _context(conn: Connection, course_id: UUID, request: MapStudyRequest) -> _Co
         raw = {
             k: v for k, v in items[origin.item_index].items() if k in {"nodes", "edges"}
         }
-        ids = tuple(UUID(cid) for cid in message["payload"].get("chunk_ids", []))
+        payload = message["payload"]
+        # Workspace [n] markers refer to the complete candidate array. Older
+        # messages stored only chunk_ids, so retain that field as a fallback.
+        raw_ids = payload.get("material_chunk_ids", payload.get("chunk_ids", []))
+        ids = tuple(UUID(cid) for cid in raw_ids)
         selection = message
     else:
         assert origin.artifact_id is not None

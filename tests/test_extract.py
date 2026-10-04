@@ -4,6 +4,7 @@ agreement, not just shape."""
 
 import io
 import json
+import math
 from pathlib import Path
 from unittest.mock import patch
 from uuid import UUID, uuid4
@@ -14,6 +15,7 @@ from src.backend.ingest.extract import (
     EmptyExtractionError,
     ScannedPdfNeedsOcrError,
     UnsupportedSourceTypeError,
+    _bounded_render_scale,
     _join_pages,
     _line_locators,
     _markdown_locators,
@@ -214,6 +216,16 @@ def test_scanned_pdf_fails_loudly() -> None:
         path.parent.rmdir()
 
 
+@pytest.mark.parametrize(
+    "width,height,scale,limit",
+    [(10000, 10000, 2, 8000000), (100, 10000, 2, 100000), (612, 792, 2, 8000000)],
+)
+def test_render_scale_caps_allocated_bitmap_pixels(width, height, scale, limit) -> None:
+    bounded = _bounded_render_scale(width, height, scale, limit)
+    assert 0 < bounded <= scale
+    assert math.ceil(width * bounded) * math.ceil(height * bounded) <= limit
+
+
 def test_rasterize_pages_renders_bounded_png_pages() -> None:
     """The OCR path renders pages to PNG, capped at max_pages so a huge
     scan cannot fan out into unbounded billed model calls."""
@@ -293,6 +305,14 @@ def test_markdown_preamble_is_covered_and_not_miscited() -> None:
     assert not locators[0].label.startswith("§")
     assert locators[1].start == heading_start
     assert locators[-1].end == len(text)
+
+
+def test_whitespace_only_markdown_preamble_has_its_own_locator() -> None:
+    text = " \t\n\n# Heading\nBody"
+    locators = _markdown_locators(text)
+    assert locators[0].start == 0
+    assert locators[0].end == text.index("# Heading")
+    assert not locators[0].label.startswith("§")
 
 
 def test_pdf_identity_path_reads_through_the_capped_seam() -> None:
@@ -520,7 +540,7 @@ def test_garbled_page_is_queued_after_blank_pages() -> None:
         path.unlink(missing_ok=True)
         path.parent.rmdir()
     assert extracted.report is not None
-    assert extracted.report.ocr_pages == (1, 0)
+    assert extracted.report.ocr_pages == (0, 1)
     assert extracted.report.pages_low_quality == 1
 
 
@@ -564,15 +584,88 @@ def test_apply_page_ocr_splices_only_the_blank_page() -> None:
     assert updated.text[updated.locators[1].start : updated.locators[1].end] == rescued
 
 
-def test_blank_pages_are_ordered_ahead_of_low_quality_pages() -> None:
+def test_garbled_pages_are_ordered_ahead_of_blank_pages() -> None:
     report = assess_pages(
         ["", ",N>KMH .B<:GL ;>@:G" * 50, "The treaty of the land. " * 12],
         min_page_chars=20,
         quality_floor=0.35,
     )
-    assert report.ocr_pages[0] == 0
-    assert 1 in report.ocr_pages
+    assert report.ocr_pages[0] == 1
+    assert 0 in report.ocr_pages
     assert 2 not in report.ocr_pages
+
+
+def test_low_quality_pages_are_prioritized_before_blank_pages() -> None:
+    report = assess_pages(
+        ["" for _ in range(45)] + [",N>KMH .B<:GL ;>@:G" * 50 for _ in range(6)],
+        min_page_chars=20,
+        quality_floor=0.35,
+    )
+    assert report.ocr_pages[:6] == tuple(range(45, 51))
+
+
+def test_clean_text_normalizes_line_endings_and_extraction_sentinels() -> None:
+    assert (
+        clean_text("first\r\nword\ufffe-soft\u00adhyphen") == "first\nword-softhyphen"
+    )
+
+
+def test_office_text_is_normalized_before_locator_offsets(monkeypatch) -> None:
+    from src.backend.ingest import office
+
+    course_id, source_id = uuid4(), uuid4()
+    path = storage.write_stored(course_id, source_id, b"office fixture")
+    monkeypatch.setattr(
+        office,
+        "docx_text",
+        lambda _raw: "Opening\r\nsoft\ufffe-hy\u00adphen\r\n# Heading\r\nbody",
+    )
+    try:
+        extracted = extract(
+            course_id,
+            source_id,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            stored_encoding="identity",
+        )
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+    assert extracted.text == "Opening\nsoft-hyphen\n# Heading\nbody"
+    assert extracted.text[
+        extracted.locators[0].start : extracted.locators[0].end
+    ].startswith("Opening\nsoft-hyphen")
+
+
+def test_read_decoded_handles_short_nuls_and_bomless_utf16() -> None:
+    from src.backend.ingest.extract import read_decoded
+
+    course_id, source_id = uuid4(), uuid4()
+    path = storage.write_stored(course_id, source_id, b"a\x00b")
+    try:
+        assert read_decoded(course_id, source_id, "identity") == "ab"
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+    course_id, source_id = uuid4(), uuid4()
+    path = storage.write_stored(course_id, source_id, "hi there".encode("utf-16-le"))
+    try:
+        assert read_decoded(course_id, source_id, "identity") == "hi there"
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
+
+
+def test_cp1252_undefined_bytes_fall_back_without_replacement() -> None:
+    from src.backend.ingest.extract import read_decoded
+
+    course_id, source_id = uuid4(), uuid4()
+    path = storage.write_stored(course_id, source_id, b"\x81 legacy notes")
+    try:
+        assert read_decoded(course_id, source_id, "identity") == "\x81 legacy notes"
+    finally:
+        path.unlink(missing_ok=True)
+        path.parent.rmdir()
 
 
 def test_rasterize_pages_can_render_a_chosen_page() -> None:

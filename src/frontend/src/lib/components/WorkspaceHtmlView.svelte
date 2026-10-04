@@ -5,7 +5,7 @@
 
   interface Props {
     item: WorkspaceHtml;
-    sources: SourceRef[];
+    sources: (SourceRef | null)[];
   }
 
   let { item, sources }: Props = $props();

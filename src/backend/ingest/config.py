@@ -22,6 +22,9 @@ class OcrConfig(BaseModel):
 
     max_pages: int = Field(ge=1)
     scale: float = Field(gt=0)
+    batch_pages: int = Field(default=4, ge=1)
+    max_image_pixels: int = Field(default=8_000_000, ge=1)
+    max_request_image_bytes: int = Field(default=12_000_000, ge=1)
 
 
 class TextConfig(BaseModel):
@@ -35,6 +38,8 @@ class TextConfig(BaseModel):
 class IngestionConfig(BaseModel):
     pipeline_version: str
     max_attempts: int = Field(ge=1)
+    retry_backoff_seconds: float = Field(default=0.5, ge=0)
+    retry_backoff_multiplier: float = Field(default=2, ge=1)
     poll_interval_seconds: int = Field(ge=1)
     ocr: OcrConfig
     text: TextConfig = Field(default_factory=TextConfig)

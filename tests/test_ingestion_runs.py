@@ -153,7 +153,7 @@ def test_unsupported_mime_fails_loudly_and_records_history(course_id: UUID) -> N
     assert run is not None and run.status == IngestionStatus.FAILED
     extract_row = _stage_rows(run.run_id)[0]
     assert extract_row["status"] == "failed"
-    assert extract_row["attempt_count"] == 2
+    assert extract_row["attempt_count"] == 1
     assert "no text extraction handler" in (extract_row["error_message"] or "")
     source_row = _one(
         "SELECT status, error_message FROM sources WHERE source_id = ?", source_id
@@ -351,8 +351,11 @@ def test_mixed_pdf_indexes_when_page_ocr_is_unavailable(course_id: UUID) -> None
         _one("SELECT status FROM sources WHERE source_id = ?", source_id)["status"]
         == "indexed"
     )
-    statuses = {row["stage"]: row["status"] for row in _stage_rows(run_id)}
-    assert statuses["ocr"] == "succeeded"
+    ocr_row = next(row for row in _stage_rows(run_id) if row["stage"] == "ocr")
+    assert ocr_row["status"] == "succeeded"
+    assert "warning:" in ocr_row["error_message"]
+    assert "unresolved pages 2" in ocr_row["error_message"]
+    assert "provider" in ocr_row["error_message"].lower()
     coverage = _one(
         "SELECT pages_total, pages_empty, pages_ocr, extraction_version"
         " FROM source_indexes WHERE source_id = ?",
@@ -361,7 +364,7 @@ def test_mixed_pdf_indexes_when_page_ocr_is_unavailable(course_id: UUID) -> None
     assert coverage["pages_total"] == 3
     assert coverage["pages_empty"] == 1
     assert coverage["pages_ocr"] == 0
-    assert coverage["extraction_version"] == "structured-v2"
+    assert coverage["extraction_version"] == "structured-v3"
     text = _one(
         "SELECT group_concat(text, ' ') AS text FROM chunks WHERE source_id = ?",
         source_id,

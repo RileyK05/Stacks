@@ -5,7 +5,12 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from src.backend.api.deps import require_course
-from src.backend.common import artifacts_repo, conversations_repo, settings_repo
+from src.backend.common import (
+    artifacts_repo,
+    conversations_repo,
+    settings_repo,
+    usage_repo,
+)
 from src.backend.common.db import connection
 from src.backend.common.provider import ProviderUnavailableError
 from src.backend.common.queries import get
@@ -99,31 +104,39 @@ def practice_from_saved(course_id: UUID, payload: SuiteFromSaved) -> SuiteState:
             if (
                 not isinstance(items, list)
                 or payload.item_index >= len(items)
+                or not isinstance(items[payload.item_index], dict)
                 or items[payload.item_index].get("type") != "quiz"
             ):
                 raise HTTPException(404, "saved quiz not found")
             item = items[payload.item_index]
-            questions = [
-                PracticeQuestion.model_validate(
-                    q | {"explanation": q.get("explanation") or ""}
+            questions = _saved_questions(item.get("questions"))
+            try:
+                ids = (
+                    tuple(
+                        UUID(cid)
+                        for cid in message.payload.get(
+                            "material_chunk_ids", message.payload.get("chunk_ids", [])
+                        )
+                    )
+                    if message
+                    else ()
                 )
-                for q in item["questions"]
-            ]
-            ids = (
-                tuple(UUID(cid) for cid in message.payload.get("chunk_ids", []))
-                if message
-                else ()
-            )
+                assigned = (
+                    UUID(item["practice_id"]) if item.get("practice_id") else None
+                )
+            except (ValueError, TypeError, AttributeError) as err:
+                raise HTTPException(
+                    422, "saved quiz has invalid evidence or practice IDs"
+                ) from err
             title = item.get("title") or "Practice test"
             origin = {
                 "message_id": str(payload.message_id),
                 "item_index": payload.item_index,
             }
-            assigned = item.get("practice_id")
             if assigned and inspection.rows(
-                conn, "suite", course_id=course_id, suite_id=UUID(assigned)
+                conn, "suite", course_id=course_id, suite_id=assigned
             ):
-                return _state(course_id, UUID(assigned))
+                return _state(course_id, assigned)
         else:
             assert payload.artifact_id is not None
             artifact = artifacts_repo.load(conn, course_id, payload.artifact_id)
@@ -131,10 +144,7 @@ def practice_from_saved(course_id: UUID, payload: SuiteFromSaved) -> SuiteState:
                 raise HTTPException(404, "saved quiz not found")
             if payload.artifact_version != artifact.version:
                 raise HTTPException(409, "save or reload the quiz before taking it")
-            questions = [
-                PracticeQuestion.model_validate(q)
-                for q in artifact.content["questions"]
-            ]
+            questions = _saved_questions(artifact.content.get("questions"))
             ids, title = artifact.sources, artifact.title
             origin = {
                 "artifact_id": str(payload.artifact_id),
@@ -159,6 +169,26 @@ def practice_from_saved(course_id: UUID, payload: SuiteFromSaved) -> SuiteState:
                 raise HTTPException(422, str(err)) from err
             conn.commit()
     return _state(course_id, suite_id)
+
+
+def _saved_questions(raw: object) -> list[PracticeQuestion]:
+    if (
+        not isinstance(raw, list)
+        or not raw
+        or any(not isinstance(q, dict) for q in raw)
+    ):
+        raise HTTPException(422, "saved quiz has invalid questions")
+    try:
+        return [
+            PracticeQuestion.model_validate(
+                q | {"explanation": q.get("explanation") or ""}
+            )
+            for q in raw
+        ]
+    except ValueError as err:
+        raise HTTPException(
+            422, "saved quiz questions are outside the supported limits"
+        ) from err
 
 
 @router.get("/courses/{course_id}/practice/{suite_id}", response_model=SuiteState)
@@ -214,6 +244,8 @@ def get_question_help(
         raise HTTPException(404, str(err)) from err
     except ProviderUnavailableError as err:
         raise HTTPException(503, str(err)) from err
+    except usage_repo.BudgetExceededError as err:
+        raise HTTPException(402, str(err)) from err
     except ValueError as err:
         raise HTTPException(422, str(err)) from err
 

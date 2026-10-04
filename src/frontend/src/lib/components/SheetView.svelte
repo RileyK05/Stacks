@@ -1,34 +1,44 @@
 <script lang="ts">
+  import { isTauri } from '@tauri-apps/api/core';
+  import { deliverExport, requestWorkspaceExport, type ExportOrigin } from '$lib/api/export';
   import type { SheetSession } from '$lib/stores/workspace.svelte';
+  import { toast } from '$lib/stores/toast.svelte';
+  import { autoGrowTextarea } from '$lib/actions/autoGrowTextarea';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import SourceChips, { type SourceRef } from './SourceChips.svelte';
 
   interface Props {
     session: SheetSession;
-    sources: SourceRef[];
+    sources: (SourceRef | null)[];
+    exportContext: ExportOrigin | null;
   }
 
-  let { session, sources }: Props = $props();
+  let { session, sources, exportContext }: Props = $props();
 
-  function download() {
-    const escape = (cell: string) => (/[",\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell);
-    const csv = [session.item.columns, ...session.draft]
-      .map((row) => row.map(escape).join(','))
-      .join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${(session.item.title ?? 'sheet').replace(/[^\w-]+/g, '-')}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+  let exporting = $state(false);
+
+  async function download() {
+    if (!exportContext) {
+      toast('This material no longer has its original message. Reopen it before exporting.', 'error');
+      return;
+    }
+    exporting = true;
+    try {
+      const file = await requestWorkspaceExport(exportContext, 'csv', session.draft.map((row) => [...row]));
+      const saved = await deliverExport(file);
+      if (saved) toast(isTauri() ? `Saved to ${saved.path}` : `Saved ${saved.filename}`);
+    } catch (caught) {
+      toast(caught instanceof Error ? caught.message : 'Could not export this sheet.', 'error');
+    } finally {
+      exporting = false;
+    }
   }
 </script>
 
 <div class="flex flex-col gap-4">
   <div class="overflow-x-auto rounded-xl border border-line">
-    <table class="w-full border-collapse text-sm">
+    <table class="w-full table-fixed border-collapse text-sm">
       <thead>
         <tr>
           {#each session.item.columns as column, columnIndex (columnIndex)}
@@ -46,11 +56,13 @@
           <tr class="group">
             {#each row as cell, columnIndex (columnIndex)}
               <td class="border-b border-r border-line p-0 last:border-r-0 group-last:border-b-0">
-                <input
+                <textarea
                   bind:value={session.draft[rowIndex][columnIndex]}
+                  use:autoGrowTextarea={session.draft[rowIndex][columnIndex]}
+                  rows="1"
                   aria-label="{session.item.columns[columnIndex]}, row {rowIndex + 1}"
-                  class="w-full min-w-24 bg-transparent px-3 py-2 text-fg transition-colors focus:bg-accent-soft focus:outline-none"
-                />
+                  class="block h-auto w-full min-w-0 resize-none overflow-hidden bg-transparent px-3 py-2 text-fg [overflow-wrap:anywhere] transition-colors focus:bg-accent-soft focus:outline-none"
+                ></textarea>
               </td>
             {/each}
             <td class="border-b border-line text-center group-last:border-b-0">
@@ -78,7 +90,7 @@
         <Icon name="rotate-ccw" class="h-3.5 w-3.5" /> Revert
       </Button>
     {/if}
-    <Button variant="secondary" size="sm" onclick={download} class="ml-auto">
+    <Button variant="secondary" size="sm" onclick={download} class="ml-auto" disabled={exporting}>
       <Icon name="download" class="h-3.5 w-3.5" /> .csv
     </Button>
   </div>

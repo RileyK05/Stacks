@@ -12,6 +12,7 @@ from uuid import UUID
 
 import numpy as np
 from src.backend.common.db import Connection
+from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.common.queries import get
 
 _FILE = "graph"
@@ -19,12 +20,16 @@ _FILE = "graph"
 
 def valid_vectors(
     rows: list[dict[str, Any]],
+    expected_dimension: int | None = None,
 ) -> tuple[list[dict[str, Any]], np.ndarray]:
-    """Drop rows whose stored dimension or byte length disagrees with the
-    batch, and any non-finite vector. Returns (kept rows, matrix)."""
+    """Keep only vectors in the configured embedding space with valid bytes."""
     if not rows:
         return [], np.zeros((0, 0), np.float32)
-    dimension = int(rows[0]["dimension"])
+    dimension = (
+        expected_dimension
+        if expected_dimension is not None
+        else load_embedding_policy().dimension
+    )
     rows = [
         row
         for row in rows
@@ -54,6 +59,8 @@ def load_course_vectors(
         get(_FILE, "course_chunk_vectors"),
         {"course_id": course_id, "model": model},
     ).fetchall()
-    kept, matrix = valid_vectors(list(rows))
+    kept, matrix = valid_vectors(
+        list(rows), expected_dimension=load_embedding_policy().dimension
+    )
     ids = [UUID(str(row["chunk_id"])) for row in kept]
     return ids, matrix, kept

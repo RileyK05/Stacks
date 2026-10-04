@@ -73,7 +73,7 @@ def office_status() -> OfficeStatusView:
 def connect_office() -> OfficeStatusView:
     try:
         return _view(service.connect())
-    except service.OfficeSetupError as err:
+    except (service.OfficeSetupError, OSError, ValueError) as err:
         raise HTTPException(status.HTTP_409_CONFLICT, str(err)) from err
 
 
@@ -81,7 +81,7 @@ def connect_office() -> OfficeStatusView:
 def disconnect_office() -> OfficeStatusView:
     try:
         return _view(service.disconnect())
-    except OSError as err:
+    except (service.OfficeSetupError, OSError, ValueError) as err:
         raise HTTPException(
             409, f"Could not finish disconnecting Office: {err}"
         ) from err
@@ -106,6 +106,6 @@ def open_in_office(request: OpenInOfficeRequest) -> OpenInOfficeView:
             Path(request.path) if request.path else None,
             request.course_id,
         )
-    except service.OfficeSetupError as err:
+    except (service.OfficeSetupError, OSError, ValueError) as err:
         raise HTTPException(status.HTTP_409_CONFLICT, str(err)) from err
     return OpenInOfficeView(app=app, first_time=first_time)

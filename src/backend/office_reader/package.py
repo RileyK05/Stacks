@@ -54,7 +54,12 @@ def _tag(namespace: str, name: str) -> str:
 
 class _BoundedPackage(zipfile.ZipFile):
     def __init__(self, data: bytes) -> None:
-        super().__init__(io.BytesIO(data))
+        try:
+            super().__init__(io.BytesIO(data))
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError) as err:
+            raise UnreadablePackageError(
+                "the bytes are not a readable OOXML package"
+            ) from err
         self._expanded = 0
 
     def read(self, name: str | zipfile.ZipInfo, pwd: bytes | None = None) -> bytes:
@@ -172,11 +177,11 @@ def _read_xlsx(archive: zipfile.ZipFile) -> tuple[list[TextUnit], list[str]]:
         for name in archive.namelist()
         if re.fullmatch(r"xl/worksheets/sheet\d+\.xml", name)
     ]
-    if not sheets:
-        raise UnreadablePackageError("the .xlsx has no worksheets")
+    ordered_sheets, sheet_warnings = _ordered_worksheets(archive, sheets)
+    warnings.extend(sheet_warnings)
     units: list[TextUnit] = []
     formulas = 0
-    for sheet_name in _ordered_parts(archive, "xl/workbook.xml", "sheet", sheets):
+    for sheet_name in ordered_sheets:
         root = _xml(archive.read(sheet_name))
         formulas += sum(1 for _ in root.iter(_tag(_S, "f")))
         for row in root.iter(_tag(_S, "row")):
@@ -211,10 +216,63 @@ def _read_xlsx(archive: zipfile.ZipFile) -> tuple[list[TextUnit], list[str]]:
             if cells:
                 units.append(TextUnit(label=f"row {row_number}", text="; ".join(cells)))
     if not units:
-        warnings.append("the workbook has no cell values")
+        warnings.append("the workbook has no supported worksheet cell values")
     if formulas:
         warnings.append(f"{formulas} formula cell(s) show cached values only")
     return units, warnings
+
+
+def _ordered_worksheets(
+    archive: zipfile.ZipFile, fallback: list[str]
+) -> tuple[list[str], list[str]]:
+    manifest = "xl/workbook.xml"
+    rels_name = "xl/_rels/workbook.xml.rels"
+    if manifest not in archive.namelist() or rels_name not in archive.namelist():
+        return sorted(fallback, key=_part_number), []
+    relationships = {}
+    for rel in _xml(archive.read(rels_name)):
+        if rel.get("TargetMode") == "External":
+            continue
+        target = posixpath.normpath(
+            posixpath.join(posixpath.dirname(manifest), rel.get("Target", ""))
+        ).lstrip("/")
+        relationships[rel.get("Id")] = (target, rel.get("Type", "").lower())
+
+    ordered: list[str] = []
+    warnings: list[str] = []
+    for sheet in _xml(archive.read(manifest)).iter():
+        if sheet.tag.rsplit("}", 1)[-1] != "sheet":
+            continue
+        name = sheet.get("name", "unnamed sheet")
+        relation_id = sheet.get(
+            "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+        )
+        relation = relationships.get(relation_id)
+        if relation is None:
+            raise UnreadablePackageError(
+                f"worksheet relationship is missing for {name!r}"
+            )
+        target, relation_type = relation
+        if relation_type.endswith("/worksheet"):
+            if target not in archive.namelist() or target not in fallback:
+                raise UnreadablePackageError(f"worksheet part is missing for {name!r}")
+            ordered.append(target)
+        elif relation_type.endswith(
+            (
+                "/chartsheet",
+                "/macrosheet",
+                "/xlmacrosheet",
+                "/xlintlmacrosheet",
+                "/dialogsheet",
+            )
+        ):
+            kind = relation_type.rsplit("/", 1)[-1]
+            warnings.append(f"{kind} {name!r} is not a worksheet and was skipped")
+        else:
+            raise UnreadablePackageError(
+                f"unsupported workbook sheet relationship for {name!r}"
+            )
+    return ordered, warnings
 
 
 def _read_pptx(archive: zipfile.ZipFile) -> tuple[list[TextUnit], list[str]]:
@@ -227,7 +285,6 @@ def _read_pptx(archive: zipfile.ZipFile) -> tuple[list[TextUnit], list[str]]:
     if not slide_parts:
         raise UnreadablePackageError("the .pptx has no slides")
     units: list[TextUnit] = []
-    linked_notes: dict[str, int] = {}
     for index, part in enumerate(
         _ordered_parts(archive, "ppt/presentation.xml", "sldId", slide_parts), start=1
     ):
@@ -252,30 +309,61 @@ def _read_pptx(archive: zipfile.ZipFile) -> tuple[list[TextUnit], list[str]]:
                 ).lstrip("/")
                 if target not in archive.namelist():
                     warnings.append(f"slide {index} references missing speaker notes")
-                elif target in linked_notes:
-                    raise UnreadablePackageError(
-                        "multiple slides reference the same speaker notes"
-                    )
                 else:
-                    linked_notes[target] = index
-    notes_parts = sorted(
-        name
-        for name in archive.namelist()
-        if re.fullmatch(r"ppt/notesSlides/notesSlide\d+\.xml", name)
-    )
-    for part in sorted(notes_parts, key=_part_number):
-        note_index = linked_notes.get(part)
-        root = _xml(archive.read(part))
-        texts = [t.text or "" for t in root.iter(_tag(_A, "t"))]
-        body = " ".join(text.strip() for text in texts if text.strip())
+                    note = _notes_text(archive, target)
+                    if note:
+                        # Notes follow the slide they belong to, not the notes
+                        # part number, so document order survives a reorder.
+                        units.append(
+                            TextUnit(label=f"speaker notes {index}", text=note)
+                        )
+                    else:
+                        warnings.append(f"slide {index} has empty speaker notes")
+    # Notes with no slide reference cannot be placed in the document order.
+    linked = _linked_note_targets(archive, slide_parts)
+    for part in sorted(
+        (
+            name
+            for name in archive.namelist()
+            if re.fullmatch(r"ppt/notesSlides/notesSlide\d+\.xml", name)
+        ),
+        key=_part_number,
+    ):
+        if part in linked:
+            continue
+        body = _notes_text(archive, part)
         if body:
-            if note_index is None:
-                label = f"unlinked speaker notes ({posixpath.basename(part)})"
-                warnings.append(f"{label} cannot be assigned to a slide")
-            else:
-                label = f"speaker notes {note_index}"
+            label = f"unlinked speaker notes ({posixpath.basename(part)})"
+            warnings.append(f"{label} cannot be assigned to a slide")
             units.append(TextUnit(label=label, text=body))
     return units, warnings
+
+
+def _notes_text(archive: zipfile.ZipFile, part: str) -> str:
+    root = _xml(archive.read(part))
+    texts = [t.text or "" for t in root.iter(_tag(_A, "t"))]
+    return " ".join(text.strip() for text in texts if text.strip())
+
+
+def _linked_note_targets(archive: zipfile.ZipFile, slide_parts: list[str]) -> set[str]:
+    targets: set[str] = set()
+    for part in slide_parts:
+        rels_name = posixpath.join(
+            posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels"
+        )
+        if rels_name not in archive.namelist():
+            continue
+        for rel in _xml(archive.read(rels_name)):
+            if rel.get("TargetMode") == "External" or not rel.get("Type", "").endswith(
+                "/notesSlide"
+            ):
+                continue
+            targets.add(
+                posixpath.normpath(
+                    posixpath.join(posixpath.dirname(part), rel.get("Target", ""))
+                ).lstrip("/")
+            )
+    return targets
 
 
 _READERS = {

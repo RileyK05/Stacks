@@ -10,7 +10,7 @@
   import MindMapView from '$lib/components/MindMapView.svelte';
   import ArtifactContent from '$lib/components/artifacts/ArtifactContent.svelte';
   import { KIND_ICONS, type ArtifactKind } from '$lib/stores/artifact.svelte';
-  import type { Citation } from '$lib/stores/chat.svelte';
+  import { materialSources, type CourseChats } from '$lib/stores/chat.svelte';
   import type { PanelState } from '$lib/stores/panel.svelte';
   import type { WorkspaceCanvas } from '$lib/stores/workspace.svelte';
   import type { IconName } from '$lib/components/Icon.svelte';
@@ -18,8 +18,7 @@
   interface Props {
     panel: PanelState;
     canvas: WorkspaceCanvas;
-    sourcesFor: (turnIndex: number) => Citation[];
-    mapSourcesFor: (turnIndex: number) => (Citation | null)[];
+    chats: CourseChats;
     messageFor: (turnIndex: number) => string | null;
     courseId: string;
     onclose: () => void;
@@ -28,7 +27,13 @@
     onartifactsaved?: () => void | Promise<void>;
   }
 
-  let { panel, canvas, sourcesFor, mapSourcesFor, messageFor, courseId, onclose, onfollowup, onsave, onartifactsaved }: Props = $props();
+  let { panel, canvas, chats, messageFor, courseId, onclose, onfollowup, onsave, onartifactsaved }: Props = $props();
+
+  // Workspace `[n]` markers are numbered against the full material list, but
+  // loaded citations are in prose-marker order. Resolve through the turn's
+  // material list so a chip never names the wrong file.
+  const sourcesFor = (turnIndex: number) => materialSources(chats.turns[turnIndex]);
+  const mapSourcesFor = (turnIndex: number) => sourcesFor(turnIndex);
 
   async function copyActiveArtifact() {
     const current = panel.active;
@@ -249,6 +254,8 @@
       </div>
     {/if}
   {:else if activeCanvas}
+    {@const messageId = messageFor(activeCanvas.turnIndex)}
+    {@const exportContext = messageId ? { courseId, messageId, itemIndex: Number(activeCanvas.id.split(':')[1] ?? 0) } : null}
     <div class="flex min-h-0 flex-1 flex-col">
       <div class="flex items-center gap-2 border-b border-line px-3 py-1.5">
         <span class="rounded-md bg-surface-2 px-1.5 py-0.5 font-mono text-[11px] text-muted">
@@ -276,15 +283,14 @@
         {#if activeCanvas.session.kind === 'quiz'}
           <Quiz session={activeCanvas.session} sources={sourcesFor(activeCanvas.turnIndex)} {onfollowup} />
         {:else if activeCanvas.session.kind === 'document'}
-          <EditableDocument session={activeCanvas.session} sources={sourcesFor(activeCanvas.turnIndex)} />
+          <EditableDocument session={activeCanvas.session} sources={sourcesFor(activeCanvas.turnIndex)} {exportContext} />
         {:else if activeCanvas.session.kind === 'html'}
           <WorkspaceHtmlView item={activeCanvas.session.htmlItem} sources={sourcesFor(activeCanvas.turnIndex)} />
         {:else if activeCanvas.session.kind === 'code'}
           <CodeView item={activeCanvas.session.item} sources={sourcesFor(activeCanvas.turnIndex)} />
         {:else if activeCanvas.session.kind === 'sheet'}
-          <SheetView session={activeCanvas.session} sources={sourcesFor(activeCanvas.turnIndex)} />
+          <SheetView session={activeCanvas.session} sources={sourcesFor(activeCanvas.turnIndex)} {exportContext} />
         {:else if activeCanvas.session.kind === 'mind_map'}
-          {@const messageId = messageFor(activeCanvas.turnIndex)}
           <MindMapView map={activeCanvas.session.item} sources={mapSourcesFor(activeCanvas.turnIndex)} context={messageId ? { courseId, origin: { message_id: messageId, item_index: Number(activeCanvas.id.split(':')[1] ?? 0) } } : undefined} ongenerated={onartifactsaved} />
         {:else}
           <SlidesView session={activeCanvas.session} sources={sourcesFor(activeCanvas.turnIndex)} />

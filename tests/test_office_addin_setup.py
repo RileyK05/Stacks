@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime as dt
 import socket
 import ssl
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -203,6 +204,279 @@ def test_busy_port_is_reported(fake_windows: FakeWindows, fake_host: FakeHost) -
         service.connect()
 
 
+def test_declined_renewal_preserves_existing_cohort_and_connection(
+    fake_windows: FakeWindows,
+    fake_host: FakeHost,
+    _isolated_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service.connect()
+    folder = _addin_dir(_isolated_data_dir)
+    paths = certs.CertPaths.in_dir(folder)
+    before = {
+        path.name: path.read_bytes()
+        for path in (*paths.__dict__.values(), folder / "manifest.xml")
+    }
+    trusted_before = set(fake_windows.trusted)
+    registration_before = dict(fake_windows.registry)
+    fake_windows.accept_trust = False
+    monkeypatch.setattr(certs, "is_current", lambda _paths: False)
+
+    with pytest.raises(service.OfficeSetupError, match="declined"):
+        service.connect()
+
+    assert {
+        path.name: path.read_bytes()
+        for path in (*paths.__dict__.values(), folder / "manifest.xml")
+    } == before
+    assert fake_windows.trusted == trusted_before
+    assert fake_windows.registry == registration_before
+    assert fake_host.running
+
+
+def test_registration_failure_restores_cohort_and_host(
+    fake_windows: FakeWindows,
+    fake_host: FakeHost,
+    _isolated_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service.connect()
+    folder = _addin_dir(_isolated_data_dir)
+    paths = certs.CertPaths.in_dir(folder)
+    before = {
+        path.name: path.read_bytes()
+        for path in (*paths.__dict__.values(), folder / "manifest.xml")
+    }
+    trusted_before = set(fake_windows.trusted)
+    registration_before = dict(fake_windows.registry)
+    original_register = windows.register
+    failed = False
+
+    def fail_once(addin_id: str, path: Path) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("injected registration failure")
+        original_register(addin_id, path)
+
+    monkeypatch.setattr(windows, "register", fail_once)
+    monkeypatch.setattr(certs, "is_current", lambda _paths: False)
+    with pytest.raises(service.OfficeSetupError, match="injected registration"):
+        service.connect()
+
+    assert {
+        path.name: path.read_bytes()
+        for path in (*paths.__dict__.values(), folder / "manifest.xml")
+    } == before
+    assert fake_windows.trusted == trusted_before
+    assert fake_windows.registry == registration_before
+    assert fake_host.running
+
+
+def test_trust_provider_exception_after_adding_candidate_is_compensated(
+    fake_windows: FakeWindows,
+    fake_host: FakeHost,
+    _isolated_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service.connect()
+    folder = _addin_dir(_isolated_data_dir)
+    paths = certs.CertPaths.in_dir(folder)
+    before = {path.name: path.read_bytes() for path in paths.__dict__.values()}
+    trusted_before = set(fake_windows.trusted)
+
+    def trust_then_fail(path: Path) -> bool:
+        fake_windows.trusted.add(path.read_bytes())
+        raise OSError("provider failed after importing CA")
+
+    monkeypatch.setattr(certs, "is_current", lambda _paths: False)
+    monkeypatch.setattr(windows, "trust", trust_then_fail)
+    with pytest.raises(service.OfficeSetupError, match="provider failed"):
+        service.connect()
+
+    assert fake_windows.trusted == trusted_before
+    assert {path.name: path.read_bytes() for path in paths.__dict__.values()} == before
+    assert fake_host.running
+
+
+def test_start_failure_restores_cohort_and_host(
+    fake_windows: FakeWindows,
+    fake_host: FakeHost,
+    _isolated_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service.connect()
+    folder = _addin_dir(_isolated_data_dir)
+    paths = certs.CertPaths.in_dir(folder)
+    before = {
+        path.name: path.read_bytes()
+        for path in (*paths.__dict__.values(), folder / "manifest.xml")
+    }
+    trusted_before = set(fake_windows.trusted)
+    original_start = fake_host.start
+    failed = False
+
+    def fail_once(app: Any, *, port: int, cert: Path, key: Path) -> None:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("injected host start failure")
+        original_start(app, port=port, cert=cert, key=key)
+
+    monkeypatch.setattr(certs, "is_current", lambda _paths: False)
+    monkeypatch.setattr(fake_host, "start", fail_once)
+    with pytest.raises(service.OfficeSetupError, match="injected host start"):
+        service.connect()
+
+    assert {
+        path.name: path.read_bytes()
+        for path in (*paths.__dict__.values(), folder / "manifest.xml")
+    } == before
+    assert fake_windows.trusted == trusted_before
+    assert fake_windows.registry[manifest.addin_id()] == str(folder / "manifest.xml")
+    assert fake_host.running
+
+
+def test_rollback_failure_is_appended_to_primary_error(
+    fake_windows: FakeWindows,
+    fake_host: FakeHost,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_register = windows.register
+
+    def fail_register(_addin_id: str, _path: Path) -> None:
+        raise OSError("primary registration failure")
+
+    def fail_unregister(_addin_id: str) -> None:
+        raise OSError("rollback unregister failure")
+
+    monkeypatch.setattr(windows, "register", fail_register)
+    monkeypatch.setattr(windows, "unregister", fail_unregister)
+    with pytest.raises(
+        service.OfficeSetupError, match="primary registration"
+    ) as raised:
+        service.connect()
+    assert any("rollback unregister failure" in note for note in raised.value.__notes__)
+    assert "rollback unregister failure" in str(raised.value)
+    monkeypatch.setattr(windows, "register", original_register)
+
+
+def test_reconnect_retries_pending_trust_cleanup(
+    fake_windows: FakeWindows, fake_host: FakeHost
+) -> None:
+    service.connect()
+    obsolete_ca = b"obsolete public CA bytes"
+    thumbprint = (
+        certs.hashlib.sha1(obsolete_ca, usedforsecurity=False).hexdigest().upper()
+    )
+    fake_windows.trusted.add(obsolete_ca)
+    service._remember_pending(thumbprint, obsolete_ca)
+
+    current = service.connect()
+
+    assert current.ready
+    assert obsolete_ca not in fake_windows.trusted
+    assert service._pending_records() == []
+
+
+def test_disconnect_stop_failure_keeps_files_and_trust(
+    fake_windows: FakeWindows, fake_host: FakeHost, _isolated_data_dir: Path
+) -> None:
+    service.connect()
+    folder = _addin_dir(_isolated_data_dir)
+    paths = certs.CertPaths.in_dir(folder)
+    before = {
+        path.name: path.read_bytes()
+        for path in (*paths.__dict__.values(), folder / "manifest.xml")
+    }
+    trusted_before = set(fake_windows.trusted)
+
+    def failed_stop() -> None:
+        raise TimeoutError("host did not stop")
+
+    fake_host.stop = failed_stop  # type: ignore[method-assign]
+    with pytest.raises(service.OfficeSetupError, match="files and trust were kept"):
+        service.disconnect()
+    assert {
+        path.name: path.read_bytes()
+        for path in (*paths.__dict__.values(), folder / "manifest.xml")
+    } == before
+    assert fake_windows.trusted == trusted_before
+
+
+def test_concurrent_connects_and_status_see_complete_cohort(
+    fake_windows: FakeWindows, fake_host: FakeHost, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_trust = fake_windows.trust
+    trust_entered = threading.Event()
+    release_trust = threading.Event()
+
+    def blocked_trust(path: Path) -> bool:
+        trust_entered.set()
+        assert release_trust.wait(5)
+        return original_trust(path)
+
+    monkeypatch.setattr(windows, "trust", blocked_trust)
+    connect_thread = threading.Thread(target=service.connect)
+    connect_thread.start()
+    assert trust_entered.wait(5)
+    second_connect = threading.Thread(target=service.connect)
+    second_connect.start()
+    status_result: list[service.OfficeStatus] = []
+    status_thread = threading.Thread(
+        target=lambda: status_result.append(service.status())
+    )
+    status_thread.start()
+    assert status_thread.is_alive()
+    release_trust.set()
+    connect_thread.join(5)
+    second_connect.join(5)
+    status_thread.join(5)
+    assert (
+        not connect_thread.is_alive()
+        and not second_connect.is_alive()
+        and not status_thread.is_alive()
+    )
+    assert status_result[0].ready
+    assert fake_windows.trust_prompts == 1
+    assert certs.is_current(certs.CertPaths.in_dir(service._folder()))
+
+
+def test_status_waits_until_cohort_publication_finishes(
+    fake_windows: FakeWindows,
+    fake_host: FakeHost,
+    _isolated_data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    folder = _addin_dir(_isolated_data_dir)
+    original_atomic_write = certs._atomic_write
+    first_file_written = threading.Event()
+    release_publish = threading.Event()
+
+    def pause_after_certificate(path: Path, data: bytes) -> None:
+        original_atomic_write(path, data)
+        if path == folder / "localhost.pem" and not first_file_written.is_set():
+            first_file_written.set()
+            assert release_publish.wait(5)
+
+    monkeypatch.setattr(certs, "_atomic_write", pause_after_certificate)
+    connect_thread = threading.Thread(target=service.connect)
+    connect_thread.start()
+    assert first_file_written.wait(5)
+    status_result: list[service.OfficeStatus] = []
+    status_thread = threading.Thread(
+        target=lambda: status_result.append(service.status())
+    )
+    status_thread.start()
+    assert status_thread.is_alive()
+    release_publish.set()
+    connect_thread.join(5)
+    status_thread.join(5)
+    assert not connect_thread.is_alive() and not status_thread.is_alive()
+    assert status_result[0].ready
+    assert certs.is_current(certs.CertPaths.in_dir(folder))
+
+
 def test_status_notices_a_removed_registration(
     fake_windows: FakeWindows, fake_host: FakeHost
 ) -> None:
@@ -381,3 +655,35 @@ def test_host_serves_pane_and_bridge_over_trusted_tls(tmp_path: Path) -> None:
     finally:
         host.stop()
     assert not host.running
+
+
+def test_host_releases_its_socket_when_startup_never_becomes_ready(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A slow/failed uvicorn start used to leave SO_EXCLUSIVEADDRUSE sockets
+    # bound, so the next Connect failed with a misleading "port in use".
+    from src.backend.office_addin import host as host_module
+    from src.backend.office_addin.app import create_office_host
+    from src.backend.office_addin.host import AddinHost
+
+    class _NeverReady:
+        def __init__(self, config: Any) -> None:
+            self.started = False
+            self.should_exit = False
+
+        def run(self, sockets: Any = None) -> None:
+            while not self.should_exit:
+                time.sleep(0.01)
+
+    monkeypatch.setattr(host_module, "_STOP_TIMEOUT", 0.2)
+    monkeypatch.setattr(host_module.uvicorn, "Server", _NeverReady)
+    paths = certs.issue(tmp_path / "certs")
+    port = _free_port()
+    instance = AddinHost()
+    with pytest.raises(OSError):
+        instance.start(create_office_host(), port=port, cert=paths.cert, key=paths.key)
+    assert instance._sockets == []
+    assert instance.port is None
+    again = host_module._bind(port)  # the port is free for the next attempt
+    for sock in again:
+        sock.close()

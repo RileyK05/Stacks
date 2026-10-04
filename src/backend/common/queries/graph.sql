@@ -29,7 +29,7 @@ VALUES (:edge_id, :course_id, :model, :chunk_a, :chunk_b, :weight, :algorithm_ve
 SELECT chunk_id FROM chunks WHERE source_id = :source_id;
 
 -- name: delete_edges_for_chunks
--- Rebuild one source's edges without touching the rest of the course.
+-- Rebuild edges touching a bounded set of chunks.
 DELETE FROM graph_edges
 WHERE course_id = :course_id
   AND model = :model
@@ -38,9 +38,28 @@ WHERE course_id = :course_id
       OR chunk_b IN (SELECT value FROM json_each(:chunk_ids))
   );
 
+-- name: delete_course_edges
+DELETE FROM graph_edges
+WHERE course_id = :course_id
+  AND model = :model;
+
 -- name: course_graph_edges
 SELECT chunk_a, chunk_b, weight
 FROM graph_edges
 WHERE course_id = :course_id
-  AND model = :model;
+  AND model = :model
+  AND EXISTS (
+      SELECT 1 FROM chunk_embeddings AS vector_a
+      WHERE vector_a.chunk_id = graph_edges.chunk_a
+        AND vector_a.model = :model
+        AND vector_a.dimension = :dimension
+        AND length(vector_a.embedding) = :dimension * 4
+  )
+  AND EXISTS (
+      SELECT 1 FROM chunk_embeddings AS vector_b
+      WHERE vector_b.chunk_id = graph_edges.chunk_b
+        AND vector_b.model = :model
+        AND vector_b.dimension = :dimension
+        AND length(vector_b.embedding) = :dimension * 4
+  );
 

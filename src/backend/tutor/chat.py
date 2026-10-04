@@ -22,7 +22,11 @@ from uuid import UUID
 
 from src.backend.common import conversations_repo, provider
 from src.backend.common.conversations_repo import Conversation, Message
-from src.backend.common.prompt_registry import grounded_prompt, load_prompt
+from src.backend.common.prompt_registry import (
+    grounded_prompt,
+    load_prompt,
+    strip_fence_echo,
+)
 from src.backend.common.providers import ProviderChoice
 from src.backend.tutor.compose import (
     Intent,
@@ -254,7 +258,7 @@ def summarize(
     except Exception:  # noqa: BLE001 - best effort; retried next turn
         logger.warning("conversation summary failed", exc_info=True)
         return
-    summary = " ".join(result.text.split())
+    summary = " ".join(strip_fence_echo(result.text).split())
     if len(summary) > SUMMARY_MAX_CHARS:
         prefix = summary[: SUMMARY_MAX_CHARS - 1]
         summary = (prefix.rsplit(" ", 1)[0] if " " in prefix else prefix) + "…"

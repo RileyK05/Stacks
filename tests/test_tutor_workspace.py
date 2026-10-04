@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from src.backend.tutor.workspace import (
     WorkspaceCode,
     WorkspaceDocument,
@@ -202,6 +203,15 @@ def test_out_of_range_inline_citation_in_explanation_is_withheld() -> None:
     )
     assert extracted.items == ()
     assert "[4]" in extracted.withheld[0]
+
+
+@pytest.mark.parametrize("field", ["prompt", "explanation"])
+def test_oversized_quiz_text_is_withheld_before_practice_persistence(field):
+    item = _quiz()
+    item["questions"][0][field] = "word " * 1001
+    extracted = extract_workspace_items(_block(item), material_count=1)
+    assert extracted.items == ()
+    assert "malformed" in extracted.withheld[0]
 
 
 def test_document_inline_citation_out_of_range_is_withheld() -> None:

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '$lib/components/Icon.svelte';
+  import { autoGrowTextarea } from '$lib/actions/autoGrowTextarea';
   import type { SheetContent } from '$lib/stores/artifact.svelte';
 
   interface Props {
@@ -54,26 +55,27 @@
   }
 
   function onKey(event: KeyboardEvent, row: number, column: number) {
-    const target = event.currentTarget as HTMLInputElement;
+    if (event.isComposing) return;
+    const target = event.currentTarget as HTMLTextAreaElement;
     const grid = target.closest('table');
     const move = (r: number, c: number) => {
-      const next = grid?.querySelector<HTMLInputElement>(`[data-cell="${r}:${c}"]`);
+      const next = grid?.querySelector<HTMLTextAreaElement>(`[data-cell="${r}:${c}"]`);
       if (next) {
         event.preventDefault();
         next.focus();
-        next.select();
       }
     };
     if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
       if (row === sheet.rows.length - 1 && editable) addRow();
       requestAnimationFrame(() => move(row + 1, column));
-    } else if (event.key === 'ArrowDown') move(row + 1, column);
-    else if (event.key === 'ArrowUp') move(row - 1, column);
+    } else if (event.altKey && event.key === 'ArrowDown') move(row + 1, column);
+    else if (event.altKey && event.key === 'ArrowUp') move(row - 1, column);
   }
 </script>
 
 <div class="overflow-x-auto rounded-xl border border-line bg-surface shadow-card">
-  <table class="w-full border-collapse text-[13px]">
+  <table class="w-full table-fixed border-collapse text-[13px]">
     <thead>
       <tr class="bg-surface-2">
         <th class="w-10 border-b border-r border-line"></th>
@@ -130,15 +132,17 @@
           </td>
           {#each cells as _, column (column)}
             <td class="border-b border-r border-line p-0">
-              <input
+              <textarea
                 bind:value={sheet.rows[row][column]}
                 oninput={onchange}
                 onkeydown={(event) => onKey(event, row, column)}
+                use:autoGrowTextarea={sheet.rows[row][column]}
+                rows="1"
                 readonly={!editable}
                 data-cell={`${row}:${column}`}
                 aria-label={`Row ${row + 1}, ${sheet.columns[column]}`}
-                class="h-9 w-full bg-transparent px-2.5 text-fg-soft focus:bg-accent-soft/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-accent/40"
-              />
+                class="block h-auto w-full min-w-0 resize-none overflow-hidden bg-transparent px-2.5 py-2 text-fg-soft [overflow-wrap:anywhere] focus:bg-accent-soft/40 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-accent/40"
+              ></textarea>
             </td>
           {/each}
           {#if editable}<td class="border-b border-line"></td>{/if}

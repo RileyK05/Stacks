@@ -1,5 +1,8 @@
 <script lang="ts">
+  import { isTauri } from '@tauri-apps/api/core';
+  import { requestWorkspaceExport, deliverExport, type ExportOrigin } from '$lib/api/export';
   import type { DocumentSession } from '$lib/stores/workspace.svelte';
+  import { toast } from '$lib/stores/toast.svelte';
   import Button from './Button.svelte';
   import Icon from './Icon.svelte';
   import RichText from './RichText.svelte';
@@ -7,27 +10,35 @@
 
   interface Props {
     session: DocumentSession;
-    sources: SourceRef[];
+    sources: (SourceRef | null)[];
+    exportContext: ExportOrigin | null;
   }
 
-  let { session, sources }: Props = $props();
+  let { session, sources, exportContext }: Props = $props();
 
   let mode = $state<'edit' | 'preview'>('preview');
+  let exporting = $state(false);
 
   const tabs: [typeof mode, string][] = [
     ['preview', 'Preview'],
     ['edit', 'Edit']
   ];
 
-  function download() {
-    const blob = new Blob([session.draft], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${(session.document.title ?? 'study-notes').replace(/[^\w-]+/g, '-')}.md`;
-    link.click();
-    // Revoking at once can cancel the download in some webviews.
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  async function download() {
+    if (!exportContext) {
+      toast('This material no longer has its original message. Reopen it before exporting.', 'error');
+      return;
+    }
+    exporting = true;
+    try {
+      const file = await requestWorkspaceExport(exportContext, 'md', session.draft);
+      const saved = await deliverExport(file);
+      if (saved) toast(isTauri() ? `Saved to ${saved.path}` : `Saved ${saved.filename}`);
+    } catch (caught) {
+      toast(caught instanceof Error ? caught.message : 'Could not export this document.', 'error');
+    } finally {
+      exporting = false;
+    }
   }
 </script>
 
@@ -55,7 +66,7 @@
           <Icon name="rotate-ccw" class="h-3.5 w-3.5" /> Revert
         </Button>
       {/if}
-      <Button variant="secondary" size="sm" onclick={download}>
+      <Button variant="secondary" size="sm" onclick={download} disabled={exporting}>
         <Icon name="download" class="h-3.5 w-3.5" /> .md
       </Button>
     </div>

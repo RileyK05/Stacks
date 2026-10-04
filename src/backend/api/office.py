@@ -39,6 +39,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+from pypdf.errors import PyPdfError
 from src.backend.common import (
     courses_repo,
     provider,
@@ -373,7 +374,7 @@ def read_document(request: ReadRequest) -> ReadResult:
         images = [_decode(image, what="images_b64") for image in request.images_b64]
         try:
             reads.append(read_screens(images, host=request.host))
-        except OcrUnavailableError as err:
+        except (OcrUnavailableError, usage_repo.BudgetExceededError) as err:
             reads.append(
                 DocumentRead(method="ocr", host=request.host, warnings=(str(err),))
             )
@@ -460,11 +461,10 @@ def get_work(session_id: UUID, course_id: UUID) -> WorkSession:
     dependencies=[Depends(require_office_token)],
 )
 def publish_package(request: WorkPackage) -> WorkSession:
+    data = _decode(request.package_b64, what="package_b64")
     try:
-        document = read_work_file(
-            request.filename, _decode(request.package_b64, what="package_b64")
-        )
-    except Exception as err:
+        document = read_work_file(request.filename, data)
+    except (ValueError, OSError, PyPdfError) as err:
         raise HTTPException(
             422,
             "The Office document could not be read. Connect a text version instead.",

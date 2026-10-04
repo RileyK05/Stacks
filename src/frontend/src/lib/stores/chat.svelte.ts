@@ -20,6 +20,9 @@ export interface Turn {
   workspace: WorkspaceSession[];
   withheld: string[];
   traceId: string | null;
+  /** Ordered material list used by workspace [n] references. */
+  materialChunkIds: string[];
+  /** IDs the prose answer actually cited. */
   chunkIds: string[];
   fellBackToLocal: boolean;
   bigger: boolean;
@@ -42,6 +45,7 @@ function emptyTurn(question: string, bigger: boolean): Turn {
     workspace: [],
     withheld: [],
     traceId: null,
+    materialChunkIds: [],
     chunkIds: [],
     fellBackToLocal: false,
     bigger,
@@ -68,6 +72,7 @@ function applyReply(turn: Turn, reply: MessageView): void {
   turn.workspace = (answer.workspace ?? []).map((item, index) => openSession(item, { message_id: reply.message_id, item_index: index }));
   turn.withheld = answer.withheld ?? [];
   turn.traceId = answer.trace_id;
+  turn.materialChunkIds = answer.material_chunk_ids ?? answer.chunk_ids;
   turn.chunkIds = answer.chunk_ids;
   turn.fellBackToLocal = answer.fell_back_to_local ?? false;
   turn.bigger = answer.bigger ?? false;
@@ -94,6 +99,19 @@ function turnsFrom(messages: MessageView[]): Turn[] {
     }
   }
   return turns;
+}
+
+/**
+ * Map a saved turn's loaded citations onto its ordered *material* list, so
+ * workspace `[n]` references index `materialSources(turn)[n - 1]`. Citations
+ * come back in prose-marker order, which is not the material order; indexing
+ * them directly would resolve a workspace source to the wrong file.
+ */
+export function materialSources(turn: Turn | undefined): (Citation | null)[] {
+  if (!turn) return [];
+  return turn.materialChunkIds.map(
+    (id) => turn.citations.find((citation) => citation.chunk_id === id) ?? null
+  );
 }
 
 /**
@@ -177,7 +195,7 @@ export class CourseChats {
         const waiting = this.pending.get(conversationId);
         if (waiting) turns.push(waiting);
         this.turns = turns;
-        for (const turn of turns) {
+        for (const turn of this.turns) {
           if (turn.traceId) void this.loadCitations(turn);
         }
       }

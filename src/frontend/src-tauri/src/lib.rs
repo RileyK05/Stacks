@@ -1,11 +1,12 @@
 mod backend;
 mod companion;
+mod exports;
 mod library;
 
 use tauri::{Manager, WindowEvent};
 
 use backend::Backend;
-use library::BackendCell;
+use library::{BackendCell, BackendState};
 
 pub fn run() {
     tauri::Builder::default()
@@ -21,8 +22,13 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let backend = Backend::spawn(app.handle())?;
-            app.manage(BackendCell(std::sync::Mutex::new(Some(backend))));
+            let state = match Backend::spawn(app.handle()) {
+                Ok(backend) => BackendState::Running(std::sync::Arc::new(backend)),
+                Err(error) => {
+                    BackendState::Unavailable(format!("Could not start the backend: {error}"))
+                }
+            };
+            app.manage(BackendCell::new(state));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -30,7 +36,9 @@ pub fn run() {
             companion::show_companion,
             companion::set_companion_pinned,
             companion::show_library,
-            library::activate_backup
+            library::activate_backup,
+            library::restart_backend,
+            exports::save_export
         ])
         .on_window_event(|window, event| {
             if window.label() == "main" {
@@ -45,10 +53,8 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 if let Some(cell) = app.try_state::<BackendCell>() {
-                    if let Ok(guard) = cell.0.lock() {
-                        if let Some(backend) = guard.as_ref() {
-                            backend.shutdown();
-                        }
+                    if let Ok(backend) = cell.current() {
+                        backend.shutdown();
                     }
                 }
             }

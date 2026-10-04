@@ -241,10 +241,12 @@ async def connect_screenshot(
 
 @router.delete("/courses/{course_id}/work/{session_id}")
 def delete_work(course_id: UUID, session_id: UUID) -> dict[str, bool]:
-    get_work(course_id, session_id)
+    require_course(course_id)
     with connection() as conn:
-        conn.execute(
+        deleted = conn.execute(
             get("work", "delete"), {"session_id": session_id, "course_id": course_id}
-        )
+        ).rowcount
+        if not deleted:
+            raise HTTPException(404, "work session not found")
         conn.commit()
     return {"deleted": True}

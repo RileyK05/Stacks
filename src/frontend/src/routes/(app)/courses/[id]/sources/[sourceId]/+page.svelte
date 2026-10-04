@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { api } from '$lib/api/client';
   import type { components } from '$lib/api/schema';
-  import { APP_TOKEN_HEADER, apiBase, appToken } from '$lib/api/backend';
+  import { APP_TOKEN_HEADER, apiBase, appToken, backendConnected } from '$lib/api/backend';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import SourceOutline from '$lib/components/course/SourceOutline.svelte';
@@ -31,6 +31,7 @@
   const lines = $derived(content.split('\n'));
 
   function authorizedGet(path: string): Promise<Response> {
+    if (!backendConnected()) throw new Error('The backend is reconnecting. Retry when it is ready.');
     const token = appToken();
     return fetch(`${apiBase()}${path}`, {
       headers: token ? { [APP_TOKEN_HEADER]: token } : undefined

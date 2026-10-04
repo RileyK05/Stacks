@@ -70,6 +70,21 @@ def test_answer_records_a_retrieval_trace(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.trace_id
 
 
+def test_dangling_office_marker_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    course_id = _course()
+    add_chunk(course_id, "Linearity means preserving addition and scaling.")
+    configure_test_provider(monkeypatch, "The map preserves sums [42].")
+    with connection() as conn, pytest.raises(ValueError, match="not given"):
+        office.answer(
+            conn,
+            course_id,
+            office.OfficeAction.EXPLAIN,
+            host="word",
+            context="Linearity",
+            policy=load_retrieval_policy(),
+        )
+
+
 def test_the_selection_is_fenced_as_untrusted_material(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

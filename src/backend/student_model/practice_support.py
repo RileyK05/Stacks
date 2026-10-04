@@ -7,6 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from src.backend.common import artifacts_repo, provider
+from src.backend.common.citations import cited_numbers
 from src.backend.common.db import Connection, connection, utc_now
 from src.backend.common.learning_config import load_learning_policy
 from src.backend.common.prompt_registry import (
@@ -250,7 +251,7 @@ def help_with(
             )
         parsed = parse_json_object(generation.text)
         content = HelpContent.model_validate(parsed)
-        visible = {int(n) for n in re.findall(r"\[(\d+)\]", content.text)}
+        visible = cited_numbers(content.text)
         declared = set(content.sources)
         if not declared <= passages.keys() or not visible <= declared:
             raise ValueError(

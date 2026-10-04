@@ -46,6 +46,11 @@ def _candidates(count: int = 2) -> tuple[Candidate, ...]:
         ("Make me a study guide for the midterm", Intent.DOCUMENT),
         ("Make me a cheat sheet", Intent.DOCUMENT),
         ("Make me a study sheet", Intent.DOCUMENT),
+        ("Write a 300-word essay about the groups in your table", Intent.DOCUMENT),
+        ("Could you draft a sample paper about the lecture slides?", Intent.DOCUMENT),
+        ("Create an editable document comparing spreadsheet methods", Intent.DOCUMENT),
+        ("Create a table of essay arguments", Intent.SHEET),
+        ("Make slides from these study notes", Intent.SLIDES),
         # Course vocabulary must not trigger a shape.
         ("What notation does the textbook use?", Intent.ANSWER),
         ("Explain the codomain", Intent.ANSWER),
@@ -97,6 +102,32 @@ def test_requested_ten_question_quiz_is_not_capped_at_six() -> None:
         len(extract_workspace_items(result.text, material_count=2).items[0].questions)
         == 10
     )
+
+
+def test_out_of_range_quiz_count_returns_explanation_without_generation() -> None:
+    calls = []
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        calls.append(prompt)
+        raise AssertionError("an unsupported count must not call the model")
+
+    result = compose_answer("Make a 50-question quiz", _candidates(), generate)
+    assert "1–20" in result.text
+    assert calls == []
+
+
+def test_quiz_repair_propagates_non_schema_provider_errors() -> None:
+    calls = 0
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return '{"item":{"type":"quiz","questions":[]}}'
+        raise RuntimeError("provider budget exceeded")
+
+    with pytest.raises(RuntimeError, match="provider budget exceeded"):
+        compose_answer("Make a quiz", _candidates(), generate)
 
 
 def test_short_quiz_cannot_be_published_as_requested_full_suite() -> None:
@@ -176,6 +207,226 @@ def test_schema_bounds_citations_to_the_provided_material() -> None:
     item = schema["properties"]["item"]
     assert set(item["required"]) == set(item["properties"])
     assert item["additionalProperties"] is False
+
+
+def test_document_boundaries_survive_flattened_json_strings() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        assert "sections" in response_schema["properties"]["item"]["properties"]
+        return json.dumps(
+            {
+                "reply": "Study notes",
+                "item": {
+                    "type": "document",
+                    "title": "Linearity",
+                    "sections": [
+                        {
+                            "heading": "Addition",
+                            "paragraphs": [
+                                "Preserves addition [1].",
+                                "Compare both sides [1].",
+                            ],
+                        },
+                        {
+                            "heading": "Scaling",
+                            "paragraphs": ["Preserves scaling [2]."],
+                        },
+                    ],
+                    "sources": [1, 2],
+                },
+            },
+            separators=(",", ":"),
+        )
+
+    composed = compose_answer("Create a study guide", _candidates(), generate)
+    assert composed.structured
+    item = extract_workspace_items(composed.text, 2).items[0]
+    assert item.content == (
+        "## Addition\n\nPreserves addition [1].\n\nCompare both sides [1]."
+        "\n\n## Scaling\n\nPreserves scaling [2]."
+    )
+    assert "sections" not in item.model_dump()
+
+
+def test_slide_boundaries_and_count_survive_flattened_json_strings() -> None:
+    from src.backend.artifacts.content import from_workspace_item
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        slides = response_schema["properties"]["item"]["properties"]["slides"]
+        assert slides["minItems"] == slides["maxItems"] == 8
+        return json.dumps(
+            {
+                "reply": "A deck",
+                "item": {
+                    "type": "slides",
+                    "title": "Linearity",
+                    "slides": [
+                        {
+                            "title": f"Example {index}",
+                            "paragraphs": [
+                                f"- Check addition in example {index} [2].",
+                                "- Then check scaling [1].",
+                            ],
+                        }
+                        for index in range(8)
+                    ],
+                    "sources": [1, 2],
+                },
+            },
+            separators=(",", ":"),
+        )
+
+    composed = compose_answer("Create an eight-slide deck", _candidates(), generate)
+    assert composed.structured
+    workspace = extract_workspace_items(composed.text, 2).items[0]
+    kind, _, content, sources = from_workspace_item(workspace)
+    assert kind == "slides" and sources == [1, 2]
+    assert len(content["slides"]) == 8
+    assert content["slides"][7]["title"] == "Example 7"
+    assert (
+        content["slides"][7]["body"]
+        == "- Check addition in example 7 [2].\n\n- Then check scaling [1]."
+    )
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {
+            "type": "document",
+            "title": "Notes",
+            "sections": [{"heading": "Notes", "paragraphs": ["# Notes"]}],
+            "sources": [1],
+        },
+        {
+            "type": "document",
+            "title": "Notes",
+            "sections": [{"heading": "Facts", "paragraphs": ["A fact [99]."]}],
+            "sources": [1],
+        },
+        {
+            "type": "slides",
+            "title": "Deck",
+            "slides": [{"title": "Topic", "paragraphs": ["Topic"]}],
+            "sources": [1],
+        },
+        {
+            "type": "slides",
+            "title": "Deck",
+            "slides": [
+                {"title": "Topic", "paragraphs": ["First [1].\n---\nSecond [1]."]}
+            ],
+            "sources": [1],
+        },
+    ],
+)
+def test_invalid_structured_units_are_not_published(item: dict) -> None:
+    calls = []
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        calls.append(prompt)
+        return json.dumps({"reply": "Done", "item": item})
+
+    question = "Make slides" if item["type"] == "slides" else "Make notes"
+    composed = compose_answer(question, _candidates(), generate)
+    assert not composed.structured
+    assert "Done" not in composed.text
+    assert len(calls) == 2
+
+
+def test_incomplete_deck_is_repaired_instead_of_claiming_requested_count() -> None:
+    calls = []
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        calls.append(prompt)
+        return json.dumps(
+            {
+                "reply": "Done",
+                "item": {
+                    "type": "slides",
+                    "title": "Deck",
+                    "sources": [1],
+                    "slides": [
+                        {
+                            "title": f"Example {index}",
+                            "paragraphs": [f"Example {index} preserves addition [1]."],
+                        }
+                        for index in range(2 if len(calls) == 1 else 3)
+                    ],
+                },
+            }
+        )
+
+    composed = compose_answer("Create 3 slides", _candidates(), generate)
+    assert composed.structured
+    assert len(calls) == 2
+    assert extract_workspace_items(composed.text, 2).items[0].deck.count("\n---\n") == 2
+
+
+def test_persistent_incomplete_deck_is_not_presented_as_complete() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Here are all eight slides",
+                "item": {
+                    "type": "slides",
+                    "title": "Deck",
+                    "sources": [1],
+                    "slides": [
+                        {"title": "Addition", "paragraphs": ["Preserves addition [1]."]}
+                    ],
+                },
+            }
+        )
+
+    composed = compose_answer("Create 8 slides", _candidates(), generate)
+    assert not composed.structured
+    assert "all eight" not in composed.text
+
+
+def test_duplicate_slides_cannot_pad_the_requested_count() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Done",
+                "item": {
+                    "type": "slides",
+                    "title": "Deck",
+                    "sources": [1],
+                    "slides": [
+                        {"title": "Addition", "paragraphs": ["Preserves addition [1]."]}
+                    ]
+                    * 3,
+                },
+            }
+        )
+
+    composed = compose_answer("Create 3 slides", _candidates(), generate)
+    assert not composed.structured
+    assert "Done" not in composed.text
+
+
+def test_valid_material_does_not_hide_invalid_citations_in_its_intro() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Done [99]",
+                "item": {
+                    "type": "document",
+                    "title": "Notes",
+                    "sources": [1],
+                    "sections": [
+                        {
+                            "heading": "Addition",
+                            "paragraphs": ["Preserves addition [1]."],
+                        }
+                    ],
+                },
+            }
+        )
+
+    composed = compose_answer("Create notes", _candidates(), generate)
+    assert not composed.structured
+    assert "[99]" not in composed.text
 
 
 def test_plain_question_uses_the_lean_prompt_without_a_schema() -> None:

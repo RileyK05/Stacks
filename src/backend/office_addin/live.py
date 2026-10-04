@@ -1,5 +1,6 @@
 """Ephemeral Office panes, not archived or inferred from foreground windows."""
 
+import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
@@ -295,11 +296,18 @@ class LiveBroker:
                     conn.commit()
                 request.result.status = "complete"
                 request.result.revision = work.revision
-            except (ValueError, work_repo.WorkNotFoundError) as err:
+            except (
+                ValueError,
+                OSError,
+                work_repo.WorkNotFoundError,
+                work_repo.WorkConflictError,
+                sqlite3.Error,
+            ) as err:
                 request.result.status = "failed"
                 request.result.error = str(err)
-            pane.pending = None
-            pane.heartbeat = self._clock()
+            finally:
+                pane.pending = None
+                pane.heartbeat = self._clock()
             return request.result.model_copy()
 
 

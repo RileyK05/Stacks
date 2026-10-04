@@ -1,0 +1,38 @@
+[version]
+generation_policy_version = "1"
+
+[operation]
+max_calls = 8
+max_http_requests = 16
+max_elapsed_seconds = 600
+# Estimated input plus requested output tokens; this is not a financial token cap.
+max_requested_tokens = 262144
+# Conservative byte-to-token estimate, not an exact tokenizer.
+input_bytes_per_token = 3.0
+context_margin_tokens = 512
+framing_tokens = 64
+min_output_tokens = 128
+
+[tasks.tutor_answer]
+desired_output_tokens = 2048
+max_recoveries = 2
+
+[tasks.artifact_generation]
+desired_output_tokens = 16384
+max_recoveries = 2
+
+[tasks.ocr]
+desired_output_tokens = 16384
+max_recoveries = 1
+
+[tasks.conversation_summary]
+desired_output_tokens = 1024
+max_recoveries = 0
+
+[tasks.learning_research]
+desired_output_tokens = 2048
+max_recoveries = 0
+
+[tasks.answer_eval_judge]
+desired_output_tokens = 4096
+max_recoveries = 0

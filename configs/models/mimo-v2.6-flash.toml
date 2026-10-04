@@ -1,0 +1,6 @@
+# Empirically used allowance from the supplied round-2 report; this is not an
+# advertised model ceiling.
+model = "mimo-v2.6-flash"
+reasoning = true
+max_output_tokens = 16384
+notes = "Empirically used allowance from the supplied round-2 report; not an advertised model ceiling."

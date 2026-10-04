@@ -670,11 +670,7 @@
             <Panel
               {panel}
               {canvas}
-              sourcesFor={(turnIndex) => chats.turns[turnIndex]?.citations ?? []}
-              mapSourcesFor={(index) => {
-                const turn = chats.turns[index];
-                return turn?.chunkIds.map(id => turn.citations.find(c => c.chunk_id === id) ?? null) ?? [];
-              }}
+              {chats}
               onclose={() => panel.hide()}
               onfollowup={(text) => thread?.prefill(text)}
               {courseId}

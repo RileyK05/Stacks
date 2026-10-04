@@ -1,7 +1,7 @@
 # Current handoff and release plan
 
-Updated 2026-10-03. Current implementation belongs in `system.md`, unresolved
-engineering/product work in `docket.md`, deferred candidates in `backlog.md`,
+Updated 2026-10-04. Current implementation belongs in `system.md`, unresolved
+engineering/product work and remaining review checks in `docket.md`,
 and consequential history in `notes.md`.
 Replace this handoff as work advances; delete completed temporary plans/reviews.
 
@@ -47,11 +47,45 @@ Implemented baselines:
   (system §§4–5, 15). TOC/concept extraction and prerequisite graphs are retired.
   Review suggestions alone never change student proficiency/preferences.
 
-The next planned change is the shared model-output controller, scoped below.
+The current bug-fix pass is recorded in `docket.md`: citation numbering is distinct
+from the actually cited subset, practice and companion races are repaired, OCR
+keeps page identity with pixel/request/batch limits and warning coverage, graph
+refresh preserves inbound similarity, and credential/provider failure paths are
+actionable. Workspace export includes unsaved edits and source legends; native
+Save/replacement and backend restart retry have source changes awaiting installed
+acceptance. Office setup rollback and portable citation-space compatibility are
+covered by focused fault/integration tests. No native compilation, packaging or
+live model/corpus run is performed in this pass. Retain each bug marked
+**Fixed in code — awaiting verification** until the user confirms the retest.
+
+Document/deck model responses now separate sections/slides into arrays, which the
+app assembles into existing Markdown workspace content. Recognized requested slide
+counts, title-only units and exact duplicate slides are checked before publication;
+chat/adoption/reopen/export integration preserves original evidence numbering.
+Explicit essay/document targets take precedence over later table mentions. Sheet
+cells and quiz options wrap in narrow layouts and retain multiline editing.
+These source changes await the actual model and companion retests in the docket.
+
+Pass validation: 1,020 backend, 30 frontend and 58 add-in tests passed; Python
+lint/format/mypy and both frontend/add-in type checks passed. API types regenerated.
+The retained docket statuses and original scenarios are the retest checklist;
+these mechanical checks do not close semantic or installed-platform gates.
+
+A second fix pass (docket AR-72…AR-83) hardened the local-model runtime state
+machine and download recovery, model delete/cancel races, Office host/package
+failure paths, live-read DB errors, workspace source numbering in the companion
+panel, and the add-in connect/read fallbacks. Validation: 1,026 backend and 31
+frontend tests passed; Python lint/format/mypy and both frontend/add-in type
+checks passed. No native compilation or live-model/corpus run was performed.
+
+The shared model-output controller now covers bounded single-unit recovery, scoped below.
 Per-attempt billing, explicit quiz-count checks, the hidden six-question cap,
 title-only artifact validation and conversation-bound teaching evidence were
-repaired during docket triage. Recovery, checkpointing and context budgeting
-below remain planned. B-06 remains the broader
+repaired during docket triage. Model choice and nested schema/content/HTTP attempts
+share one operation budget; cutoffs regenerate the same unit with available
+configured headroom, and partial output stays unpublished. Capacity estimates are
+byte-based; compatible tokenizers, context reduction, material splitting,
+checkpointing and continuation remain planned. B-06 remains the broader
 generated-answer correctness gate; B-07 owns retrieval acceptance. Ask about
 genuine tradeoffs; handle straightforward confirmed defects directly. Native
 Office, desktop recovery activation, live Google access and Mac capture remain open.
@@ -89,9 +123,10 @@ No native compilation or packaging is part of this work.
 - A provider length stop raises before returning text. Reported usage is now
   recorded before output validation, including empty/truncated attempts and
   reasoning retries.
-  The tutor retries once with "much more briefly" at the same allowance. Artifact
-  editing and quiz help call the provider separately; composition also has schema
-  fallback and content-repair calls. Nested retries can multiply attempts.
+  The former tutor "much more briefly" and transport reasoning retries were
+  replaced by the shared controller. Artifact schema fallbacks and composition
+  repairs consume the same operation budget. Quiz help/Office/companion also use
+  the provider controller. OCR transient retries share one operation per batch.
 - Workspace quizzes allow at most 20 questions; saved quiz content allows 100.
   Increasing an output allowance alone cannot change this product contract.
 - Saved material versions, source snapshots, citation checks, editor recovery and
@@ -119,7 +154,7 @@ No native compilation or packaging is part of this work.
 
 ### Implementation sequence
 
-**1. Separate task demand from model limits.**
+**1. Separate task demand from model limits — partial implementation, awaiting verification.**
 
 Add a versioned output policy using the existing config/profile seams. Distinguish
 desired output allowance by task, model output ceiling, usable context capacity,
@@ -140,7 +175,17 @@ still cannot fit, return an actionable failure instead of relying on silent
 server truncation. Test candidate allowances (including 4k/8k on capable models)
 before choosing defaults; do not apply those numbers to every endpoint.
 
-**2. Normalize one-call outcomes and share recovery accounting.**
+**2. Normalize one-call outcomes and share recovery accounting — single-unit implementation, awaiting verification.**
+
+Implemented `common/generation.py`, `configs/generation.toml`, optional profile
+output/context limits and the empirical MiMo profile. Tests cover nested repair
+exhaustion, known/unknown headroom, no partial publication, deadlines, cancellation,
+usage and pinned model/fallback behavior. Migration 022 now persists reporting
+completeness; historical rows retain an unknown status. Settings labels reported
+totals and exposes incomplete/unverified cloud requests. Missing/partial/malformed
+counts and full-backup preservation have integration coverage; user retesting
+remains pending.
+Multi-unit splitting/prose continuation below remain planned.
 
 Keep `provider.py` as the routed transport/usage seam. Capture complete, length-
 limited, empty, rejected and interrupted outcomes with reported usage and stop
@@ -149,8 +194,8 @@ private reasoning from visible content. Record usage for cutoff/invalid-content
 attempts as well as successes when the provider supplies counts; missing counts
 must not become claimed exact measurements.
 
-Put output recovery in one small shared controller (`common/generation.py` is the
-proposed home), with one operation-level attempt, elapsed-time and token budget.
+Output recovery now lives in `common/generation.py`, with one operation-level
+attempt, elapsed-time and estimated requested-token budget.
 All schema fallbacks, repairs, continuations and section calls consume this budget;
 there is no fresh retry allowance per nested helper. Recheck the existing user
 usage limit before each further call. Preserve cancellation and provider errors;
@@ -247,20 +292,24 @@ students. No new token sliders or retry configuration are required in normal use
   If a capable endpoint is unavailable, mark live verification pending rather
   than treating mocks as quality evidence.
 
-Implement steps 1–2 first, then quiz/document units and their delivery lifecycle;
+Finish the remaining context gaps in steps 1–2, then implement
+quiz/document units and their delivery lifecycle;
 integrate remaining call sites and run acceptance before declaring this plan
 complete. On completion, transfer implemented contracts to `system.md`, remaining
 quality gaps to B-06 and consequential decisions to `notes.md`, then remove this
-active-plan section. Keep the seven-document lifecycle; create no completed archive.
+active-plan section. Keep the six working docs and retained review findings;
+create no completed archive.
 
 ## Latest validation evidence
 
-The current docket triage passes 845 backend tests, Python lint/format and strict
-mypy (145 source files), frontend diagnostics with zero errors/warnings and 19
-behavior tests. Office.js diagnostics and 55 add-in tests also pass. No native
+The current docket/recovery pass passes 1,020 backend tests, Python lint/format and
+strict mypy (148 source files), plus frontend diagnostics with zero errors/warnings
+and 30 behavior tests. API types were regenerated after the usage-reporting change.
+Office.js diagnostics and 58 add-in tests passed earlier in this pass; that surface
+is unchanged by the latest work. No native
 compilation or packaging was performed. Confirm-dialog and flashcard component
 changes are typechecked; installed keyboard/navigation behavior remains a native
-acceptance check. The active docket retains semantic quality, output recovery,
+acceptance check. The active docket retains semantic quality, multi-unit recovery,
 history continuity, Office setup/read coherence and platform gaps. Prior evidence
 below records earlier baselines and does not replace those current limits.
 
@@ -391,7 +440,7 @@ or published. Rebuild current code before using an installer as release proof.
 
 ### Release preparation
 
-- [ ] Resolve or explicitly accept applicable backlog release boundaries,
+- [ ] Resolve or explicitly accept applicable docket release boundaries,
       especially integration authority B-05 and observed quality B-06.
 - [ ] Run required backend/frontend/Office checks and locked Rust clippy/build.
 - [ ] Choose next version; run `scripts.set_version`; finish changelog.

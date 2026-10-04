@@ -11,7 +11,7 @@
 
   interface Props {
     cited: number[];
-    sources: SourceRef[];
+    sources: (SourceRef | null)[];
   }
 
   let { cited, sources }: Props = $props();
@@ -24,7 +24,7 @@
     <Icon name="bookmark" class="h-3.5 w-3.5" /> Based on
   </span>
   {#each unique as n (n)}
-    {@const source = sources[n - 1]}
+    {@const source = sources[n - 1] ?? undefined}
     <span
       class="inline-flex max-w-full items-center gap-1.5 rounded-full border border-line bg-surface-2 py-0.5 pl-0.5 pr-2 text-muted"
       title={source ? `${source.filename} · ${source.label}` : undefined}

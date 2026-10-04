@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -34,7 +35,7 @@ from src.backend.common import settings_repo
 from src.backend.common.config import get_settings
 from src.backend.runtime import hardware, model_store, user_models
 from src.backend.runtime.config import CatalogModel, load_runtime_config
-from src.backend.runtime.downloads import download_verified
+from src.backend.runtime.downloads import DownloadError, download_verified
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,9 @@ ACTIVE_MODEL_SETTING = "runtime.active_model"
 BACKEND_SETTING = "runtime.backend"
 MAX_RESTARTS = 3
 RESTART_WINDOW_SECONDS = 300
+# A hung `ps`/`taskkill` must not block the supervisor's startup cleanup
+# thread forever (that path runs before its event loop and its shutdown).
+_PROCESS_PROBE_TIMEOUT = 10.0
 
 
 class RuntimeUnavailableError(RuntimeError):
@@ -153,7 +157,14 @@ class _KillOnCloseJob:
 
     def assign(self, process: subprocess.Popen[bytes]) -> None:
         handle = int(process._handle)  # type: ignore[attr-defined,unused-ignore]
-        self._kernel32.AssignProcessToJobObject(self._handle, handle)
+        if not self._kernel32.AssignProcessToJobObject(self._handle, handle):
+            # A process already inside a job that forbids nesting cannot be
+            # assigned. The pidfile still lets the next launch clean up, so
+            # record the gap instead of failing the launch outright.
+            logger.warning(
+                "could not assign llama-server to the kill-on-close job; "
+                "it may outlive the app until the next launch cleans it up"
+            )
 
 
 @dataclass
@@ -205,35 +216,76 @@ class LlamaServer:
         if path is None:
             raise RuntimeUnavailableError(f"{model.label} is not downloaded yet")
         with self._lock:
+            if (
+                self._state == "running"
+                and self._model is not None
+                and self._model.id == model_id
+                and self._process is not None
+                and self._process.poll() is None
+            ):
+                return self.status()
             self._stop_locked()
             self._model = model
             self._state = "starting"
             self._error = None
-            preferred = settings_repo.get_setting(BACKEND_SETTING)
-            keys = hardware.detect().asset_keys()
-            if preferred in keys:
-                keys = [preferred] + [k for k in keys if k != preferred]
-            last_error = "no llama.cpp build for this platform"
-            for key in keys:
-                try:
-                    self._launch_locked(key, model, path)
-                except (RuntimeUnavailableError, OSError) as err:
-                    last_error = str(err)
-                    logger.warning("llama-server (%s) failed to start: %s", key, err)
-                    self._stop_locked()
-                    self._model = model
-                    continue
-                self._backend = key
-                self._state = "running"
-                settings_repo.put_setting(BACKEND_SETTING, key)
-                settings_repo.put_setting(ACTIVE_MODEL_SETTING, model.id)
-                return self.status()
+            # Anything raised before the launch loop (a busy settings DB, an
+            # unavailable hardware probe) must not strand the server in
+            # "starting": the supervisor only recovers a "running" server.
+            try:
+                preferred = settings_repo.get_setting(BACKEND_SETTING)
+                keys = hardware.detect().asset_keys()
+                if preferred in keys:
+                    keys = [preferred] + [k for k in keys if k != preferred]
+                last_error = "no llama.cpp build for this platform"
+                for key in keys:
+                    try:
+                        self._launch_locked(key, model, path)
+                    except (
+                        RuntimeUnavailableError,
+                        DownloadError,
+                        httpx.HTTPError,
+                        zipfile.BadZipFile,
+                        zipfile.LargeZipFile,
+                        tarfile.TarError,
+                        RuntimeError,
+                        NotImplementedError,
+                        OSError,
+                        ValueError,
+                    ) as err:
+                        last_error = str(err)
+                        logger.warning(
+                            "llama-server (%s) failed to start: %s", key, err
+                        )
+                        self._stop_locked()
+                        self._model = model
+                        continue
+                    self._backend = key
+                    self._state = "running"
+                    settings_repo.put_setting(BACKEND_SETTING, key)
+                    settings_repo.put_setting(ACTIVE_MODEL_SETTING, model.id)
+                    return self.status()
+            except Exception as err:
+                # Convert an unexpected pre-launch failure into the state the
+                # UI and supervisor both understand, keeping the real message.
+                self._stop_locked()
+                self._model = model
+                self._state = "failed"
+                self._error = str(err)
+                raise RuntimeUnavailableError(str(err)) from err
             self._state = "failed"
             self._error = last_error
             raise RuntimeUnavailableError(last_error)
 
     def _launch_locked(self, asset_key: str, model: CatalogModel, path: Path) -> None:
         config = load_runtime_config().llama_cpp
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind(("127.0.0.1", config.port))
+        except OSError as err:
+            raise RuntimeUnavailableError(
+                f"local model port {config.port} is already in use; "
+                "stop the other server or choose another runtime port"
+            ) from err
         executable = ensure_binary(asset_key)
         gpu = not asset_key.endswith("-cpu")
         threads = max(1, (os.cpu_count() or 2) - 1)
@@ -294,6 +346,11 @@ class LlamaServer:
                 )
             try:
                 if httpx.get(url, timeout=2.0).status_code == 200:
+                    if process.poll() is not None:
+                        raise RuntimeUnavailableError(
+                            "llama-server exited during its health check; "
+                            "the runtime port may be in use by another process"
+                        )
                     return
             except httpx.HTTPError:
                 pass
@@ -313,8 +370,18 @@ class LlamaServer:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 process.kill()
-                process.wait(timeout=5)
-        _pidfile().unlink(missing_ok=True)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "llama-server (pid %s) did not exit after kill; "
+                        "leaving it to the job object",
+                        process.pid,
+                    )
+        try:
+            _pidfile().unlink(missing_ok=True)
+        except OSError:
+            logger.warning("could not remove the llama-server pidfile", exc_info=True)
         self._state = "stopped"
         self._model = None
         self._backend = None
@@ -338,10 +405,12 @@ class LlamaServer:
                 return
             self._restarts.append(now)
             logger.warning("llama-server exited (%s); restarting", process.returncode)
-        try:
-            self.start(model.id)
-        except RuntimeUnavailableError:
-            logger.exception("llama-server restart failed")
+            # Keep the decision and restart together: a queued restart must
+            # never undo a model switch made by a request thread.
+            try:
+                self.start(model.id)
+            except RuntimeUnavailableError:
+                logger.exception("llama-server restart failed")
 
 
 def _pidfile() -> Path:
@@ -391,6 +460,7 @@ def _process_executable(pid: int) -> str | None:
         capture_output=True,
         text=True,
         check=False,
+        timeout=_PROCESS_PROBE_TIMEOUT,
     ).stdout.strip()
     return output or None
 
@@ -419,10 +489,11 @@ def cleanup_stale_server() -> None:
                     ["taskkill", "/PID", str(pid), "/F"],
                     check=False,
                     capture_output=True,
+                    timeout=_PROCESS_PROBE_TIMEOUT,
                 )
             else:
                 os.kill(pid, 15)
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         pass
     path.unlink(missing_ok=True)
 

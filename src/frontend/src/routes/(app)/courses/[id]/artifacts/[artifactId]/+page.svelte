@@ -51,14 +51,13 @@
   $effect(() => {
     const nextArtifactId = page.params.artifactId ?? '';
     if (open.artifactId === nextArtifactId) return;
-    open.dispose();
+    void open.flushAndDispose();
     open = new OpenArtifact(courseId, nextArtifactId);
     void open.load();
   });
 
   onDestroy(() => {
-    open.dispose();
-    void open.flush().catch(() => false);
+    void open.flushAndDispose().catch(() => false);
   });
 
   beforeNavigate((navigation) => {
@@ -140,19 +139,10 @@
   async function doExport(format: string, close: () => void) {
     close();
     try {
-      let path: string | null = null;
-      if (isTauri()) {
-        const { save } = await import('@tauri-apps/plugin-dialog');
-        const chosen = await save({
-          title: 'Export',
-          defaultPath: `${open.title || 'artifact'}.${format}`,
-          filters: [{ name: format.toUpperCase(), extensions: [format] }]
-        });
-        if (chosen === null) return;
-        path = chosen;
-      }
-      exported = await open.exportTo(format, path);
-      toast(`Saved ${exported.filename}`);
+      const result = await open.exportTo(format);
+      if (!result) return;
+      exported = result;
+      toast(isTauri() ? `Saved to ${result.path}` : `Saved ${result.filename}`);
     } catch (caught) {
       // The artifact itself is saved; only the export failed.
       toast(caught instanceof Error ? caught.message : 'Could not export.', 'error');
@@ -235,8 +225,14 @@
               </Button>
             {/snippet}
             {#snippet children(close)}
-              <ol class="max-h-80 overflow-y-auto py-1">
-                {#each open.versions as version (version.version)}
+              {#if open.versionsError}
+                <div class="px-3 py-3 text-[13px] text-danger-text">
+                  <p>Could not load versions.</p>
+                  <button type="button" onclick={() => open.loadVersions()} class="mt-1 text-accent-text hover:underline">Retry</button>
+                </div>
+              {:else}
+                <ol class="max-h-80 overflow-y-auto py-1">
+                  {#each open.versions as version (version.version)}
                   <li class="flex items-center gap-3 px-3 py-2 hover:bg-surface-2">
                     <span class="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-surface-3 text-[11px] font-semibold text-muted">{version.version}</span>
                     <span class="min-w-0 flex-1">
@@ -254,9 +250,10 @@
                     {/if}
                   </li>
                 {:else}
-                  <li class="px-3 py-3 text-[13px] text-subtle">Loading…</li>
+                  <li class="px-3 py-3 text-[13px] text-subtle">No versions yet.</li>
                 {/each}
-              </ol>
+                </ol>
+              {/if}
             {/snippet}
           </Popover>
           <Popover bind:open={exportOpen} label="Export" align="end" width="w-56">

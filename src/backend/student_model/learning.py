@@ -44,6 +44,7 @@ def create_suite(
 ) -> UUID:
     if not questions:
         raise ValueError("a practice test needs questions")
+    persisted_origin = json.loads(_json(origin))
     evidence = evidence_for(conn, chunk_ids)
     by_id = {str(row["chunk_id"]): row for row in evidence}
     numbered = [
@@ -64,7 +65,7 @@ def create_suite(
             "title": title,
             "questions": _json([q.model_dump() for q in questions]),
             "evidence": _json(numbered),
-            "origin": _json(origin),
+            "origin": json.dumps(persisted_origin, ensure_ascii=False),
             "method": method,
         },
     )
@@ -73,7 +74,7 @@ def create_suite(
             (
                 r
                 for r in rows(conn, "suites", course_id=course_id)
-                if r["origin"] == origin
+                if r["origin"] == persisted_origin
             ),
             None,
         )

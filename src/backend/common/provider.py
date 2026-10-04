@@ -7,8 +7,8 @@ development `.env` fallback); swapping providers never touches ingestion
 or tutor code.
 
 Contract (enforced here, not by callers remembering):
-- the endpoint is resolved per call, so a Settings change applies to the
-  next call without a restart;
+- the endpoint is pinned for one operation; a Settings change applies to
+  the next operation without a restart;
 - a cloud call checks the user's optional monthly token budget BEFORE the
   request (an in-flight call is never cut off); local calls are free;
 - the usage row is recorded AFTER the call with the provider's real token
@@ -40,12 +40,12 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from src.backend.common import model_profiles, providers, usage_repo
+from src.backend.common import generation, model_profiles, providers, usage_repo
 from src.backend.common.embeddings_config import EmbeddingPolicy, load_embedding_policy
 from src.backend.common.providers import ProviderChoice, ResolvedProvider
 
 logger = logging.getLogger(__name__)
-_USAGE_RECORDER: ContextVar[Callable[[int, int], None] | None] = ContextVar(
+_USAGE_RECORDER: ContextVar[Callable[[int, int, bool], None] | None] = ContextVar(
     "generation_usage_recorder", default=None
 )
 
@@ -64,6 +64,7 @@ class GenerationResult:
     # True when a rate-limited cloud provider fell back to the local model;
     # the UI shows this so a weaker answer is never silently substituted.
     fell_back_to_local: bool = False
+    usage_reported: bool = True
 
 
 class ProviderUnavailableError(RuntimeError):
@@ -90,6 +91,23 @@ class EmptyModelError(ProviderUnavailableError):
 class ModelOutputTruncatedError(ProviderUnavailableError):
     """The provider stopped at its output limit; partial text is unsafe to use."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_text: str = "",
+        output_limit: int = 0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        usage_reported: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.partial_text = partial_text
+        self.output_limit = output_limit
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.usage_reported = usage_reported
+
 
 class ModelReasoningOnlyError(ProviderUnavailableError):
     """The model finished after thinking and returned no visible answer."""
@@ -105,6 +123,34 @@ def generate(
     bigger: bool = False,
     choice: ProviderChoice | None = None,
 ) -> GenerationResult:
+    """Route, bound, recover and record one task through the chosen model."""
+    with generation.operation() as operation:
+        try:
+            return _generate(
+                task,
+                prompt,
+                course_id=course_id,
+                images=images,
+                response_schema=response_schema,
+                bigger=bigger,
+                choice=choice,
+                operation=operation,
+            )
+        except generation.GenerationLimitError as error:
+            raise ProviderUnavailableError(str(error)) from error
+
+
+def _generate(
+    task: str,
+    prompt: str,
+    *,
+    course_id: UUID | None,
+    images: Sequence[bytes] | None,
+    response_schema: dict[str, Any] | None,
+    bigger: bool,
+    choice: ProviderChoice | None,
+    operation: generation.Operation,
+) -> GenerationResult:
     """One routed, recorded model call. `images` carries PNG page renders
     for the multimodal OCR task. `response_schema`, when given, asks the
     endpoint to constrain output to that JSON schema. `bigger` routes an
@@ -117,10 +163,16 @@ def generate(
         if cls != providers.TaskClass.INTERACTIVE:
             raise ValueError(f"only interactive tasks can ask a bigger model: {task}")
         cls = providers.TaskClass.BIGGER
-    endpoint = (
-        providers.resolve_choice(choice)
-        if choice is not None and not bigger
-        else providers.resolve(cls)
+    key = cls.value + (
+        choice.model_dump_json() if choice is not None and not bigger else ""
+    )
+    endpoint = operation.endpoint(
+        key,
+        lambda: (
+            providers.resolve_choice(choice)
+            if choice is not None and not bigger
+            else providers.resolve(cls)
+        ),
     )
     if endpoint is None:
         if bigger:
@@ -139,17 +191,18 @@ def generate(
     pinned = bigger or choice is not None
     if endpoint.name == "local":
         _ensure_local_runtime(endpoint.model)
-    fell_back = False
+    fell_back = key in operation.local_fallbacks
     try:
         if not endpoint.is_local:
             usage_repo.check_cloud_budget()
-        raw_text, input_tokens, output_tokens = _recorded_call(
+        raw_text, input_tokens, output_tokens, usage_reported = _complete_call(
             task,
             endpoint,
             prompt,
             course_id=course_id,
             images=images,
             response_schema=response_schema,
+            operation=operation,
         )
     except ProviderRateLimitedError as limited:
         # The user asked for the bigger model on purpose: quietly answering
@@ -164,13 +217,14 @@ def generate(
         )
         try:
             _ensure_local_runtime(local.model)
-            raw_text, input_tokens, output_tokens = _recorded_call(
+            raw_text, input_tokens, output_tokens, usage_reported = _complete_call(
                 task,
                 local,
                 prompt,
                 course_id=course_id,
                 images=images,
                 response_schema=response_schema,
+                operation=operation,
             )
         except ProviderUnavailableError as err:
             # The rate limit is what the student needs to hear about, not
@@ -178,11 +232,8 @@ def generate(
             logger.warning("local fallback failed too: %s", err)
             raise limited from err
         endpoint, fell_back = local, True
-    if not raw_text.strip():
-        raise EmptyModelError(
-            "The model returned no usable answer. Try again with a shorter "
-            "request or choose another model in Settings."
-        )
+        operation.endpoints[key] = local
+        operation.local_fallbacks.add(key)
     return GenerationResult(
         text=raw_text,
         model=endpoint.model,
@@ -190,7 +241,53 @@ def generate(
         output_tokens=output_tokens,
         provider=endpoint.name,
         fell_back_to_local=fell_back,
+        usage_reported=usage_reported,
     )
+
+
+def _complete_call(
+    task: str,
+    endpoint: ResolvedProvider,
+    prompt: str,
+    *,
+    course_id: UUID | None,
+    images: Sequence[bytes] | None,
+    response_schema: dict[str, Any] | None,
+    operation: generation.Operation,
+) -> tuple[str, int, int, bool]:
+    limits = generation.plan_call(
+        task,
+        endpoint,
+        prompt,
+        response_schema=response_schema,
+        images=bool(images),
+        policy=operation.policy,
+    )
+
+    def invoke() -> tuple[str, int, int, bool]:
+        result = _recorded_call(
+            task,
+            endpoint,
+            prompt,
+            course_id=course_id,
+            images=images,
+            response_schema=response_schema,
+        )
+        if not result[0].strip():
+            raise EmptyModelError(
+                "The model returned no usable answer. Try again with a more "
+                "focused request or choose another model in Settings."
+            )
+        return result
+
+    def classify(error: Exception) -> generation.Recovery | None:
+        if isinstance(error, EmptyModelError):
+            return "empty"
+        if isinstance(error, (ModelOutputTruncatedError, ModelReasoningOnlyError)):
+            return "length"
+        return None
+
+    return generation.complete(limits, invoke, classify)
 
 
 def _recorded_call(
@@ -201,11 +298,12 @@ def _recorded_call(
     course_id: UUID | None,
     images: Sequence[bytes] | None,
     response_schema: dict[str, Any] | None,
-) -> tuple[str, int, int]:
+) -> tuple[str, int, int, bool]:
     recorded = False
+    usage_reported = True
 
-    def record(input_tokens: int, output_tokens: int) -> None:
-        nonlocal recorded
+    def record(input_tokens: int, output_tokens: int, reported: bool = True) -> None:
+        nonlocal recorded, usage_reported
         usage_repo.record(
             task=task,
             provider=endpoint.name,
@@ -214,8 +312,11 @@ def _recorded_call(
             output_tokens=output_tokens,
             course_id=course_id,
             is_local=endpoint.is_local,
+            usage_reported=reported,
         )
         recorded = True
+        usage_reported = reported
+        generation.record_usage(input_tokens, output_tokens, reported)
 
     token = _USAGE_RECORDER.set(record)
     try:
@@ -224,7 +325,7 @@ def _recorded_call(
         )
         if not recorded:
             record(result[1], result[2])
-        return result
+        return (*result, usage_reported)
     finally:
         _USAGE_RECORDER.reset(token)
 
@@ -319,9 +420,9 @@ def request_body(
             else defaults.temperature
         ),
         "max_tokens": (
-            profile.max_output_tokens
-            if profile and profile.max_output_tokens
-            else defaults.max_output_tokens
+            generation.output_allowance()
+            or (profile.max_output_tokens if profile else None)
+            or defaults.max_output_tokens
         ),
     }
     if endpoint.is_local or endpoint.name in SELF_HOSTED_PRESETS:
@@ -362,74 +463,39 @@ def _call_provider(
     )
     who = endpoint.label or endpoint.name
     learned = _ADAPTATIONS.setdefault((endpoint.base_url, endpoint.model), set())
-    reasoning_retried = False
-
     try:
         while True:
-            while True:
-                _apply_adaptations(body, learned)
-                response = httpx.post(
-                    endpoint.base_url.rstrip("/") + "/chat/completions",
-                    headers=headers,
-                    json=body,
-                    timeout=httpx.Timeout(
-                        defaults.request_timeout_seconds, connect=15.0
-                    ),
-                )
-                if response.status_code < 400:
-                    break
-                detail = provider_error_detail(response)
-                logger.warning(
-                    "%s answered %s (task=%s, model=%s): %s",
-                    endpoint.name,
-                    response.status_code,
-                    task,
-                    endpoint.model,
-                    detail,
-                )
-                fix = _adaptation_for(response.status_code, detail, body)
-                if fix is None or fix in learned:
-                    break
-                # The endpoint named a parameter it does not take (newer OpenAI
-                # models refuse `max_tokens` and custom temperatures; some
-                # servers refuse the local-runtime switches): drop or rename it
-                # and remember, so the next call goes straight through.
-                learned.add(fix)
-            if response.status_code >= 400:
+            _apply_adaptations(body, learned)
+            remaining = generation.before_http(body)
+            timeout = defaults.request_timeout_seconds
+            if remaining is not None:
+                timeout = min(timeout, remaining)
+            if not endpoint.is_local:
+                usage_repo.check_cloud_budget()
+            response = httpx.post(
+                endpoint.base_url.rstrip("/") + "/chat/completions",
+                headers=headers,
+                json=body,
+                follow_redirects=True,
+                timeout=httpx.Timeout(timeout, connect=min(15.0, timeout)),
+            )
+            if 200 <= response.status_code < 300:
                 break
-            payload = response.json()
-            if (
-                isinstance(payload, dict)
-                and payload.get("error")
-                and not payload.get("choices")
-            ):
+            detail = provider_error_detail(response)
+            logger.warning(
+                "%s answered %s (task=%s, model=%s): %s",
+                endpoint.name,
+                response.status_code,
+                task,
+                endpoint.model,
+                detail,
+            )
+            fix = _adaptation_for(response.status_code, detail, body)
+            if fix is None or fix in learned:
                 break
-            usage = payload.get("usage") or {}
-            input_tokens = int(usage.get("prompt_tokens") or 0)
-            output_tokens = int(usage.get("completion_tokens") or 0)
-            recorder = _USAGE_RECORDER.get()
-            if recorder is not None:
-                recorder(input_tokens, output_tokens)
-            choice = payload["choices"][0]
-            if choice.get("finish_reason") in {"length", "max_tokens"}:
-                budget = int(
-                    body.get("max_tokens") or body.get("max_completion_tokens") or 0
-                )
-                if (
-                    not reasoning_retried
-                    and _reasoning_tokens(payload) > 0
-                    and 0 < budget < _REASONING_RETRY_CAP
-                ):
-                    widened = min(budget * 4, _REASONING_RETRY_CAP)
-                    if "max_completion_tokens" in body:
-                        body["max_completion_tokens"] = widened
-                    else:
-                        body["max_tokens"] = widened
-                    reasoning_retried = True
-                    if not endpoint.is_local:
-                        usage_repo.check_cloud_budget()
-                    continue
-            break
+            # Learn only explicitly rejected request parameters. Output recovery
+            # belongs to the controller, which owns the shared operation budget.
+            learned.add(fix)
         if response.status_code == 429:
             raise ProviderRateLimitedError(
                 f"{who} is rate-limiting requests right now"
@@ -446,33 +512,77 @@ def _call_provider(
                 + (f": {detail}" if detail else "")
                 + ". Try again shortly."
             )
-        payload = response.json()
-        if (
-            isinstance(payload, dict)
-            and payload.get("error")
-            and not payload.get("choices")
-        ):
-            # OpenRouter can report an upstream failure inside a 200.
+        if 300 <= response.status_code < 400:
+            raise ProviderRequestRejectedError(
+                f"{who} redirected the model request. Set the connection URL to "
+                "the final API endpoint and try again."
+            )
+        recorder = _USAGE_RECORDER.get()
+        try:
+            payload = response.json()
+        except ValueError:
+            if recorder is not None:
+                recorder(0, 0, False)
+            raise
+        usage = payload.get("usage") if isinstance(payload, dict) else None
+        usage = usage if isinstance(usage, dict) else {}
+        input_tokens, input_reported = _usage_count(usage.get("prompt_tokens"))
+        output_tokens, output_reported = _usage_count(usage.get("completion_tokens"))
+        reported = input_reported and output_reported
+        if recorder is not None:
+            recorder(input_tokens, output_tokens, reported)
+        if not isinstance(payload, dict):
+            raise TypeError("reply is not an object")
+        if payload.get("error") and not payload.get("choices"):
+            # Upstream failures can arrive inside a 200, with billed usage.
             raise ProviderUnavailableError(
                 f"{who} could not answer: {provider_error_detail(response)}. "
                 "Try again or pick another model."
             )
-        choice = payload["choices"][0]
-        message = choice["message"]
+        choices = payload.get("choices")
+        if (
+            not isinstance(choices, list)
+            or not choices
+            or not isinstance(choices[0], dict)
+        ):
+            raise TypeError("reply has no completion choice")
+        choice = choices[0]
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            raise TypeError("completion message is not an object")
+        text = _visible_message_text(message.get("content"))
         if choice.get("finish_reason") in {"length", "max_tokens"}:
             raise ModelOutputTruncatedError(
                 f"{who} ({endpoint.model}) hit its output limit before finishing. "
-                "Ask for something shorter or pick another model."
+                "Try one section at a time or pick another model.",
+                partial_text=text,
+                output_limit=int(
+                    body.get("max_tokens") or body.get("max_completion_tokens") or 0
+                ),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                usage_reported=reported,
             )
-        text = _visible_message_text(message.get("content"))
         if choice.get("finish_reason") == "stop" and not text:
-            raise ModelReasoningOnlyError(
-                f"{who} ({endpoint.model}) returned only reasoning and no answer. "
-                "Try the question again or pick another model."
+            details = usage.get("completion_tokens_details")
+            details = details if isinstance(details, dict) else {}
+            if (
+                message.get("reasoning_content")
+                or message.get("reasoning")
+                or details.get("reasoning_tokens")
+                or (
+                    isinstance(message.get("content"), str)
+                    and "<think" in message["content"].lower()
+                )
+            ):
+                raise ModelReasoningOnlyError(
+                    f"{who} ({endpoint.model}) returned only reasoning and no answer. "
+                    "Try the question again or pick another model."
+                )
+            raise EmptyModelError(
+                f"{who} ({endpoint.model}) returned no usable answer. "
+                "Try again or pick another model."
             )
-        usage = payload.get("usage") or {}
-        input_tokens = int(usage.get("prompt_tokens", 0))
-        output_tokens = int(usage.get("completion_tokens", 0))
     except ProviderUnavailableError:
         raise
     except httpx.ConnectError as err:
@@ -497,6 +607,18 @@ def _call_provider(
             f"{who} sent a reply Stacks could not read ({endpoint.model}): {err}"
         ) from err
     return text, input_tokens, output_tokens
+
+
+def _usage_count(value: Any) -> tuple[int, bool]:
+    """Optional malformed usage must not discard an otherwise usable answer."""
+    if isinstance(value, str) and value.isascii() and value.isdecimal():
+        try:
+            value = int(value)
+        except ValueError:
+            return 0, False
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value < 2**63:
+        return value, True
+    return 0, False
 
 
 # Request adjustments learned per (base_url, model) from the endpoint's own
@@ -545,7 +667,8 @@ def provider_error_detail(response: Any) -> str:
         error = body.get("error")
         if isinstance(error, dict):
             text = error.get("message")
-            raw = (error.get("metadata") or {}).get("raw")
+            metadata = error.get("metadata")
+            raw = metadata.get("raw") if isinstance(metadata, dict) else None
             if (
                 isinstance(raw, str)
                 and raw.strip()
@@ -587,18 +710,6 @@ def rejection_message(who: str, status: int, detail: str) -> str:
 _THINK_BLOCK = re.compile(
     r"<think(?:\s[^>]*)?>.*?</think\s*>", re.IGNORECASE | re.DOTALL
 )
-
-
-_REASONING_RETRY_CAP = 16384
-
-
-def _reasoning_tokens(payload: dict[str, Any]) -> int:
-    usage = payload.get("usage") or {}
-    details = usage.get("completion_tokens_details") or {}
-    try:
-        return int(details.get("reasoning_tokens") or 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 def _visible_message_text(content: Any) -> str:

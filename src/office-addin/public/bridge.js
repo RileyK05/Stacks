@@ -9,11 +9,22 @@
  * here touches an OOXML file.
  */
 
-/** Where the bridge is. The pane is served by the Stacks backend itself
- * (same origin), so it calls its own origin; ?bridge= overrides for tests. */
+/** Where the bridge is. An override may point only to this origin or a local bridge. */
 export function resolveBridgeBase(search, origin) {
   const override = new URLSearchParams(search).get('bridge');
-  return (override || origin).replace(/\/+$/, '');
+  const pane = new URL(origin);
+  if (pane.protocol !== 'http:' && pane.protocol !== 'https:') {
+    throw new Error('The Office bridge must use HTTP or HTTPS.');
+  }
+  const bridge = new URL(override || origin, pane);
+  const hostname = bridge.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const loopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  if ((bridge.protocol !== 'http:' && bridge.protocol !== 'https:') ||
+      bridge.username || bridge.password || bridge.search || bridge.hash ||
+      (bridge.origin !== pane.origin && !loopback)) {
+    throw new Error('The Office bridge must use this pane’s origin or a loopback HTTP(S) address.');
+  }
+  return `${bridge.origin}${bridge.pathname.replace(/\/+$/, '')}`;
 }
 
 /** What each Office app calls things in the pane. */

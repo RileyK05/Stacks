@@ -61,6 +61,20 @@ JOIN chunks AS chunk ON chunk.chunk_id = CASE
 JOIN sources AS source ON source.source_id = chunk.source_id
 JOIN courses AS course ON course.course_id = source.course_id
 WHERE edge.course_id = :course_id AND edge.model = :model
+  AND EXISTS (
+      SELECT 1 FROM chunk_embeddings AS vector_a
+      WHERE vector_a.chunk_id = edge.chunk_a
+        AND vector_a.model = :model
+        AND vector_a.dimension = :dimension
+        AND length(vector_a.embedding) = :dimension * 4
+  )
+  AND EXISTS (
+      SELECT 1 FROM chunk_embeddings AS vector_b
+      WHERE vector_b.chunk_id = edge.chunk_b
+        AND vector_b.model = :model
+        AND vector_b.dimension = :dimension
+        AND length(vector_b.embedding) = :dimension * 4
+  )
   AND (edge.chunk_a IN (SELECT value FROM json_each(:chunk_ids))
        OR edge.chunk_b IN (SELECT value FROM json_each(:chunk_ids)))
   AND chunk.chunk_id NOT IN (SELECT value FROM json_each(:chunk_ids))

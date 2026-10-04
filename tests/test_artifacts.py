@@ -335,7 +335,7 @@ def test_a_chat_item_saves_with_citations_pinned_to_its_chunks(
     ).json()
     reply = turn["reply"]
     assert reply["answer"]["workspace"], "the stub reply carries a quiz"
-    cited_chunk = reply["answer"]["chunk_ids"][1]
+    cited_chunk = reply["answer"]["material_chunk_ids"][1]
 
     saved = client.post(
         f"/courses/{course_id}/artifacts/from-message",
@@ -357,6 +357,71 @@ def test_a_chat_item_saves_with_citations_pinned_to_its_chunks(
         json={"message_id": reply["message_id"], "item_index": 3},
     )
     assert missing.status_code == 404
+
+
+@pytest.mark.parametrize("kind", ["document", "slides"])
+def test_structured_model_draft_survives_chat_adoption_reopen_and_export(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    course_id, _ = _course(client)
+    item = {"type": kind, "title": "Definitions", "sources": [2]}
+    if kind == "document":
+        item["sections"] = [
+            {
+                "heading": "Definition",
+                "paragraphs": [
+                    "Review the definition [2].",
+                    "Compare the examples [2].",
+                ],
+            }
+        ]
+        question = "Create notes on linearity and a basis"
+    else:
+        item["slides"] = [
+            {"title": "Definition", "paragraphs": ["Review the definition [2]."]},
+            {"title": "Application", "paragraphs": ["Compare the examples [2]."]},
+        ]
+        question = "Create 2 slides on linearity and a basis"
+    configure_test_provider(monkeypatch, json.dumps({"reply": "Draft", "item": item}))
+    conversation_id = client.post(
+        f"/courses/{course_id}/conversations", json={}
+    ).json()["conversation_id"]
+    turn = client.post(
+        f"/courses/{course_id}/conversations/{conversation_id}/messages",
+        json={"question": question},
+    )
+    assert turn.status_code == 200, turn.text
+    reply = turn.json()["reply"]
+    assert len(reply["answer"]["workspace"]) == 1
+    source_id = reply["answer"]["material_chunk_ids"][1]
+    origin = {"message_id": reply["message_id"], "item_index": 0}
+    adoption = client.post(f"/courses/{course_id}/artifacts/from-message", json=origin)
+    assert adoption.status_code == 201, adoption.text
+    artifact = adoption.json()
+    assert artifact["sources"] == [source_id]
+    replay = client.post(f"/courses/{course_id}/artifacts/from-message", json=origin)
+    assert replay.json()["artifact_id"] == artifact["artifact_id"]
+    url = f"/courses/{course_id}/artifacts/{artifact['artifact_id']}"
+    reopened = client.get(url).json()
+    assert reopened["content"] == artifact["content"]
+    if kind == "document":
+        assert (
+            reopened["content"]["markdown"]
+            == "## Definition\n\nReview the definition [1].\n\n"
+            "Compare the examples [1]."
+        )
+    else:
+        assert [slide["title"] for slide in reopened["content"]["slides"]] == [
+            "Definition",
+            "Application",
+        ]
+        assert reopened["content"]["slides"][1]["body"] == "Compare the examples [1]."
+    downloaded = client.post(f"{url}/download", json={"format": "md"})
+    assert downloaded.status_code == 200, downloaded.text
+    assert "Review the definition [1]." in downloaded.text
+    assert "Compare the examples [1]." in downloaded.text
+    assert "Sources" in downloaded.text
+    assert len(client.get(f"/courses/{course_id}/artifacts").json()) == 1
 
 
 def test_citations_follow_source_order_and_report_removed_sources(
@@ -879,17 +944,119 @@ def test_export_to_a_locked_file_explains_itself(
     course_id, _ = _course(client)
     doc = _create(client, course_id, "doc", title="Study guide")
 
-    def locked(self: Path, data: bytes) -> int:
+    original_open = Path.open
+
+    def locked(self: Path, mode: str = "r", *args: Any, **kwargs: Any):
+        if mode != "xb":
+            return original_open(self, mode, *args, **kwargs)
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(Path, "write_bytes", locked)
+    monkeypatch.setattr(Path, "open", locked)
     response = client.post(
         f"/courses/{course_id}/artifacts/{doc['artifact_id']}/export",
-        json={"format": "docx", "path": str(tmp_path / "Study guide.docx")},
+        json={"format": "docx"},
     )
     assert response.status_code == 409
-    assert "Study guide.docx" in response.json()["detail"]
+    assert "couldn't write the export" in response.json()["detail"]
     assert "Permission denied" in response.json()["detail"]
+
+
+def test_export_cannot_write_a_caller_supplied_destination(
+    client: TestClient, tmp_path: Path
+) -> None:
+    course_id, _ = _course(client)
+    doc = _create(client, course_id, "doc", content={"markdown": "replacement"})
+    target = tmp_path / "existing.md"
+    target.write_text("original", encoding="utf-8")
+    for endpoint in ("export", "download"):
+        response = client.post(
+            f"/courses/{course_id}/artifacts/{doc['artifact_id']}/{endpoint}",
+            json={"format": "md", "path": str(target)},
+        )
+        assert response.status_code == 422
+    assert target.read_text(encoding="utf-8") == "original"
+
+
+def test_default_export_reserves_distinct_names(client: TestClient) -> None:
+    course_id, _ = _course(client)
+    doc = _create(client, course_id, "doc", title="Export notes")
+    first = _export(client, course_id, doc["artifact_id"], "md")
+    first.write_text("student's edited copy", encoding="utf-8")
+    second = _export(client, course_id, doc["artifact_id"], "md")
+    assert first != second
+    assert first.read_text(encoding="utf-8") == "student's edited copy"
+
+
+@pytest.mark.parametrize(
+    ("item", "draft", "fmt", "expected"),
+    [
+        (
+            {
+                "type": "document",
+                "title": "Caesar's notes",
+                "content": "Original [2]",
+                "sources": [2],
+            },
+            "My current notes [2]",
+            "md",
+            "My current notes [1]",
+        ),
+        (
+            {
+                "type": "sheet",
+                "columns": ["Term", "Meaning"],
+                "rows": [["old", "original"]],
+                "sources": [2],
+            },
+            [["basis", "My current definition [2]"]],
+            "csv",
+            "My current definition [1]",
+        ),
+    ],
+)
+def test_workspace_export_uses_draft_and_original_sources_without_saving(
+    client: TestClient, item: dict[str, Any], draft: Any, fmt: str, expected: str
+) -> None:
+    from src.backend.common.db import connection
+
+    course_id, _, _, message_id = _stored_workspace_reply(client, item)
+    with connection() as conn:
+        before = conn.execute(
+            "SELECT count(*) AS total FROM learning_observations"
+        ).fetchone()["total"]
+    response = client.post(
+        f"/courses/{course_id}/artifacts/export-from-message",
+        json={"message_id": str(message_id), "draft": draft, "format": fmt},
+    )
+    assert response.status_code == 200, response.text
+    text = response.content.decode("utf-8-sig")
+    assert expected in text
+    assert "Sources" in text and "[1] notes.txt" in text
+    assert "filename*=UTF-8''" in response.headers["Content-Disposition"]
+    assert client.get(f"/courses/{course_id}/artifacts").json() == []
+    with connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT count(*) AS total FROM learning_observations"
+            ).fetchone()["total"]
+            == before
+        )
+
+
+def test_download_has_a_safe_unicode_filename_and_cited_content(
+    client: TestClient,
+) -> None:
+    course_id, _ = _course(client)
+    doc = _create(
+        client, course_id, "doc", title="José / notes", content={"markdown": "My notes"}
+    )
+    response = client.post(
+        f"/courses/{course_id}/artifacts/{doc['artifact_id']}/download",
+        json={"format": "md"},
+    )
+    assert response.status_code == 200
+    assert response.headers["Content-Disposition"].endswith("Jos%C3%A9%20_%20notes.md")
+    assert "My notes" in response.text
 
 
 def test_blank_titles_are_refused_and_padding_is_trimmed(client: TestClient) -> None:

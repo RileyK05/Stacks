@@ -3,8 +3,10 @@
   import Icon from '$lib/components/Icon.svelte';
   import Quiz from '$lib/components/Quiz.svelte';
   import { QuizSession } from '$lib/stores/workspace.svelte';
+  import { QuizSessionScope } from '$lib/stores/quizSessionScope';
   import type { PracticeContext } from '$lib/stores/practice.svelte';
   import type { QuizContent } from '$lib/stores/artifact.svelte';
+  import { autoGrowTextarea } from '$lib/actions/autoGrowTextarea';
 
   interface Props {
     quiz: QuizContent;
@@ -17,9 +19,24 @@
   let { quiz, editable = true, onchange, practice }: Props = $props();
 
   let mode = $state<'take' | 'edit'>('take');
-  const session = $derived(new QuizSession({
-    type: 'quiz', title: 'Practice test', questions: quiz.questions.map((q) => ({ ...q, topic: q.topic ?? '', capability: q.capability ?? 'recognition' })),
-  }, practice ? { artifact_id: practice.artifactId, artifact_version: practice.version, item_index: 0 } : null));
+
+  function sessionIdentity(): string {
+    return JSON.stringify([practice?.artifactId, practice?.version, quiz.questions]);
+  }
+
+  function makeSession(): QuizSession {
+    return new QuizSession({
+      type: 'quiz', title: 'Practice test', questions: quiz.questions.map((q) => ({ ...q, topic: q.topic ?? '', capability: q.capability ?? 'recognition' })),
+    }, practice ? { artifact_id: practice.artifactId, artifact_version: practice.version, item_index: 0 } : null);
+  }
+
+  const sessionScope = new QuizSessionScope(sessionIdentity(), makeSession);
+  let session = $state.raw(sessionScope.forMode('take', sessionIdentity(), makeSession));
+
+  $effect(() => {
+    const nextIdentity = sessionIdentity();
+    session = sessionScope.forMode(mode, nextIdentity, makeSession);
+  });
 
   function addQuestion() {
     quiz.questions.push({ prompt: 'New question', options: ['Option A', 'Option B'], answer: 0, explanation: '', sources: [] });
@@ -72,9 +89,7 @@
 
   {#if mode === 'take'}
     {#if practice?.ready && quiz.questions.length}
-      {#key practice.version}
-        <Quiz {session} sources={[]} courseId={practice.courseId} />
-      {/key}
+      <Quiz {session} sources={[]} courseId={practice.courseId} />
     {:else}
       <p class="text-sm text-muted">{practice ? 'Save your changes before taking this test.' : 'Open the saved quiz to take a recorded practice test.'}</p>
     {/if}
@@ -91,7 +106,7 @@
         {#each question.options as _, optionIndex (optionIndex)}
           <div class="flex items-center gap-2">
             <input type="radio" name={`answer-${index}`} checked={question.answer === optionIndex} onchange={() => { question.answer = optionIndex; onchange(); }} aria-label="Correct answer" />
-            <input bind:value={question.options[optionIndex]} oninput={onchange} aria-label={`Option ${optionIndex + 1}`} class="h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface px-2.5 text-[13px] text-fg focus:border-accent focus:outline-none" />
+            <textarea bind:value={question.options[optionIndex]} oninput={onchange} use:autoGrowTextarea={question.options[optionIndex]} rows="1" aria-label={`Option ${optionIndex + 1}`} class="block h-auto min-w-0 flex-1 resize-none overflow-hidden rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-fg [overflow-wrap:anywhere] focus:border-accent focus:outline-none"></textarea>
             <button type="button" onclick={() => removeOption(index, optionIndex)} disabled={question.options.length <= 2} class="rounded p-1 text-subtle hover:text-danger-text disabled:opacity-30" title="Remove option">
               <Icon name="x" class="h-3.5 w-3.5" />
             </button>

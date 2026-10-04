@@ -163,7 +163,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         # A cross-origin webview can only read response headers listed here;
         # the source viewer needs the PDF page count (api/sources.py).
-        expose_headers=["X-Page-Count"],
+        expose_headers=["X-Page-Count", "Content-Disposition"],
         max_age=600,
     )
     app.mount("/api", create_api())

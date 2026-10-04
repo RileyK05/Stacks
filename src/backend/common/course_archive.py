@@ -134,6 +134,7 @@ def export_course(course_id: UUID, directory: Path) -> ExportResult:
                 )
                 member = zipfile.ZipInfo(path)
                 member.compress_type = compression
+                digest = hashlib.sha256()
                 with archive.open(member, "w", force_zip64=True) as output:
                     for block in storage.iter_stored(
                         course_id,
@@ -142,13 +143,14 @@ def export_course(course_id: UUID, directory: Path) -> ExportResult:
                         max_decompressed_bytes=policy.max_decompressed_bytes,
                     ):
                         output.write(block)
+                        digest.update(block)
                 entries.append(
                     ArchiveSource(
                         path=path,
                         filename=filename,
                         mime_type=row["mime_type"],
                         source_type=SourceType(row["source_type"]),
-                        sha256=row["file_hash"],
+                        sha256=digest.hexdigest(),
                         source_id=row["source_id"],
                     )
                 )

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Annotated
 from uuid import UUID
@@ -33,6 +35,26 @@ from src.backend.ingest.extract import (
 from src.backend.ingest.office import OfficeFileError
 
 router = APIRouter(prefix="/courses", tags=["sources"])
+
+
+@contextmanager
+def _source_read() -> Iterator[None]:
+    try:
+        yield
+    except FileNotFoundError as err:
+        raise HTTPException(
+            410, "The stored source file is missing. Upload it again."
+        ) from err
+    except storage.DecompressionLimitExceededError as err:
+        raise HTTPException(
+            413, "The stored source exceeds the reader's size limit."
+        ) from err
+    except (OfficeFileError, EmptyExtractionError, ValueError) as err:
+        raise HTTPException(422, f"The stored source could not be read: {err}") from err
+    except OSError as err:
+        raise HTTPException(
+            409, "The stored source file is unavailable. Check file access and retry."
+        ) from err
 
 
 class SourceUploadView(BaseModel):
@@ -164,12 +186,10 @@ def source_content(course_id: UUID, source_id: UUID) -> Response:
         ).fetchone()
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
-    try:
+    with _source_read():
         readable = viewer_text(
             course_id, source_id, row["mime_type"], row["stored_encoding"]
         )
-    except (OfficeFileError, EmptyExtractionError) as err:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(err)) from err
     if readable is not None:
         # An Office file's bytes are a zip, not something the viewer can
         # show; it gets the text ingestion read, which is what citations
@@ -182,12 +202,13 @@ def source_content(course_id: UUID, source_id: UUID) -> Response:
                 "Cache-Control": "private, no-store",
             },
         )
-    data = storage.read_stored(
-        course_id,
-        source_id,
-        row["stored_encoding"],
-        max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
-    )
+    with _source_read():
+        data = storage.read_stored(
+            course_id,
+            source_id,
+            row["stored_encoding"],
+            max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+        )
     return Response(
         content=data,
         media_type=row["mime_type"],
@@ -211,13 +232,19 @@ def source_pdf_page(course_id: UUID, source_id: UUID, page_number: int) -> Respo
         ).fetchone()
     if row is None or row["mime_type"] != "application/pdf":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "PDF source not found")
-    raw = storage.read_stored(
-        course_id,
-        source_id,
-        row["stored_encoding"],
-        max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
-    )
-    pdf = pdfium.PdfDocument(io.BytesIO(raw))
+    with _source_read():
+        raw = storage.read_stored(
+            course_id,
+            source_id,
+            row["stored_encoding"],
+            max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
+        )
+    try:
+        pdf = pdfium.PdfDocument(io.BytesIO(raw))
+    except pdfium.PdfiumError as err:
+        raise HTTPException(
+            422, "The stored PDF could not be opened. Upload a readable copy."
+        ) from err
     try:
         if page_number < 1 or page_number > len(pdf):
             raise HTTPException(status.HTTP_404_NOT_FOUND, "page not found")
@@ -239,6 +266,8 @@ def source_pdf_page(course_id: UUID, source_id: UUID, page_number: int) -> Respo
                 "Cache-Control": "private, no-store",
             },
         )
+    except pdfium.PdfiumError as err:
+        raise HTTPException(422, "This PDF page could not be rendered.") from err
     finally:
         pdf.close()
 

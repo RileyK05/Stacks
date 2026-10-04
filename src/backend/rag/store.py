@@ -17,8 +17,8 @@ from src.backend.rag.config import PassagePolicy
 from src.backend.rag.segment import ContainerSpan, Segmentation, segment, windows
 
 # Bump when extracted text or page coverage changes, so an older index can
-# be marked stale. structured-v2 records per-page quality and spacing.
-EXTRACTION_VERSION = "structured-v2"
+# be marked stale. structured-v3 normalizes extraction artifacts.
+EXTRACTION_VERSION = "structured-v3"
 
 
 def digest(text: str) -> str:
@@ -140,8 +140,11 @@ def prepare(
     links: list[dict[str, Any]] = []
     search_rows: list[dict[str, Any]] = []
     window_texts: list[str] = []
-    for index, span in enumerate(segmentation.passages):
+    for span in segmentation.passages:
         passage_text = text[span.start : span.end]
+        if not passage_text.strip():
+            continue
+        index = len(passage_rows)
         chunk_id = existing.get((span.start, span.end, passage_text)) or uuid5(
             source_id, f"{text_hash}:passage:{span.start}:{span.end}"
         )
@@ -150,12 +153,6 @@ def prepare(
             for loc in extracted.locators
             if loc.start < span.end and loc.end > span.start
         ]
-        if not locations and not passage_text.strip() and extracted.locators:
-            previous_location = next(
-                (loc for loc in reversed(extracted.locators) if loc.end <= span.start),
-                extracted.locators[0],
-            )
-            locations = [previous_location.locator_id]
         if not locations:
             raise ValueError(f"passage {index} has no source location")
         passage_rows.append(

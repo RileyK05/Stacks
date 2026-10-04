@@ -42,24 +42,24 @@ class AddinHost:
         with self._lock:
             self._stop_locked()
             sockets = _bind(port)
-            config = uvicorn.Config(
-                app,
-                ssl_certfile=str(cert),
-                ssl_keyfile=str(key),
-                lifespan="off",
-                log_config=None,
-                access_log=False,
-            )
-            server = uvicorn.Server(config)
-            thread = threading.Thread(
-                target=server.run,
-                kwargs={"sockets": sockets},
-                name="office-addin-host",
-                daemon=True,
-            )
-            self._server, self._thread, self.port = server, thread, port
             self._sockets = sockets
             try:
+                config = uvicorn.Config(
+                    app,
+                    ssl_certfile=str(cert),
+                    ssl_keyfile=str(key),
+                    lifespan="off",
+                    log_config=None,
+                    access_log=False,
+                )
+                server = uvicorn.Server(config)
+                thread = threading.Thread(
+                    target=server.run,
+                    kwargs={"sockets": sockets},
+                    name="office-addin-host",
+                    daemon=True,
+                )
+                self._server, self._thread, self.port = server, thread, port
                 thread.start()
                 deadline = time.monotonic() + _STOP_TIMEOUT
                 while (
@@ -71,13 +71,29 @@ class AddinHost:
                 if not server.started:
                     raise OSError("the Office HTTPS host did not become ready")
             except BaseException:
-                self._stop_locked()
+                try:
+                    self._stop_locked()
+                except OSError:
+                    _logger.exception(
+                        "Office host cleanup timed out after startup failure; "
+                        "releasing its sockets without waiting for the thread"
+                    )
+                    self._release_sockets_locked()
                 raise
             _logger.info("Office add-in served on https://localhost:%s", port)
 
     def stop(self) -> None:
         with self._lock:
             self._stop_locked()
+
+    def _release_sockets_locked(self) -> None:
+        for sock in self._sockets:
+            try:
+                sock.close()
+            except OSError:
+                _logger.warning("could not close an Office host socket", exc_info=True)
+        self._sockets = []
+        self._server, self._thread, self.port = None, None, None
 
     def _stop_locked(self) -> None:
         if self._server is not None:
@@ -89,10 +105,7 @@ class AddinHost:
                 raise OSError(
                     "the Office HTTPS host has not stopped; try again shortly"
                 )
-        for sock in self._sockets:
-            sock.close()
-        self._sockets = []
-        self._server, self._thread, self.port = None, None, None
+        self._release_sockets_locked()
 
 
 def _bind(port: int) -> list[socket.socket]:
@@ -116,6 +129,8 @@ def _listen(family: socket.AddressFamily, address: str, port: int) -> socket.soc
     try:
         if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         if family == socket.AF_INET6:
             sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
         sock.bind((address, port))

@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -61,6 +62,7 @@ LOCAL = "local"
 _CONNECTIONS_KEY = "provider.connections"
 _SLUG = re.compile(r"[^a-z0-9]+")
 CONNECTION_ID_MAX = 40
+logger = logging.getLogger(__name__)
 
 
 class TaskClass(StrEnum):
@@ -225,6 +227,7 @@ def add_connection(
     base_url: str | None = None,
     default_model: str | None = None,
     connection_id: str | None = None,
+    api_key: str | None = None,
 ) -> Connection:
     template = _preset(preset)
     if preset == LOCAL:
@@ -246,8 +249,26 @@ def add_connection(
             base_url=(base_url or "").strip() or None,
             default_model=(default_model or "").strip() or None,
         )
-        _store_connections([*saved, connection], conn)
-        conn.commit()
+        previous_key = (
+            secrets.get_api_key(connection.id) if api_key is not None else None
+        )
+        try:
+            if api_key is not None:
+                secrets.set_api_key(connection.id, api_key)
+            _store_connections([*saved, connection], conn)
+            conn.commit()
+        except Exception:
+            if api_key is not None:
+                try:
+                    if previous_key is None:
+                        secrets.delete_api_key(connection.id)
+                    else:
+                        secrets.set_api_key(connection.id, previous_key)
+                except secrets.CredentialStoreUnavailableError:
+                    logger.exception(
+                        "could not remove the key of an unsaved connection"
+                    )
+            raise
     return connection
 
 
@@ -297,7 +318,6 @@ def remove_connection(connection_id: str) -> None:
         saved = _saved_connections(conn)
         if not any(c.id == connection_id for c in saved):
             raise UnknownConnectionError(f"unknown connection: {connection_id}")
-        secrets.delete_api_key(connection_id)
         _store_connections([c for c in saved if c.id != connection_id], conn)
         for cls in TaskClass:
             row = conn.execute(
@@ -311,7 +331,19 @@ def remove_connection(connection_id: str) -> None:
                 conn.execute(
                     get("settings", "delete_setting"), {"key": _setting_key(cls)}
                 )
-        conn.commit()
+        previous_key = secrets.get_api_key(connection_id)
+        try:
+            secrets.delete_api_key(connection_id)
+            conn.commit()
+        except Exception:
+            if previous_key is not None:
+                try:
+                    secrets.set_api_key(connection_id, previous_key)
+                except secrets.CredentialStoreUnavailableError:
+                    logger.exception(
+                        "could not restore a connection key after rollback"
+                    )
+            raise
 
 
 def has_key(connection: Connection) -> bool:

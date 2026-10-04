@@ -1,8 +1,8 @@
 """Portable chat and artifact history for .course format v2.
 
-Only evidence actually cited by the saved notebook travels in the archive.
-On import it becomes a source-scoped snapshot, so subsequent ingestion can
-rebuild chunks without changing what an old citation meant.
+Evidence cited by the saved notebook and candidate passages needed to preserve
+workspace numbering travel in the archive. On import each becomes a
+source-scoped snapshot, so subsequent ingestion cannot change old references.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from src.backend.common.db import Connection, connection, json_ids
 from src.backend.common.queries import get
 from src.backend.common.schemas.work import ArchivedWork
@@ -43,7 +43,44 @@ class Trace(ArchiveModel):
     trace_id: UUID
     query: str
     chunk_ids: list[UUID]
+    # None means an archive written before citation attribution was retained;
+    # [] is an explicit record that no retrieved passage was cited.
+    cited_chunk_ids: list[UUID] | None = None
+    citation_markers: list[int] | None = None
     model: str | None = None
+
+    @model_validator(mode="after")
+    def validate_citation_mapping(self) -> Trace:
+        if (self.cited_chunk_ids is None) != (self.citation_markers is None):
+            raise ValueError("trace citation IDs and markers must be stored together")
+        if self.cited_chunk_ids is not None and self.citation_markers is not None:
+            if len(self.cited_chunk_ids) != len(self.citation_markers):
+                raise ValueError("trace citation IDs and markers must align")
+            if any(
+                marker < 1
+                or marker > len(self.chunk_ids)
+                or self.chunk_ids[marker - 1] != chunk_id
+                for chunk_id, marker in zip(
+                    self.cited_chunk_ids, self.citation_markers, strict=True
+                )
+            ):
+                raise ValueError("trace citation marker does not match its candidate")
+        return self
+
+
+def _payload_uuid_list(payload: Any, key: str) -> list[UUID]:
+    """Return valid UUIDs from a supported chunk-ID array, ignoring bad values."""
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get(key)
+    if not isinstance(raw, list):
+        return []
+    result: list[UUID] = []
+    for value in raw:
+        if isinstance(value, str):
+            with suppress(ValueError):
+                result.append(UUID(value))
+    return result
 
 
 class Message(ArchiveModel):
@@ -107,6 +144,7 @@ def export_notebook(course_id: UUID) -> Notebook:
         study = export_learning(conn, course_id)
         work_sessions = export_work(conn, course_id)
         conversations: list[Conversation] = []
+        cited_ids: set[UUID] = set()
         trace_ids: set[UUID] = set()
         for row in conn.execute(
             get("archive_notebook", "conversations"), {"course_id": course_id}
@@ -119,6 +157,11 @@ def export_notebook(course_id: UUID) -> Notebook:
                 ).fetchall()
             ]
             trace_ids.update(m.trace_id for m in messages if m.trace_id is not None)
+            for message in messages:
+                cited_ids.update(_payload_uuid_list(message.payload, "chunk_ids"))
+                cited_ids.update(
+                    _payload_uuid_list(message.payload, "material_chunk_ids")
+                )
             conversations.append(
                 Conversation(
                     conversation_id=row["conversation_id"],
@@ -133,7 +176,6 @@ def export_notebook(course_id: UUID) -> Notebook:
                 )
             )
         artifacts: list[Artifact] = []
-        cited_ids: set[UUID] = set()
         for row in conn.execute(
             get("archive_notebook", "artifacts"), {"course_id": course_id}
         ).fetchall():
@@ -179,15 +221,31 @@ def export_notebook(course_id: UUID) -> Notebook:
                 if isinstance(payload, dict)
                 else []
             )
+            has_citation_mapping = (
+                isinstance(payload, dict) and "cited_chunk_ids" in payload
+            )
+            cited_chunk_ids = (
+                _payload_uuid_list(payload, "cited_chunk_ids")
+                if has_citation_mapping
+                else None
+            )
+            citation_markers = (
+                payload.get("citation_markers")
+                if has_citation_mapping and isinstance(payload, dict)
+                else None
+            )
             traces.append(
                 Trace(
                     trace_id=trace_id,
                     query=row["query"],
                     chunk_ids=chunk_ids,
+                    cited_chunk_ids=cited_chunk_ids,
+                    citation_markers=citation_markers,
                     model=row["model"],
                 )
             )
             cited_ids.update(chunk_ids)
+            cited_ids.update(cited_chunk_ids or [])
         for suite in study.suites:
             cited_ids.update(
                 UUID(source["chunk_id"])
@@ -228,15 +286,16 @@ def _remap_payload(
         if isinstance(raw, str):
             with suppress(ValueError):
                 result[key] = str(mapping.get(UUID(raw), raw))
-    raw_chunks = result.get("chunk_ids")
-    if isinstance(raw_chunks, list):
-        mapped: list[Any] = []
-        for value in raw_chunks:
-            if isinstance(value, str):
-                with suppress(ValueError):
-                    value = str(chunk_map.get(UUID(value), UUID(value)))
-            mapped.append(value)
-        result["chunk_ids"] = mapped
+    for chunk_key in ("chunk_ids", "material_chunk_ids"):
+        raw_chunks = result.get(chunk_key)
+        if isinstance(raw_chunks, list):
+            mapped: list[Any] = []
+            for value in raw_chunks:
+                if isinstance(value, str):
+                    with suppress(ValueError):
+                        value = str(chunk_map.get(UUID(value), UUID(value)))
+                mapped.append(value)
+            result[chunk_key] = mapped
     if isinstance(result.get("workspace"), list):
         items = []
         for item in result["workspace"]:
@@ -262,17 +321,15 @@ def import_notebook(
     cited_ids = {citation.chunk_id for citation in notebook.citations}
     for trace in notebook.traces:
         cited_ids.update(trace.chunk_ids)
+        cited_ids.update(trace.cited_chunk_ids or [])
     for artifact in notebook.artifacts:
         cited_ids.update(artifact.sources)
         for version in artifact.versions:
             cited_ids.update(version.sources)
     for conversation in notebook.conversations:
         for message in conversation.messages:
-            raw_chunks = message.payload.get("chunk_ids")
-            for raw in raw_chunks if isinstance(raw_chunks, list) else []:
-                if isinstance(raw, str):
-                    with suppress(ValueError):
-                        cited_ids.add(UUID(raw))
+            for field in ("chunk_ids", "material_chunk_ids"):
+                cited_ids.update(_payload_uuid_list(message.payload, field))
     chunk_map = {old: uuid4() for old in cited_ids}
     trace_map = {trace.trace_id: uuid4() for trace in notebook.traces}
     for citation in notebook.citations:
@@ -300,7 +357,19 @@ def import_notebook(
                 "course_id": course_id,
                 "query": trace.query,
                 "chunk_ids": json.dumps(
-                    {"chunk_ids": [str(chunk_map[c]) for c in trace.chunk_ids]}
+                    {
+                        "chunk_ids": [str(chunk_map[c]) for c in trace.chunk_ids],
+                        **(
+                            {
+                                "cited_chunk_ids": [
+                                    str(chunk_map[c]) for c in trace.cited_chunk_ids
+                                ],
+                                "citation_markers": trace.citation_markers,
+                            }
+                            if trace.cited_chunk_ids is not None
+                            else {}
+                        ),
+                    }
                 ),
                 "model": trace.model,
             },
