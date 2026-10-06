@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api } from '$lib/api/client';
   import { goto } from '$app/navigation';
+  import Button from '$lib/components/Button.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
   import Icon from '$lib/components/Icon.svelte';
@@ -30,6 +31,9 @@
 
   let creating = $state<ArtifactKind | null>(null);
   let error = $state<unknown>(null);
+  let examOpen = $state(false);
+  let examFile = $state<File | null>(null);
+  let generating = $state(false);
   let renaming = $state<string | null>(null);
   let newTitle = $state('');
 
@@ -78,6 +82,28 @@
     } catch (caught) { error = caught; }
   }
 
+  async function generateExam(event: SubmitEvent) {
+    event.preventDefault();
+    if (!examFile || generating || creating !== null) return;
+    generating = true;
+    error = null;
+    try {
+      const form = new FormData();
+      form.append('file', examFile);
+      const { data } = await api.POST('/courses/{course_id}/artifacts/exam-style', {
+        params: { path: { course_id: courseId } },
+        body: form as never
+      });
+      if (!data) throw new Error('Could not generate practice questions.');
+      await onchanged();
+      await goto(`/courses/${courseId}/artifacts/${data.artifact_id}`);
+    } catch (caught) {
+      error = caught;
+    } finally {
+      generating = false;
+    }
+  }
+
   async function remove(artifactId: string, title: string) {
     if (!(await confirmDialog({ title: 'Delete this artifact?', message: `Delete “${title}” and its version history from this course?`, confirmLabel: 'Delete', danger: true }))) return;
     error = null;
@@ -110,7 +136,38 @@
           <span class="text-xs text-subtle">{item.hint}</span>
         </button>
       {/each}
+      <button
+        type="button"
+        onclick={() => (examOpen = !examOpen)}
+        aria-expanded={examOpen}
+        disabled={creating !== null || generating}
+        class="group flex flex-col items-start gap-2 rounded-xl border border-line bg-surface p-3.5 text-left shadow-card transition-all hover:-translate-y-px hover:border-accent-line hover:shadow-lift disabled:opacity-60"
+      >
+        <span class="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-soft text-accent-text">
+          <Icon name="target" class="h-4 w-4" />
+        </span>
+        <span class="text-sm font-semibold text-fg">Exam-style practice</span>
+        <span class="text-xs text-subtle">Upload a quiz or exam and practice new questions in that style</span>
+      </button>
     </div>
+    {#if examOpen}
+      <form onsubmit={generateExam} class="mt-3 flex flex-col gap-3 rounded-xl border border-line bg-surface p-4 shadow-card">
+        <p class="text-sm leading-relaxed text-muted">
+          Upload a PDF or photo of a quiz or exam. Stacks reads it for topics, difficulty, and question formats, then writes new questions from your course materials. The file is not added to your sources, and the original questions are not answered.
+        </p>
+        <input
+          type="file"
+          accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
+          aria-label="Quiz or exam file"
+          onchange={(event) => (examFile = event.currentTarget.files?.[0] ?? null)}
+          class="text-sm text-fg file:mr-3 file:rounded-lg file:border-0 file:bg-accent-soft file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-accent-text"
+        />
+        <div class="flex items-center gap-2">
+          <Button type="submit" size="sm" loading={generating} disabled={!examFile}>Generate practice</Button>
+          <Button type="button" variant="ghost" size="sm" onclick={() => (examOpen = false)} disabled={generating}>Cancel</Button>
+        </div>
+      </form>
+    {/if}
     {#if error}<div class="mt-3"><ErrorBanner {error} /></div>{/if}
   </section>
 

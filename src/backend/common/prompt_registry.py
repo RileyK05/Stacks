@@ -41,6 +41,8 @@ KNOWN_PROMPTS = (
         "background_review",
         "conversation_scope_change",
         "scope_change_summary",
+        "exam_style_profile",
+        "exam_style_quiz",
     }
 )
 

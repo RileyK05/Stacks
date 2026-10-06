@@ -823,6 +823,51 @@ def pdf_page_count(
         pdf.close()
 
 
+def pdf_page_plain_text(raw: bytes) -> list[str]:
+    """Per-page text from a PDF's text layer. Empty strings are pages with no text."""
+    return [text for text, _has_table in _pypdf_pages(raw)]
+
+
+def rasterize_pdf_bytes(
+    raw: bytes,
+    *,
+    max_pages: int,
+    scale: float,
+    pages: Sequence[int] | None = None,
+    max_pixels: int = 8_000_000,
+) -> list[RasterizedPage]:
+    """Render PDF bytes that are not a stored course source.
+
+    Used for an uploaded quiz that is read once and never indexed.
+    """
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(io.BytesIO(raw))
+    try:
+        if pages is None:
+            indexes: Sequence[int] = range(min(len(pdf), max_pages))
+        else:
+            indexes = [index for index in pages if 0 <= index < len(pdf)][:max_pages]
+        renders: list[RasterizedPage] = []
+        for index in indexes:
+            page = pdf[index]
+            try:
+                width, height = page.get_size()
+                render_scale = _bounded_render_scale(width, height, scale, max_pixels)
+                bitmap = page.render(scale=render_scale)
+                try:
+                    with bitmap.to_pil() as image, io.BytesIO() as buffer:
+                        image.save(buffer, format="PNG")
+                        renders.append(RasterizedPage(index, buffer.getvalue()))
+                finally:
+                    bitmap.close()
+            finally:
+                page.close()
+        return renders
+    finally:
+        pdf.close()
+
+
 def rasterize_pages(
     course_id: UUID,
     source_id: UUID,

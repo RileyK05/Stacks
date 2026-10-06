@@ -23,7 +23,18 @@
 
   const questions = $derived(session.questions);
   const followUp = $derived(session.submitted ? session.missedFollowUp() : null);
-  const answered = $derived(session.responses.filter((response) => response !== null).length);
+  const answered = $derived(
+    questions.filter((question, index) => {
+      const response = session.responses[index];
+      if (question.format === 'short_answer') return typeof response === 'string' && response.trim().length > 0;
+      return typeof response === 'number';
+    }).length
+  );
+
+  function shortText(index: number): string {
+    const response = session.responses[index];
+    return typeof response === 'string' ? response : '';
+  }
   const assessed = $derived(session.run?.results.filter((result) => result !== null).length ?? questions.length);
   const perfect = $derived(session.submitted && assessed > 0 && session.score === assessed);
 
@@ -88,14 +99,42 @@
 
   {#each questions as question, questionIndex (questionIndex)}
     {@const help = session.assistance[questionIndex]}
+    {@const missed = session.run?.missed_points?.[questionIndex] ?? []}
+    {#if question.stem && (questionIndex === 0 || questions[questionIndex - 1].stem !== question.stem)}
+      <p class="whitespace-pre-wrap text-[15px] font-medium leading-snug text-fg [overflow-wrap:anywhere]">{question.stem}</p>
+    {/if}
     <fieldset class="flex min-w-0 flex-col gap-2">
       <legend class="mb-2 max-w-full">
         <span class="block text-[11px] font-semibold uppercase tracking-[0.1em] text-subtle">
-          Question {questionIndex + 1} of {questions.length}
+          {question.part ? `Part ${question.part}` : `Question ${questionIndex + 1}`} of {questions.length}
         </span>
         <span class="mt-1 block whitespace-pre-wrap text-[15px] font-medium leading-snug text-fg [overflow-wrap:anywhere]">{question.prompt}</span>
       </legend>
-      {#each question.options as option, optionIndex (optionIndex)}
+      {#if question.format === 'short_answer'}
+        {#if session.submitted}
+          <p class="whitespace-pre-wrap rounded-xl border border-line bg-surface px-3 py-2.5 text-sm text-fg [overflow-wrap:anywhere]">{shortText(questionIndex) || 'No answer'}</p>
+          {#if session.run?.results[questionIndex] === true}
+            <p class="text-sm text-success-text">Your answer covers the required points.</p>
+          {:else if session.run?.results[questionIndex] === false}
+            <p class="text-sm text-danger-text">Missing: {missed.join('; ') || 'a required point'}</p>
+          {/if}
+          {#if question.expected && session.run?.results[questionIndex] !== null}
+            <p class="whitespace-pre-wrap text-sm text-fg-soft [overflow-wrap:anywhere]">Expected answer: {question.expected}</p>
+          {/if}
+        {:else}
+          <textarea
+            value={shortText(questionIndex)}
+            oninput={(event) => session.write(questionIndex, event.currentTarget.value)}
+            disabled={session.saving || session.submissionPending || !session.ready}
+            rows="4"
+            maxlength="5000"
+            aria-label={`Answer ${questionIndex + 1}`}
+            placeholder="Write your answer"
+            class="rounded-xl border border-line bg-surface px-3 py-2.5 text-sm text-fg focus:border-accent focus:outline-none"
+          ></textarea>
+        {/if}
+      {/if}
+      {#each question.format === 'short_answer' ? [] : question.options as option, optionIndex (optionIndex)}
         {@const state = optionState(questionIndex, optionIndex)}
         <button
           type="button"
@@ -119,7 +158,7 @@
         </button>
       {/each}
       {#if session.submitted}
-        {#if session.correctAnswer(questionIndex) === null}
+        {#if session.run?.results[questionIndex] === null}
           <p class="text-sm text-muted">This question is flagged and does not affect memory.</p>
         {/if}
         {#if question.explanation}
@@ -129,7 +168,7 @@
           </p>
         {/if}
         <SourceChips cited={question.sources ?? []} sources={session.evidence.length ? session.evidence : sources} />
-        <button type="button" onclick={() => session.challenge(questionIndex)} disabled={session.saving || session.helping || session.correctAnswer(questionIndex) === null} class="self-start text-xs text-muted hover:underline disabled:opacity-40">Flag an incorrect or ambiguous question</button>
+        <button type="button" onclick={() => session.challenge(questionIndex)} disabled={session.saving || session.helping || session.run?.results[questionIndex] === null} class="self-start text-xs text-muted hover:underline disabled:opacity-40">Flag an incorrect or ambiguous question</button>
       {:else}
         <label class="flex gap-2 text-xs text-muted"><input type="checkbox" bind:checked={session.helped[questionIndex]} disabled={session.saving || session.submissionPending || !session.ready} /> I used help or notes</label>
       {/if}

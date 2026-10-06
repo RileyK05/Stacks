@@ -54,9 +54,14 @@ class ContentFeedback(ContentFeedbackRequest):
 
 
 class PracticeQuestion(BaseModel):
+    format: Literal["multiple_choice", "short_answer"] = "multiple_choice"
     prompt: str = Field(min_length=1, max_length=5000)
-    options: list[str] = Field(min_length=2, max_length=8)
-    answer: int = Field(ge=0)
+    stem: str = Field(default="", max_length=2000)
+    part: str = Field(default="", max_length=8)
+    options: list[str] = Field(default_factory=list, max_length=8)
+    answer: int = Field(default=0, ge=0)
+    expected: str = Field(default="", max_length=5000)
+    points: list[str] = Field(default_factory=list, max_length=6)
     explanation: str = Field(default="", max_length=5000)
     sources: list[int] = Field(default_factory=list)
     topic: str = Field(default="", max_length=160)
@@ -64,6 +69,19 @@ class PracticeQuestion(BaseModel):
 
     @model_validator(mode="after")
     def valid_key(self) -> PracticeQuestion:
+        if self.format == "short_answer":
+            if self.options:
+                raise ValueError("a short answer has no options")
+            if not self.expected.strip():
+                raise ValueError("a short answer needs an expected answer")
+            cleaned = [point.strip() for point in self.points if point.strip()]
+            if not cleaned or any(len(point) > 300 for point in cleaned):
+                raise ValueError("a short answer needs required points")
+            self.points = cleaned
+            self.answer = 0
+            return self
+        if len(self.options) < 2:
+            raise ValueError("a multiple-choice question needs options")
         if self.answer >= len(self.options):
             raise ValueError("the answer key must be one of the options")
         return self
@@ -83,7 +101,7 @@ class PracticeSuite(BaseModel):
 class PracticeSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_id: UUID
-    answers: list[int] = Field(min_length=1, max_length=100)
+    answers: list[int | str] = Field(min_length=1, max_length=100)
     helped: list[bool] = Field(default_factory=list, max_length=100)
 
 
@@ -91,12 +109,14 @@ class PracticeRun(BaseModel):
     run_id: UUID
     suite_id: UUID
     course_id: UUID
-    answers: list[int]
+    answers: list[int | str]
     helped: list[bool]
     policy_version: str
     created_at: datetime
     results: list[bool | None]
     correct_answers: list[int | None]
+    # Required points a short answer did not cover. Empty for other questions.
+    missed_points: list[list[str]] = Field(default_factory=list)
 
 
 class SuiteState(BaseModel):

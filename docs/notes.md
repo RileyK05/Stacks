@@ -3958,3 +3958,17 @@ the incomplete/unverified request count and calls its totals reported usage.
 Full backup recovery preserves the flag; reduced snapshots still omit usage.
 Optional provider metadata cannot discard an otherwise usable answer. Monthly
 budget remains a stop between requests; hard concurrent reservations stay C-63.
+
+## 2026-10-05 — Exam-style practice
+
+Students can upload a quiz or exam PDF or photo from the Artifacts tab, beside
+mind maps. The file is read for topics, difficulty, and formats only. It is not
+indexed, not stored, and not answered. New questions use the existing quiz
+artifact and practice suite, grounded in retrieved course passages, and are
+dropped when they reuse a six-word run from the upload. Multiple choice is
+unchanged. Short answers and multi-part items are flat questions: a shared
+stem, a part letter, an expected answer, and required points. A short answer is
+correct only when every point's content words appear in the student's words.
+That check is mechanical, so a paraphrase that drops the source's terms is
+incomplete. No new generation task and no SQL migration. Prompt policy is 44.
+A live model evaluation of the generated questions has not been run.

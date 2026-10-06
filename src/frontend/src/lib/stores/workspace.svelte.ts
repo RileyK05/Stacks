@@ -15,7 +15,31 @@ export class QuizSession extends PracticeSession {
   readonly quiz: WorkspaceQuiz;
 
   constructor(quiz: WorkspaceQuiz, savedOrigin: SuiteFromSaved | null = null) {
-    super(quiz.questions.map((q) => ({ ...q, explanation: q.explanation ?? '', topic: q.topic ?? '', capability: q.capability ?? 'recognition' })), quiz.practice_id ?? null, savedOrigin);
+    super(
+      quiz.questions.map((q) => {
+        // Saved exam-style quizzes carry fields the chat workspace schema does not.
+        const extra = q as typeof q & {
+          format?: 'multiple_choice' | 'short_answer';
+          stem?: string;
+          part?: string;
+          expected?: string;
+          points?: string[];
+        };
+        return {
+          ...q,
+          format: extra.format ?? 'multiple_choice',
+          stem: extra.stem ?? '',
+          part: extra.part ?? '',
+          expected: extra.expected ?? '',
+          points: extra.points ?? [],
+          explanation: q.explanation ?? '',
+          topic: q.topic ?? '',
+          capability: q.capability ?? 'recognition',
+        };
+      }),
+      quiz.practice_id ?? null,
+      savedOrigin
+    );
     this.quiz = quiz;
   }
 
@@ -23,9 +47,14 @@ export class QuizSession extends PracticeSession {
     const missed = this.questions.flatMap((question, index) => {
       if (this.run?.results[index] !== false) return [];
       const picked = this.responses[index];
+      if (question.format === 'short_answer') {
+        if (typeof picked !== 'string') return [];
+        return [`"${question.prompt}" — I wrote "${picked}". The expected answer is "${question.expected ?? ''}". Help me see which required points I missed.`];
+      }
       const key = this.correctAnswer(index);
-      if (picked === null || key === null) return [];
-      return [`"${question.prompt}" — I picked "${question.options[picked]}"; the current key says "${question.options[key]}". Check the key against the source and help me reason through it.`];
+      const options = question.options ?? [];
+      if (typeof picked !== 'number' || key === null) return [];
+      return [`"${question.prompt}" — I picked "${options[picked]}"; the current key says "${options[key]}". Check the key against the source and help me reason through it.`];
     });
     return missed.length ? missed.join(' ') : null;
   }

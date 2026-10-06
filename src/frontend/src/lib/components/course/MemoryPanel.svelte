@@ -131,17 +131,34 @@
             {#each detail.suite.evidence as source}<p class="mt-2 font-medium">{String(source.filename ?? 'Removed source')} · {String(source.label ?? '')}</p><p class="whitespace-pre-wrap">{String(source.text ?? '')}</p>{/each}
           </details>
           {#each detail.suite.questions as question, index}
-            <div class="mt-4 text-sm"><p class="text-fg">{index + 1}. {question.prompt}</p><p class="text-muted">Answered: {question.options[detail.latest_run.answers[index]]}</p>
-              <label class="mt-2 flex flex-wrap gap-2 text-xs text-muted">Review the answer key
-                <select aria-label={`Answer key for question ${index + 1}`} disabled={busy} value={detail.latest_run.correct_answers[index] ?? -1} class="rounded border border-line bg-surface p-1 text-fg" onchange={(event) => {
-                  const answer = Number(event.currentTarget.value);
-                  const suiteId = detail!.suite.suite_id;
-                  const runId = detail!.latest_run!.run_id;
-                  void perform(async () => { const r = await api.PATCH('/courses/{course_id}/practice/{suite_id}/questions/{index}', { params: { path: { course_id: courseId, suite_id: suiteId, index } }, body: { answer: answer < 0 ? null : answer, reason: 'Student reviewed the key in Memory.' } }); if (r.error) throw r.error; await inspect(runId); });
-                }}>
-                  <option value={-1}>Exclude disputed question</option>{#each question.options as option, optionIndex}<option value={optionIndex}>{option}</option>{/each}
-                </select>
-              </label>
+            {@const written = detail.latest_run.answers[index]}
+            <div class="mt-4 text-sm">
+              <p class="text-fg">{index + 1}. {question.prompt}</p>
+              {#if question.format === 'short_answer'}
+                <p class="whitespace-pre-wrap text-muted">Answered: {typeof written === 'string' ? written : ''}</p>
+                {#if question.expected}<p class="whitespace-pre-wrap text-muted">Expected: {question.expected}</p>{/if}
+                {#if detail.latest_run.results[index] === null}
+                  <p class="mt-2 text-xs text-muted">Excluded from scoring.</p>
+                {:else}
+                  <button type="button" class="mt-2 text-xs text-muted hover:underline" disabled={busy} onclick={() => {
+                    const suiteId = detail!.suite.suite_id;
+                    const runId = detail!.latest_run!.run_id;
+                    void perform(async () => { const r = await api.PATCH('/courses/{course_id}/practice/{suite_id}/questions/{index}', { params: { path: { course_id: courseId, suite_id: suiteId, index } }, body: { answer: null, reason: 'Student reviewed the short answer in Memory.' } }); if (r.error) throw r.error; await inspect(runId); });
+                  }}>Exclude disputed question</button>
+                {/if}
+              {:else}
+                <p class="text-muted">Answered: {(question.options ?? [])[typeof written === 'number' ? written : -1] ?? ''}</p>
+                <label class="mt-2 flex flex-wrap gap-2 text-xs text-muted">Review the answer key
+                  <select aria-label={`Answer key for question ${index + 1}`} disabled={busy} value={detail.latest_run.correct_answers[index] ?? -1} class="rounded border border-line bg-surface p-1 text-fg" onchange={(event) => {
+                    const answer = Number(event.currentTarget.value);
+                    const suiteId = detail!.suite.suite_id;
+                    const runId = detail!.latest_run!.run_id;
+                    void perform(async () => { const r = await api.PATCH('/courses/{course_id}/practice/{suite_id}/questions/{index}', { params: { path: { course_id: courseId, suite_id: suiteId, index } }, body: { answer: answer < 0 ? null : answer, reason: 'Student reviewed the key in Memory.' } }); if (r.error) throw r.error; await inspect(runId); });
+                  }}>
+                    <option value={-1}>Exclude disputed question</option>{#each question.options ?? [] as option, optionIndex}<option value={optionIndex}>{option}</option>{/each}
+                  </select>
+                </label>
+              {/if}
             </div>
           {/each}
         </div>

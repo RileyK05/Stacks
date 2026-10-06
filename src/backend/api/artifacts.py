@@ -18,7 +18,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 from fastapi.responses import Response
 from pydantic import (
     BaseModel,
@@ -32,6 +32,7 @@ from src.backend.api.deps import require_course
 from src.backend.api.tutor import CitationView
 from src.backend.artifacts import content as artifact_content
 from src.backend.artifacts import edit as artifact_edit
+from src.backend.artifacts import exam_style
 from src.backend.artifacts import export as artifact_export
 from src.backend.artifacts.content import KINDS, ArtifactKind, UnknownCitationError
 from src.backend.common import (
@@ -272,6 +273,31 @@ def create_artifact(course_id: UUID, payload: ArtifactCreate) -> ArtifactView:
         content=content,
         origin={"by": "you"},
     )
+    return _view(created)
+
+
+@router.post(
+    "/exam-style", response_model=ArtifactView, status_code=status.HTTP_201_CREATED
+)
+def create_exam_style_practice(
+    course_id: UUID, file: Annotated[UploadFile, File()]
+) -> ArtifactView:
+    """Read an uploaded quiz for style only, then save new practice questions."""
+    require_course(course_id)
+    try:
+        raw = file.file.read(exam_style.upload_limit() + 1)
+    finally:
+        file.file.close()
+    try:
+        created = exam_style.create_practice(
+            course_id, filename=file.filename or "quiz", raw=raw
+        )
+    except exam_style.ExamStyleError as err:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(err)) from err
+    except provider.ProviderUnavailableError as err:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(err)) from err
+    except usage_repo.BudgetExceededError as err:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(err)) from err
     return _view(created)
 
 

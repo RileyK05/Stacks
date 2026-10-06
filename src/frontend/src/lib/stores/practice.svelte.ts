@@ -17,7 +17,7 @@ export interface PracticeContext {
 
 export class PracticeSession {
   questions = $state<PracticeQuestion[]>([]);
-  responses = $state<(number | null)[]>([]);
+  responses = $state<(number | string | null)[]>([]);
   helped = $state<boolean[]>([]);
   submitted = $state(false);
   loading = $state(false);
@@ -48,7 +48,14 @@ export class PracticeSession {
   }
 
   get answeredAll(): boolean {
-    return this.responses.length > 0 && this.responses.every((response) => response !== null);
+    return (
+      this.responses.length > 0 &&
+      this.questions.every((question, index) => {
+        const response = this.responses[index];
+        if (question.format === 'short_answer') return typeof response === 'string' && response.trim().length > 0;
+        return typeof response === 'number';
+      })
+    );
   }
 
   correctAnswer(index: number): number | null {
@@ -61,6 +68,10 @@ export class PracticeSession {
 
   choose(questionIndex: number, optionIndex: number): void {
     if (!this.submitted && !this.saving && !this.submissionPending) this.responses[questionIndex] = optionIndex;
+  }
+
+  write(questionIndex: number, text: string): void {
+    if (!this.submitted && !this.saving && !this.submissionPending) this.responses[questionIndex] = text;
   }
 
   connect(courseId: string): Promise<void> {

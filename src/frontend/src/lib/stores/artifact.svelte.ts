@@ -40,9 +40,14 @@ export interface SlidesContent {
   slides: Slide[];
 }
 export interface QuizQuestion {
+  format?: 'multiple_choice' | 'short_answer';
   prompt: string;
+  stem?: string;
+  part?: string;
   options: string[];
   answer: number;
+  expected?: string;
+  points?: string[];
   explanation: string;
   sources: number[];
   topic?: string;

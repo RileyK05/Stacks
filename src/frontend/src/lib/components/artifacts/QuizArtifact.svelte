@@ -102,8 +102,22 @@
             <Icon name="trash" class="h-4 w-4" />
           </button>
         </div>
+        {#if question.stem}
+          <textarea bind:value={question.stem} oninput={onchange} rows="2" aria-label="Shared stem" class="rounded-lg border border-line bg-surface-2/60 px-3 py-2 text-[13px] text-fg-soft focus:border-accent focus:outline-none"></textarea>
+        {/if}
         <textarea bind:value={question.prompt} oninput={onchange} rows="2" aria-label="Question" class="rounded-lg border border-line-strong bg-surface px-3 py-2 text-[14px] text-fg focus:border-accent focus:outline-none"></textarea>
-        {#each question.options as _, optionIndex (optionIndex)}
+        {#if question.format === 'short_answer'}
+          <textarea bind:value={question.expected} oninput={onchange} rows="3" aria-label="Expected answer" placeholder="Expected answer, shown after the student submits" class="rounded-lg border border-line bg-surface px-3 py-2 text-[13px] text-fg focus:border-accent focus:outline-none"></textarea>
+          <textarea
+            value={(question.points ?? []).join('\n')}
+            oninput={(event) => { question.points = event.currentTarget.value.split('\n'); onchange(); }}
+            rows="3"
+            aria-label="Required points"
+            placeholder="One required point per line"
+            class="rounded-lg border border-line bg-surface px-3 py-2 text-[13px] text-fg focus:border-accent focus:outline-none"
+          ></textarea>
+        {/if}
+        {#each question.format === 'short_answer' ? [] : question.options as _, optionIndex (optionIndex)}
           <div class="flex items-center gap-2">
             <input type="radio" name={`answer-${index}`} checked={question.answer === optionIndex} onchange={() => { question.answer = optionIndex; onchange(); }} aria-label="Correct answer" />
             <textarea bind:value={question.options[optionIndex]} oninput={onchange} use:autoGrowTextarea={question.options[optionIndex]} rows="1" aria-label={`Option ${optionIndex + 1}`} class="block h-auto min-w-0 flex-1 resize-none overflow-hidden rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-fg [overflow-wrap:anywhere] focus:border-accent focus:outline-none"></textarea>
@@ -112,7 +126,9 @@
             </button>
           </div>
         {/each}
-        <button type="button" onclick={() => addOption(index)} disabled={question.options.length >= 8} class="self-start text-[13px] font-medium text-accent-text hover:underline disabled:opacity-40">+ Option</button>
+        {#if question.format !== 'short_answer'}
+          <button type="button" onclick={() => addOption(index)} disabled={question.options.length >= 8} class="self-start text-[13px] font-medium text-accent-text hover:underline disabled:opacity-40">+ Option</button>
+        {/if}
         <textarea bind:value={question.explanation} oninput={onchange} rows="2" placeholder="Explanation shown after checking" aria-label="Explanation" class="rounded-lg border border-line bg-surface-2/60 px-3 py-2 text-[13px] text-fg-soft placeholder:text-subtle focus:border-accent focus:outline-none"></textarea>
       </section>
     {/each}

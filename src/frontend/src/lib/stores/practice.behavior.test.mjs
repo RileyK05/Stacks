@@ -70,6 +70,29 @@ test('Explain uses restored session identity; failed help retries and feedback k
   assert.deepEqual(session.run, run);
 });
 
+test('a short answer counts only after non-empty text', () => {
+  const session = new PracticeSession([
+    {
+      prompt: 'What does a linear map preserve?',
+      format: 'short_answer',
+      options: [],
+      answer: 0,
+      expected: 'Addition and scaling',
+      points: ['addition', 'scaling'],
+      sources: [1],
+      explanation: '',
+      topic: 'Linearity',
+      capability: 'explanation',
+    },
+  ], 'suite');
+  assert.equal(session.answeredAll, false);
+  session.write(0, '   ');
+  assert.equal(session.answeredAll, false);
+  session.write(0, 'It preserves addition and scaling');
+  assert.equal(session.answeredAll, true);
+  assert.equal(session.responses[0], 'It preserves addition and scaling');
+});
+
 test('retake clears attempt help while the backend still marks the revealed item assisted', async () => {
   let submittedHelp;
   respond = async (request) => {

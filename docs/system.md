@@ -856,6 +856,20 @@ Explicit numeric or one-through-twenty quiz counts set the generation schema's
 count within the existing 20-question workspace limit. Verified repairs are not
 clipped to three. An incomplete requested suite is withheld with an honest count;
 it does not become a practice suite. Title-only documents/decks are withheld.
+
+Exam-style practice sits on the Artifacts tab beside mind maps. A student uploads
+a PDF or photo of a quiz or exam. Stacks reads that file for topics, difficulty,
+and question formats, then writes new questions from retrieved course passages.
+The upload is not stored as a source, its text is not kept on the artifact, and
+its original questions are not answered. Generated prompts, stems, options, and
+expected answers that repeat a six-word run from the upload are dropped. Multiple
+choice stays an index match. Short answers, including parts that share one stem,
+are correct only when every required point's content words appear in the
+student's answer. A paraphrase that drops those source terms is incomplete.
+Points are checked mechanically, without a model judge. Question quality here is
+structural: citations, grounded points, and overlap with the upload. A live model
+evaluation of these questions has not been run.
+
 Study sheets route to documents. Budgeted whole-unit output recovery is implemented
 (§8); long-material splitting/checkpoints remain planned in `plan-notebook.md`.
 Unknown models still use the default allowance without invented larger ceilings.

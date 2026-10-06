@@ -13,6 +13,7 @@ from src.backend.common.schemas.learning import (
     ContentFeedback,
     LearningExperiment,
     PracticeHelp,
+    PracticeQuestion,
     PracticeRun,
     PracticeSuite,
     TeachingMethod,
@@ -64,6 +65,12 @@ class LearningArchive(BaseModel):
     assessments: list[Assessment] = Field(default_factory=list, max_length=10000)
     help: list[ArchivedHelp] = Field(default_factory=list, max_length=100000)
     feedback: list[ContentFeedback] = Field(default_factory=list, max_length=100000)
+
+
+def _response_fits(pick: int | str, question: PracticeQuestion) -> bool:
+    if question.format == "short_answer":
+        return isinstance(pick, str) and bool(pick.strip()) and len(pick) <= 5000
+    return type(pick) is int and 0 <= pick < len(question.options)
 
 
 def export_learning(conn: Connection, course_id: UUID) -> LearningArchive:
@@ -168,8 +175,8 @@ def import_learning(
             len(run.answers) != len(test.questions)
             or len(run.helped) != len(run.answers)
             or any(
-                not 0 <= pick < len(q.options)
-                for pick, q in zip(run.answers, test.questions, strict=True)
+                not _response_fits(pick, question)
+                for pick, question in zip(run.answers, test.questions, strict=True)
             )
         ):
             raise ValueError("an archived test has invalid responses")

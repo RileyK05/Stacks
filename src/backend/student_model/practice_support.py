@@ -24,10 +24,17 @@ from src.backend.common.schemas.learning import (
     PracticeHelp,
     PracticeHelpRequest,
     PracticeQuestion,
+    PracticeRun,
     PracticeSuite,
 )
 from src.backend.student_model import inspection, learning
 from src.backend.tutor.compose import parse_json_object
+
+
+def _help_context(run: PracticeRun | None, index: int) -> str:
+    if run is None:
+        return ""
+    return json.dumps([run.correct_answers[index], run.results[index]])
 
 
 def feedback(
@@ -171,7 +178,7 @@ def help_with(
         if payload.kind == "hint" and runs:
             raise ValueError("hints are available before submitting; use Explain now")
         run = learning.run_view(conn, runs[0]) if runs else None
-        params["context_key"] = json.dumps(run.correct_answers[index]) if run else ""
+        params["context_key"] = _help_context(run, index)
         existing = conn.execute(get("practice_support", "help"), params).fetchone()
         if existing and existing["status"] == "ready":
             return _view(existing)
@@ -198,13 +205,23 @@ def help_with(
         if payload.kind == "explain":
             assert run is not None
             key = run.correct_answers[index]
-            parts.update(
-                {
-                    "options": question.options,
-                    "student_answer": question.options[run.answers[index]],
-                }
-            )
-            if key is not None:
+            if question.format == "short_answer":
+                written = run.answers[index]
+                parts["student_answer"] = written if isinstance(written, str) else ""
+                parts["expected"] = question.expected
+                parts["points"] = question.points
+            else:
+                picked = run.answers[index]
+                if type(picked) is not int:
+                    raise ValueError(
+                        "this multiple-choice attempt has no selected option"
+                    )
+                parts["options"] = question.options
+                parts["student_answer"] = question.options[picked]
+            if question.format == "short_answer":
+                if run.results[index] is None:
+                    parts["assessment"] = "Excluded; key withheld pending review"
+            elif key is not None:
                 parts["current_key"] = question.options[key]
             else:
                 parts["assessment"] = "Excluded; key withheld pending review"
@@ -228,9 +245,10 @@ def help_with(
         "fell_back_to_local": False,
     }
     try:
+        excluded = bool(run and run.results[index] is None)
         prompt_name = (
             "practice_explain_flagged"
-            if payload.kind == "explain" and run and run.correct_answers[index] is None
+            if payload.kind == "explain" and excluded
             else f"practice_{payload.kind}"
         )
         prompt = grounded_prompt(
@@ -262,12 +280,17 @@ def help_with(
             content.text += "\n\n" + " ".join(f"[{n}]" for n in sorted(missing))
         if payload.kind == "hint":
             normalized = " ".join(re.findall(r"\w+", content.text.casefold()))
+            guarded = (
+                [question.expected, *question.points]
+                if question.format == "short_answer"
+                else question.options
+            )
             if any(
                 " ".join(re.findall(r"\w+", option.casefold())) in normalized
-                for option in question.options
+                for option in guarded
                 if len(re.findall(r"\w+", option)) >= 3
             ):
-                raise ValueError("the hint revealed an answer option; it was withheld")
+                raise ValueError("the hint revealed an answer; it was withheld")
         metadata.update(
             model=generation.model, fell_back_to_local=generation.fell_back_to_local
         )
@@ -285,9 +308,7 @@ def help_with(
                 )
                 if (
                     not current
-                    or json.dumps(
-                        learning.run_view(conn, current[0]).correct_answers[index]
-                    )
+                    or _help_context(learning.run_view(conn, current[0]), index)
                     != params["context_key"]
                 ):
                     raise ValueError(

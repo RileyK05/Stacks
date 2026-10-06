@@ -98,16 +98,35 @@ class SlidesContent(BaseModel):
 
 
 class QuizQuestion(BaseModel):
+    format: Literal["multiple_choice", "short_answer"] = "multiple_choice"
     prompt: str = Field(min_length=1, max_length=5_000)
-    options: list[str] = Field(min_length=2, max_length=8)
-    answer: int
+    # Shared lead-in for parts of one exam item. Empty on a standalone question.
+    stem: str = Field(default="", max_length=2_000)
+    part: str = Field(default="", max_length=8)
+    options: list[str] = Field(default_factory=list, max_length=8)
+    answer: int = 0
+    expected: str = Field(default="", max_length=5_000)
+    points: list[str] = Field(default_factory=list, max_length=6)
     explanation: str = Field(default="", max_length=5_000)
     sources: list[int] = Field(default_factory=list)
     topic: str = Field(default="", max_length=160)
     capability: Capability = "recognition"
 
     @model_validator(mode="after")
-    def _answer_is_an_option(self) -> QuizQuestion:
+    def _answer_matches_format(self) -> QuizQuestion:
+        if self.format == "short_answer":
+            if self.options:
+                raise ValueError("a short answer has no options")
+            if not self.expected.strip():
+                raise ValueError("a short answer needs an expected answer")
+            cleaned = [point.strip() for point in self.points if point.strip()]
+            if not cleaned or any(len(point) > 300 for point in cleaned):
+                raise ValueError("a short answer needs required points")
+            self.points = cleaned
+            self.answer = 0
+            return self
+        if len(self.options) < 2:
+            raise ValueError("a multiple-choice question needs options")
         if not 0 <= self.answer < len(self.options):
             raise ValueError(
                 f"answer {self.answer} is not one of the {len(self.options)} options"

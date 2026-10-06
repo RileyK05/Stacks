@@ -19,6 +19,7 @@ from src.backend.common.schemas.learning import (
     PracticeSuite,
     TeachingMethod,
 )
+from src.backend.student_model.grading import missed_points, short_answer_correct
 from src.backend.student_model.inspection import core, experiments, rows, targets
 
 
@@ -52,7 +53,9 @@ def create_suite(
         for cid in chunk_ids
     ]
     for question in questions:
-        if question.answer >= len(question.options):
+        if question.format == "multiple_choice" and question.answer >= len(
+            question.options
+        ):
             raise ValueError("the answer key is outside the options")
         if any(not 1 <= n <= len(numbered) for n in question.sources):
             raise ValueError("a question cites material outside this test")
@@ -91,32 +94,77 @@ def suite(conn: Connection, course_id: UUID, suite_id: UUID) -> PracticeSuite:
     return PracticeSuite.model_validate(found[0])
 
 
+def _assessments(conn: Connection, suite_id: UUID) -> dict[int, int | None]:
+    return {
+        r["question_index"]: r["answer"]
+        for r in rows(conn, "assessments", suite_id=suite_id)
+    }
+
+
+def _judged(
+    question: PracticeQuestion,
+    picked: int | str,
+    assessments: dict[int, int | None],
+    index: int,
+) -> bool | None:
+    """None means the question is excluded from scoring."""
+    if index in assessments and assessments[index] is None:
+        return None
+    if question.format == "short_answer":
+        text = picked if isinstance(picked, str) else ""
+        return short_answer_correct(text, question.points)
+    key = assessments.get(index, question.answer)
+    if key is None or type(picked) is not int:
+        return None if key is None else False
+    return picked == key
+
+
 def run_view(conn: Connection, record: dict[str, Any]) -> PracticeRun:
     test = suite(conn, record["course_id"], record["suite_id"])
-    corrected = {
-        r["question_index"]: r["answer"]
-        for r in rows(conn, "assessments", suite_id=test.suite_id)
-    }
-    keys = [corrected.get(i, q.answer) for i, q in enumerate(test.questions)]
+    assessments = _assessments(conn, test.suite_id)
+    keys: list[int | None] = []
+    results: list[bool | None] = []
+    missed: list[list[str]] = []
+    for index, question in enumerate(test.questions):
+        picked = record["answers"][index]
+        result = _judged(question, picked, assessments, index)
+        results.append(result)
+        if question.format == "short_answer" or result is None:
+            keys.append(None)
+        else:
+            keys.append(assessments.get(index, question.answer))
+        if (
+            question.format == "short_answer"
+            and result is not None
+            and isinstance(picked, str)
+        ):
+            missed.append(missed_points(picked, question.points))
+        else:
+            missed.append([])
     return PracticeRun(
         **record,
         correct_answers=keys,
-        results=[
-            None if key is None else picked == key
-            for picked, key in zip(record["answers"], keys, strict=True)
-        ],
+        results=results,
+        missed_points=missed,
     )
 
 
 def _fingerprint(question: PracticeQuestion) -> str:
     # Option reordering and answer-key correction do not make a fresh problem.
-    text = _json(
-        [
+    # A short answer is the same problem when its required points are unchanged.
+    if question.format == "short_answer":
+        identity: list[Any] = [
+            "short_answer",
             " ".join(question.prompt.casefold().split()),
-            sorted(" ".join(o.casefold().split()) for o in question.options),
+            sorted(" ".join(point.casefold().split()) for point in question.points),
         ]
-    )
-    return hashlib.sha256(text.encode()).hexdigest()
+    else:
+        identity = [
+            "multiple_choice",
+            " ".join(question.prompt.casefold().split()),
+            sorted(" ".join(option.casefold().split()) for option in question.options),
+        ]
+    return hashlib.sha256(_json(identity).encode()).hexdigest()
 
 
 def refresh_memory(conn: Connection, course_id: UUID) -> None:
@@ -146,11 +194,13 @@ def submit(
         raise ValueError("submit the complete test")
     if payload.helped and len(payload.helped) != len(payload.answers):
         raise ValueError("help flags must match the questions")
-    if any(
-        pick < 0 or pick >= len(q.options)
-        for pick, q in zip(payload.answers, test.questions, strict=True)
-    ):
-        raise ValueError("a selected option does not exist")
+    for pick, question in zip(payload.answers, test.questions, strict=True):
+        if question.format == "short_answer":
+            if not isinstance(pick, str) or not pick.strip() or len(pick) > 5000:
+                raise ValueError("write an answer for each short-answer question")
+            continue
+        if type(pick) is not int or pick < 0 or pick >= len(question.options):
+            raise ValueError("a selected option does not exist")
     policy = load_learning_policy()
     if conn.execute(
         get("practice_support", "pending"),
@@ -201,24 +251,31 @@ def submit(
             "helped": _json(actual_help),
         },
     )
-    corrected = {
-        r["question_index"]: r["answer"]
-        for r in rows(conn, "assessments", suite_id=suite_id)
-    }
+    assessments = _assessments(conn, suite_id)
     for index, (question, picked, helped) in enumerate(
         zip(test.questions, payload.answers, actual_help, strict=True)
     ):
         fingerprint = _fingerprint(question)
-        key = corrected.get(index, question.answer)
-        correct = None if key is None else picked == key
+        correct = _judged(question, picked, assessments, index)
         fresh = fingerprint not in seen
         seen.add(fingerprint)
         observation_id = uuid4()
+        if question.format == "short_answer":
+            selected = picked if isinstance(picked, str) else ""
+            selected_index = None
+            key_text = None if correct is None else question.expected
+        else:
+            key = assessments.get(index, question.answer)
+            selected_index = picked if type(picked) is int else None
+            selected = (
+                question.options[selected_index] if selected_index is not None else ""
+            )
+            key_text = None if key is None else question.options[key]
         evidence = {
             "question": question.prompt,
-            "selected": question.options[picked],
-            "selected_index": picked,
-            "key": None if key is None else question.options[key],
+            "selected": selected,
+            "selected_index": selected_index,
+            "key": key_text,
             "run_id": str(payload.run_id),
             "suite_id": str(suite_id),
             "sources": [test.evidence[n - 1] for n in question.sources],
@@ -258,7 +315,7 @@ def submit(
                 },
             )
     _check_experiments(
-        conn, course_id, test, payload.answers, corrected, requested_help, prior
+        conn, course_id, test, payload.answers, assessments, requested_help, prior
     )
     refresh_memory(conn, course_id)
     return run_view(
@@ -287,7 +344,12 @@ def revise(
     if not 0 <= index < len(test.questions):
         raise LookupError("question not found")
     question = test.questions[index]
-    if answer is not None and not 0 <= answer < len(question.options):
+    if question.format == "short_answer":
+        if answer is not None:
+            raise ValueError(
+                "a short-answer question can be excluded, not remapped to an option"
+            )
+    elif answer is not None and not 0 <= answer < len(question.options):
         raise ValueError("the corrected key must be one of the options")
     conn.execute(
         get("learning", "correct_assessment"),
@@ -305,9 +367,15 @@ def revise(
         ):
             continue
         evidence = observation["evidence"]
-        evidence["key"] = question.options[answer] if answer is not None else None
+        if question.format == "short_answer":
+            evidence["key"] = None
+            correct = None
+        else:
+            evidence["key"] = question.options[answer] if answer is not None else None
+            correct = (
+                evidence["selected_index"] == answer if answer is not None else None
+            )
         evidence["assessment_correction"] = reason
-        correct = evidence["selected_index"] == answer if answer is not None else None
         conn.execute(
             get("learning", "revise_observation"),
             {
@@ -355,8 +423,8 @@ def _check_experiments(
     conn: Connection,
     course_id: UUID,
     test: PracticeSuite,
-    answers: list[int],
-    corrected: dict[int, int | None],
+    answers: list[int | str],
+    assessments: dict[int, int | None],
     helped: list[bool],
     prior: list[dict[str, Any]],
 ) -> None:
@@ -366,6 +434,10 @@ def _check_experiments(
     for experiment in experiments(conn, course_id):
         if experiment.status not in ("proposed", "cooldown"):
             continue
+        judged = [
+            _judged(question, answers[index], assessments, index)
+            for index, question in enumerate(test.questions)
+        ]
         matches = [
             i
             for i, q in enumerate(test.questions)
@@ -373,17 +445,14 @@ def _check_experiments(
             and q.capability == experiment.capability
             and _fingerprint(q) not in seen
             and not helped[i]
-            and corrected.get(i, q.answer) is not None
+            and judged[i] is not None
         ]
         if experiment.expires_at <= now:
             status, checks = "retired", experiment.checks
         elif not matches or experiment.next_check_at > now:
             continue
         else:
-            passed = all(
-                answers[i] == corrected.get(i, test.questions[i].answer)
-                for i in matches
-            )
+            passed = all(judged[i] is True for i in matches)
             checks = experiment.checks + 1
             experiment.evidence.setdefault("test_checks", []).append(
                 {"suite_id": str(test.suite_id), "questions": matches, "passed": passed}

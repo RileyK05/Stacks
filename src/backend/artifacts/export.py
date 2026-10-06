@@ -106,18 +106,32 @@ def _slides_markdown(title: str, content: dict[str, Any]) -> str:
 
 def _quiz_markdown(title: str, content: dict[str, Any]) -> str:
     lines = [f"# {title}", ""]
-    for number, question in enumerate(content.get("questions", []), start=1):
+    questions = content.get("questions", [])
+    for number, question in enumerate(questions, start=1):
         cited = "".join(f"[{n}]" for n in question.get("sources", []))
-        lines.append(f"**{number}. {question['prompt']}** {cited}".rstrip())
-        for index, option in enumerate(question["options"]):
-            lines.append(f"- {'ABCDEFGH'[index]}. {option}")
+        stem = question.get("stem") or ""
+        if stem and (number == 1 or questions[number - 2].get("stem") != stem):
+            lines.append(stem)
+            lines.append("")
+        label = question.get("part") or str(number)
+        lines.append(f"**{label}. {question['prompt']}** {cited}".rstrip())
+        options = question.get("options") or []
+        if question.get("format") == "short_answer" or not options:
+            lines.append("Write a short answer.")
+        else:
+            for index, option in enumerate(options):
+                lines.append(f"- {'ABCDEFGH'[index]}. {option}")
         lines.append("")
     lines.append("## Answers")
-    for number, question in enumerate(content.get("questions", []), start=1):
-        answer = "ABCDEFGH"[question["answer"]]
+    for number, question in enumerate(questions, start=1):
         explanation = (
             f" — {question['explanation']}" if question.get("explanation") else ""
         )
+        options = question.get("options") or []
+        if question.get("format") == "short_answer" or not options:
+            answer = question.get("expected") or ""
+        else:
+            answer = "ABCDEFGH"[question["answer"]]
         lines.append(f"{number}. {answer}{explanation}")
     return "\n".join(lines)
 
