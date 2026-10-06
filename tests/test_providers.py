@@ -579,6 +579,28 @@ def test_probe_accepts_a_reply_cut_short_by_thinking(
     provider.probe(_endpoint())
 
 
+def test_refusal_text_is_rejected_not_shown_as_an_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusal = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "The request was rejected because it was considered high risk"
+                    ),
+                    "reasoning_content": "private",
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 8},
+    }
+    _capture_post(monkeypatch, _Response(200, refusal))
+    with pytest.raises(provider.ModelRefusalError, match="refused to answer"):
+        REAL_CALL("tutor_answer", _endpoint(), "prompt")
+
+
 def test_failed_local_fallback_keeps_the_rate_limit_message(
     monkeypatch: pytest.MonkeyPatch, _memory_keyring: dict[str, str]
 ) -> None:

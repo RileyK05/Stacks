@@ -60,6 +60,10 @@ def _candidates(count: int = 2) -> tuple[Candidate, ...]:
         ("When is the quiz due?", Intent.ANSWER),
         ("Summarize my lecture notes", Intent.ANSWER),
         ("Could you please create a table of dates?", Intent.SHEET),
+        # A definite article / possessive before "notes" points at uploaded
+        # material, not a request to generate a new document.
+        ("Give me the notes from Week 3", Intent.ANSWER),
+        ("Show me my notes", Intent.ANSWER),
         # Graded work never gets a workspace item, whatever shape it names.
         ("Give me the filled-in answer sheet to submit", Intent.GRADED),
         ("Take this quiz for me", Intent.GRADED),
@@ -381,6 +385,15 @@ def test_persistent_incomplete_deck_is_not_presented_as_complete() -> None:
     composed = compose_answer("Create 8 slides", _candidates(), generate)
     assert not composed.structured
     assert "all eight" not in composed.text
+
+
+def test_slide_count_above_fifty_is_rejected() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        raise AssertionError("should not be called")
+
+    composed = compose_answer("Create 200 slides", _candidates(), generate)
+    assert not composed.structured
+    assert "1–50" in composed.text
 
 
 def test_duplicate_slides_cannot_pad_the_requested_count() -> None:
@@ -931,3 +944,185 @@ def test_live_quiz_failure_does_not_grade_an_inconsistent_key_or_capability_as_t
     composed = compose_answer("Make a practice test on Linearity", candidates, generate)
     assert not composed.structured
     assert "trustworthy quiz" in composed.text
+
+
+def test_document_paragraph_preserves_newlines_in_json_string() -> None:
+    table = "| Col1 | Col2 |\n|------|------|\n| A    | B    |"
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Study notes",
+                "item": {
+                    "type": "document",
+                    "title": "Linearity",
+                    "sections": [
+                        {
+                            "heading": "Properties",
+                            "paragraphs": [table],
+                        }
+                    ],
+                    "sources": [1],
+                },
+            }
+        )
+
+    composed = compose_answer("Create a study guide", _candidates(), generate)
+    assert composed.structured
+    item = extract_workspace_items(composed.text, 2).items[0]
+    assert "\n" in item.content
+    assert "| Col1 | Col2 |" in item.content
+    assert "|------|------|" in item.content
+    assert "| A    | B    |" in item.content
+
+
+def test_slide_paragraph_preserves_newlines_in_json_string() -> None:
+    bullets = "- Point A [1]\n- Point B [1]\n- Point C [1]"
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "A deck",
+                "item": {
+                    "type": "slides",
+                    "title": "Linearity",
+                    "slides": [
+                        {
+                            "title": "Overview",
+                            "paragraphs": [bullets],
+                        }
+                    ],
+                    "sources": [1],
+                },
+            }
+        )
+
+    composed = compose_answer("Make slides", _candidates(), generate)
+    assert composed.structured
+    item = extract_workspace_items(composed.text, 2).items[0]
+    assert "\n" in item.deck
+    assert "- Point A [1]" in item.deck
+    assert "- Point B [1]" in item.deck
+    assert "- Point C [1]" in item.deck
+
+
+def test_schema_reminder_includes_newline_escaping_instruction() -> None:
+    from src.backend.tutor.compose import _SCHEMA_REMINDER
+
+    assert "\\n" in _SCHEMA_REMINDER
+    assert "line break" in _SCHEMA_REMINDER
+
+
+def _all_a_quiz(count: int = 10) -> list[dict]:
+    return [
+        {
+            "prompt": f"Which group organized event {index}?",
+            "options": [f"Group {index}", "Another group"],
+            "answer": 0,
+            "explanation": f"Group {index} organized the event.",
+            "sources": [1],
+        }
+        for index in range(count)
+    ]
+
+
+def test_quiz_answer_keys_are_not_always_first_option() -> None:
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return json.dumps(
+            {
+                "reply": "Practice test",
+                "item": {
+                    "type": "quiz",
+                    "title": "Organizing",
+                    "questions": _all_a_quiz(10),
+                },
+            }
+        )
+
+    composed = compose_answer("Create a ten-question quiz", _candidates(), generate)
+    assert composed.structured
+    questions = extract_workspace_items(composed.text, 2).items[0].questions
+    assert len(questions) == 10
+    # Every correct option survives the permutation at its new index.
+    for index, question in enumerate(questions):
+        assert question.options[question.answer] == f"Group {index}"
+        assert set(question.options) == {f"Group {index}", "Another group"}
+    # The key is distributed, not ten times option A.
+    assert len({question.answer for question in questions}) > 1
+
+
+def test_quiz_option_shuffle_is_deterministic() -> None:
+    from src.backend.tutor.compose import _shuffle_quiz_options
+
+    item = {"type": "quiz", "questions": _all_a_quiz(5)}
+    first = _shuffle_quiz_options(item)
+    second = _shuffle_quiz_options(item)
+    assert first == second
+    assert [q["answer"] for q in first["questions"]] == [
+        q["answer"] for q in second["questions"]
+    ]
+
+
+def test_quiz_shuffle_preserves_the_correct_option_text() -> None:
+    from src.backend.tutor.compose import _shuffle_quiz_options
+
+    item = {
+        "type": "quiz",
+        "questions": [
+            {
+                "prompt": "Which one is the key?",
+                "options": ["the key", "not this", "nor this"],
+                "answer": 0,
+                "explanation": "the key is correct.",
+                "sources": [1],
+            }
+        ],
+    }
+    shuffled = _shuffle_quiz_options(item)["questions"][0]
+    assert shuffled["options"][shuffled["answer"]] == "the key"
+    assert sorted(shuffled["options"]) == ["nor this", "not this", "the key"]
+
+
+def test_quiz_repair_degrades_gracefully_on_provider_error() -> None:
+    calls = 0
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return json.dumps(
+                {
+                    "reply": "Try this quiz.",
+                    "item": {
+                        "type": "quiz",
+                        "title": "César Chávez",
+                        "questions": [
+                            {
+                                "prompt": "What did Chávez organize?",
+                                "options": ["Farm workers", "Railroad workers"],
+                                "answer": 0,
+                                "explanation": (
+                                    "The material describes his organizing work."
+                                ),
+                                "sources": [1],
+                            }
+                        ],
+                    },
+                }
+            )
+        raise RuntimeError("provider budget exceeded")
+
+    composed = compose_answer(
+        "Create a 3-question quiz on César Chávez", _candidates(), generate
+    )
+    assert calls == 2
+    assert not composed.structured
+    assert "could verify only 1 of the 3" in composed.text
+
+
+def test_quiz_repair_without_accepted_questions_still_propagates_error() -> None:
+    def failing(task: str, prompt: str, *, response_schema=None) -> str:
+        raise RuntimeError("provider budget exceeded")
+
+    with pytest.raises(RuntimeError, match="provider budget exceeded"):
+        compose_answer("Make a quiz", _candidates(), failing)

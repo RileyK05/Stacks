@@ -33,7 +33,9 @@ def test_pipeline_retries_failed_stage_then_continues() -> None:
         attempts += 1
         calls.append(IngestionStage.EXTRACT_TEXT)
         if attempts == 1:
-            raise ProviderUnavailableError("provider did not answer in time")
+            raise ProviderUnavailableError(
+                "provider did not answer in time", transient=True
+            )
 
     handlers[IngestionStage.EXTRACT_TEXT] = flaky_extract
     delays = []
@@ -50,7 +52,9 @@ def test_pipeline_stops_after_second_failure() -> None:
 
     def broken_extract() -> None:
         calls.append(IngestionStage.EXTRACT_TEXT)
-        raise ProviderUnavailableError("could not reach provider endpoint")
+        raise ProviderUnavailableError(
+            "could not reach provider endpoint", transient=True
+        )
 
     handlers[IngestionStage.EXTRACT_TEXT] = broken_extract
     transitions = []
@@ -79,7 +83,9 @@ def test_failed_attempt_is_rolled_back_recorded_and_retried() -> None:
         attempts["extract"] += 1
         calls.append(IngestionStage.EXTRACT_TEXT)
         if attempts["extract"] == 1:
-            raise ProviderUnavailableError("provider did not answer in time")
+            raise ProviderUnavailableError(
+                "provider did not answer in time", transient=True
+            )
 
     events: list[str] = []
 
@@ -149,19 +155,40 @@ def test_deterministic_failure_is_not_retried() -> None:
     assert calls == [IngestionStage.EXTRACT_TEXT]
 
 
-def test_unreadable_provider_reply_is_not_retried() -> None:
+def test_non_transient_provider_error_is_not_retried() -> None:
     calls = []
     handlers = _handlers(calls)
 
-    def unreadable_reply() -> None:
+    def no_provider() -> None:
         calls.append(IngestionStage.EXTRACT_TEXT)
-        raise ProviderUnavailableError("provider sent a reply Stacks could not read")
+        raise ProviderUnavailableError("no model provider configured")
 
-    handlers[IngestionStage.EXTRACT_TEXT] = unreadable_reply
+    handlers[IngestionStage.EXTRACT_TEXT] = no_provider
     with pytest.raises(IngestionPipelineError) as caught:
         execute_pipeline(handlers, max_attempts=3, sleeper=lambda _: pytest.fail())
     assert caught.value.attempts == 1
     assert calls == [IngestionStage.EXTRACT_TEXT]
+
+
+def test_dropped_connection_is_retried() -> None:
+    calls = []
+    handlers = _handlers(calls)
+    attempts = 0
+
+    def dropped() -> None:
+        nonlocal attempts
+        attempts += 1
+        calls.append(IngestionStage.EXTRACT_TEXT)
+        if attempts == 1:
+            raise ProviderUnavailableError(
+                "peer closed connection without sending complete message body",
+                transient=True,
+            )
+
+    handlers[IngestionStage.EXTRACT_TEXT] = dropped
+    execute_pipeline(handlers, max_attempts=2, sleeper=lambda _: None)
+    assert attempts == 2
+    assert calls[:2] == [IngestionStage.EXTRACT_TEXT, IngestionStage.EXTRACT_TEXT]
 
 
 def test_rate_limit_is_retried_with_configured_backoff() -> None:

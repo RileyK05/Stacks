@@ -273,6 +273,10 @@ class IngestionHandlers:
         try:
             page_texts = split_ocr_pages(result.text, len(rendered))
         except ValueError as err:
+            if len(rendered) > 1:
+                for page in rendered:
+                    self._recognize_bounded_batch([page], recognized, failures)
+                return
             failures.append(
                 f"pages {self._page_labels(indexes)} OCR format failed: {err}"
             )

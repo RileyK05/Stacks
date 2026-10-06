@@ -69,7 +69,16 @@ class GenerationResult:
 
 class ProviderUnavailableError(RuntimeError):
     """No provider is configured, or the call failed. Callers surface this
-    as a retryable stage failure / 503, never as a partial row write."""
+    as a retryable stage failure / 503, never as a partial row write.
+
+    `transient` marks failures worth retrying (a dropped connection, a
+    timeout, a 5xx). It is set explicitly at each raise site, never inferred
+    from the message text: rewording a provider's error must not silently
+    change retry behaviour."""
+
+    def __init__(self, message: str, *, transient: bool = False) -> None:
+        super().__init__(message)
+        self.transient = transient
 
 
 class ProviderRateLimitedError(ProviderUnavailableError):
@@ -111,6 +120,17 @@ class ModelOutputTruncatedError(ProviderUnavailableError):
 
 class ModelReasoningOnlyError(ProviderUnavailableError):
     """The model finished after thinking and returned no visible answer."""
+
+
+class ModelRefusalError(ProviderUnavailableError):
+    """The model refused the request (e.g. moderation) instead of answering.
+
+    Some providers return a refusal with HTTP 200 and finish_reason "stop",
+    so the text looks like a normal reply. Left unchecked, a refusal would be
+    shown to the student as the answer or trigger a pointless repair cycle."""
+
+
+_REFUSAL_RE = re.compile(r"request was rejected|considered high risk", re.IGNORECASE)
 
 
 def generate(
@@ -510,7 +530,8 @@ def _call_provider(
             raise ProviderUnavailableError(
                 f"{who} had a server error ({response.status_code})"
                 + (f": {detail}" if detail else "")
-                + ". Try again shortly."
+                + ". Try again shortly.",
+                transient=True,
             )
         if 300 <= response.status_code < 400:
             raise ProviderRequestRejectedError(
@@ -537,7 +558,8 @@ def _call_provider(
             # Upstream failures can arrive inside a 200, with billed usage.
             raise ProviderUnavailableError(
                 f"{who} could not answer: {provider_error_detail(response)}. "
-                "Try again or pick another model."
+                "Try again or pick another model.",
+                transient=True,
             )
         choices = payload.get("choices")
         if (
@@ -551,6 +573,11 @@ def _call_provider(
         if not isinstance(message, dict):
             raise TypeError("completion message is not an object")
         text = _visible_message_text(message.get("content"))
+        if _REFUSAL_RE.search(text):
+            raise ModelRefusalError(
+                f"{who} ({endpoint.model}) refused to answer this request. "
+                "Try rephrasing or pick another model."
+            )
         if choice.get("finish_reason") in {"length", "max_tokens"}:
             raise ModelOutputTruncatedError(
                 f"{who} ({endpoint.model}) hit its output limit before finishing. "
@@ -588,12 +615,14 @@ def _call_provider(
     except httpx.ConnectError as err:
         raise ProviderUnavailableError(
             f"Could not reach {who} at {endpoint.base_url}. Check your internet "
-            "connection, or that the server is running."
+            "connection, or that the server is running.",
+            transient=True,
         ) from err
     except httpx.TimeoutException as err:
         raise ProviderUnavailableError(
             f"{who} did not answer in time ({endpoint.model}). Try again or pick "
-            "a faster model."
+            "a faster model.",
+            transient=True,
         ) from err
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as err:
         logger.warning(
@@ -604,7 +633,8 @@ def _call_provider(
             err,
         )
         raise ProviderUnavailableError(
-            f"{who} sent a reply Stacks could not read ({endpoint.model}): {err}"
+            f"{who} sent a reply Stacks could not read ({endpoint.model}): {err}",
+            transient=True,
         ) from err
     return text, input_tokens, output_tokens
 

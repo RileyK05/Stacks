@@ -80,6 +80,7 @@ class SourceView(BaseModel):
     status: SourceStatus
     has_index: bool = False
     error_message: str | None
+    warning: str | None = None
     size_bytes: int | None
     pages_total: int | None = None
     pages_empty: int | None = None

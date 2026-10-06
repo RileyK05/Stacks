@@ -235,7 +235,9 @@ Return ONE JSON object: {"reply": "...", "item": {"type": "document",
 "sources": [1]}}. Each section has a single-line heading (empty when no
 heading is appropriate) and an array of actual content paragraphs. Keep
 paragraphs separate; the app inserts headings and line breaks. Paragraphs
-may contain Markdown lists, tables, math or complete code fences. Do not
+may contain Markdown lists, tables, math or complete code fences. When a
+paragraph contains multiple lines (such as a table, bullet list, or code
+block), escape each line break as \\n within the JSON string value. Do not
 put the entire document into a heading or return title-only sections.
 Cite claims by number like [1]. "sources" lists the material numbers used.
 "reply" is one short sentence introducing the document.
@@ -252,10 +254,11 @@ In particular, do not turn a missing statement about a category into "No".
 Keep only rows grounded in the source; a sparse source should produce a sparse
 table. When comparing named items or groups, include a first column that
 labels each row with the requested item or group; do not leave rows unlabeled.
-Every row must have exactly one cell per column. Add a citation like [1] to
-each factual cell. "sources" lists the material numbers used. "reply" is one
-short sentence introducing the table and can mention that some requested
-details are not specified.
+Every row must have exactly one cell per column. When a cell contains multiple
+lines, escape each line break as \\n within the JSON string value. Add a
+citation like [1] to each factual cell. "sources" lists the material numbers
+used. "reply" is one short sentence introducing the table and can mention that
+some requested details are not specified.
 """
 
 [prompt.workspace_slides]
@@ -268,12 +271,14 @@ support; do not pad it with background knowledge or inference. Return ONE
 JSON object: {"reply": "...", "item": {"type": "slides", "title": "...",
 "slides": [{"title": "...", "paragraphs": ["..."]}], "sources": [1]}}.
 Each slide has a single-line title and an array of actual content paragraphs,
-which may include Markdown bullets, math or a table. The app inserts slide
-boundaries and headings. Do not use --- inside slide paragraphs or return
-title-only slides. Honor an explicitly requested slide count when the
-material supports it; never silently substitute a shorter deck or invent
-facts to fill it. Cite claims by material number, like [1]. "sources" lists
-the material numbers used. "reply" is one short sentence introducing the deck.
+which may include Markdown bullets, math or a table. When a paragraph
+contains multiple lines (such as a bullet list or table), escape each line
+break as \\n within the JSON string value. The app inserts slide boundaries
+and headings. Do not use --- inside slide paragraphs or return title-only
+slides. Honor an explicitly requested slide count when the material supports
+it; never silently substitute a shorter deck or invent facts to fill it.
+Cite claims by material number, like [1]. "sources" lists the material
+numbers used. "reply" is one short sentence introducing the deck.
 """
 
 [prompt.workspace_code]
@@ -294,7 +299,8 @@ meaning. Python list addition concatenates and list multiplication repeats;
 neither performs vector addition or scalar scaling. For vector examples,
 define and consistently use explicit elementwise addition and scalar-scaling
 helpers, or use numeric samples whose native operations match the request.
-Keep examples runnable. "sources" lists the material numbers supporting the
+Keep examples runnable. Escape each line break in the code as \\n within the
+JSON string value. "sources" lists the material numbers supporting the
 implemented rule. "reply" is one short sentence introducing the code and its
 limits. Never write code that completes graded work for the student.
 """
@@ -305,7 +311,7 @@ Transcribe ALL text from the attached page images, in order. Preserve the
 reading order and mathematical notation as literally as you can. Do not
 summarize, translate, explain, or add commentary. Separate each page's
 transcript from the next with a line containing exactly --- . If a page
-has no legible text, emit nothing for it between the separators.
+has no legible text, write [blank] between the separators.
 """
 
 [prompt.conversation_scope_change]

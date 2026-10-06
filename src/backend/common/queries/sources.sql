@@ -28,23 +28,40 @@ SELECT sources.source_id, sources.course_id, sources.filename, sources.mime_type
        coverage.pages_total, coverage.pages_empty, coverage.pages_low_quality,
        coverage.pages_ocr, coverage.extraction_version, coverage.segmentation_version,
        (SELECT COUNT(*) FROM chunks WHERE chunks.source_id = sources.source_id) AS chunk_count,
-       (
-           SELECT stage.stage
-           FROM ingestion_runs AS run
-           JOIN ingestion_stage_runs AS stage ON stage.run_id = run.run_id
-           WHERE run.source_id = sources.source_id
-             AND stage.status IN ('running', 'pending')
-             AND run.run_id = (
-                 SELECT latest.run_id
-                 FROM ingestion_runs AS latest
-                 WHERE latest.source_id = sources.source_id
-                 ORDER BY latest.created_at DESC
-                 LIMIT 1
-             )
-           ORDER BY CASE stage.status WHEN 'running' THEN 0 ELSE 1 END,
-                    stage.position
-           LIMIT 1
-       ) AS ingestion_stage
+        (
+            SELECT stage.stage
+            FROM ingestion_runs AS run
+            JOIN ingestion_stage_runs AS stage ON stage.run_id = run.run_id
+            WHERE run.source_id = sources.source_id
+              AND stage.status IN ('running', 'pending')
+              AND run.run_id = (
+                  SELECT latest.run_id
+                  FROM ingestion_runs AS latest
+                  WHERE latest.source_id = sources.source_id
+                  ORDER BY latest.created_at DESC
+                  LIMIT 1
+              )
+            ORDER BY CASE stage.status WHEN 'running' THEN 0 ELSE 1 END,
+                     stage.position
+            LIMIT 1
+        ) AS ingestion_stage,
+        (
+            SELECT stage.error_message
+            FROM ingestion_runs AS run
+            JOIN ingestion_stage_runs AS stage ON stage.run_id = run.run_id
+            WHERE run.source_id = sources.source_id
+              AND stage.status = 'succeeded'
+              AND stage.error_message LIKE 'warning:%'
+              AND run.run_id = (
+                  SELECT latest.run_id
+                  FROM ingestion_runs AS latest
+                  WHERE latest.source_id = sources.source_id
+                  ORDER BY latest.created_at DESC
+                  LIMIT 1
+              )
+            ORDER BY stage.position DESC
+            LIMIT 1
+        ) AS warning
 FROM sources
 LEFT JOIN source_indexes AS coverage ON coverage.source_id = sources.source_id
 WHERE sources.course_id = :course_id
@@ -58,23 +75,40 @@ SELECT sources.source_id, sources.course_id, sources.filename, sources.mime_type
        coverage.pages_total, coverage.pages_empty, coverage.pages_low_quality,
        coverage.pages_ocr, coverage.extraction_version, coverage.segmentation_version,
        (SELECT COUNT(*) FROM chunks WHERE chunks.source_id = sources.source_id) AS chunk_count,
-       (
-           SELECT stage.stage
-           FROM ingestion_runs AS run
-           JOIN ingestion_stage_runs AS stage ON stage.run_id = run.run_id
-           WHERE run.source_id = sources.source_id
-             AND stage.status IN ('running', 'pending')
-             AND run.run_id = (
-                 SELECT latest.run_id
-                 FROM ingestion_runs AS latest
-                 WHERE latest.source_id = sources.source_id
-                 ORDER BY latest.created_at DESC
-                 LIMIT 1
-             )
-           ORDER BY CASE stage.status WHEN 'running' THEN 0 ELSE 1 END,
-                    stage.position
-           LIMIT 1
-       ) AS ingestion_stage
+        (
+            SELECT stage.stage
+            FROM ingestion_runs AS run
+            JOIN ingestion_stage_runs AS stage ON stage.run_id = run.run_id
+            WHERE run.source_id = sources.source_id
+              AND stage.status IN ('running', 'pending')
+              AND run.run_id = (
+                  SELECT latest.run_id
+                  FROM ingestion_runs AS latest
+                  WHERE latest.source_id = sources.source_id
+                  ORDER BY latest.created_at DESC
+                  LIMIT 1
+              )
+            ORDER BY CASE stage.status WHEN 'running' THEN 0 ELSE 1 END,
+                     stage.position
+            LIMIT 1
+        ) AS ingestion_stage,
+        (
+            SELECT stage.error_message
+            FROM ingestion_runs AS run
+            JOIN ingestion_stage_runs AS stage ON stage.run_id = run.run_id
+            WHERE run.source_id = sources.source_id
+              AND stage.status = 'succeeded'
+              AND stage.error_message LIKE 'warning:%'
+              AND run.run_id = (
+                  SELECT latest.run_id
+                  FROM ingestion_runs AS latest
+                  WHERE latest.source_id = sources.source_id
+                  ORDER BY latest.created_at DESC
+                  LIMIT 1
+              )
+            ORDER BY stage.position DESC
+            LIMIT 1
+        ) AS warning
 FROM sources
 LEFT JOIN source_indexes AS coverage ON coverage.source_id = sources.source_id
 WHERE sources.source_id = :source_id AND sources.course_id = :course_id;

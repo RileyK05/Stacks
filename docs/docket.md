@@ -233,6 +233,17 @@ Tests of delimiters and limits establish behavior on fixtures, not OCR accuracy
 or readable digits on the affected course files. Generated answers must not use
 illegible evidence as if it were verified.
 
+### Round-2 NEW items not previously tracked — NEW-8…NEW-11
+
+These were omitted from the docket and notes; added here for completeness.
+
+| ID | Description | Current status |
+| --- | --- | --- |
+| NEW-8 | Poll cap ~15 min — course-page poll loop caps at 600 × 1.5 s while OCR can run >17 min | Not fixed — `routes/(app)/courses/[id]/+page.svelte:302` `attempt < 600` |
+| NEW-9 | No keyring → 503 — `secrets.get_api_key` raises on keyring-less Linux; `GET /api/settings/providers` → 503 | Not fixed — `secrets.py:28–30`, `api/settings.py:177` |
+| NEW-10 | MiMo OCR did nothing — 0/0 usage rows; Week3 0/27 pages | Partial — see R3-NEW-1, R3-NEW-10 above |
+| NEW-11 | "Sources used" empty — `loadCitations` used raw array instead of reactive proxy | Fixed in code — awaiting verification (AR-28) |
+
 ### Source classification and ingestion visibility — STK-017, STK-018
 
 **Partial.** Pending rows and stage labels exist, but Week5 remained in "Reading

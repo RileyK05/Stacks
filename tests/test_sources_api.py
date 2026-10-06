@@ -514,3 +514,34 @@ def test_sources_list_is_oldest_first_and_reports_coverage(client: TestClient) -
         conn.commit()
     refreshed = client.get(f"/courses/{course_id}/sources").json()[0]
     assert refreshed["index_stale"] is False
+
+
+def test_sources_list_surfaces_ocr_warning(client: TestClient) -> None:
+    course_id = _course(client)
+    source_id = UUID(
+        _upload(client, course_id, "week3.pdf", b"pdf-bytes").json()["source_id"]
+    )
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO source_indexes (source_id, revision, file_hash,"
+            " extraction_version, segmentation_version, semantic_used,"
+            " pages_total, pages_empty, pages_low_quality, pages_ocr)"
+            " VALUES (?, 'rev', 'hash', 'legacy', 'legacy', 0, 104, 27, 0, 0)",
+            (source_id,),
+        )
+        run_id, stage_id = uuid4(), uuid4()
+        conn.execute(
+            "INSERT INTO ingestion_runs (run_id, source_id, pipeline_version, status)"
+            " VALUES (?, ?, 'test', 'succeeded')",
+            (run_id, source_id),
+        )
+        conn.execute(
+            "INSERT INTO ingestion_stage_runs (stage_run_id, run_id, stage, position,"
+            " handler_version, status, error_message) VALUES (?, ?, 'ocr', 1, 'test',"
+            " 'succeeded', 'warning: 27 pages unresolved')",
+            (stage_id, run_id),
+        )
+        conn.commit()
+
+    rows = client.get(f"/courses/{course_id}/sources").json()
+    assert rows[0]["warning"] == "warning: 27 pages unresolved"

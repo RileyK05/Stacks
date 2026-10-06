@@ -145,8 +145,20 @@ def test_profile_reasoning_allowance_is_preserved_for_short_tasks() -> None:
     plan = generation.plan_call(
         "tutor_answer", _endpoint(model="mimo-v2.6-flash"), "task"
     )
-    assert plan.output_tokens == 16384
-    assert plan.context_tokens is None and plan.wider() is None
+    assert plan.output_tokens == 8192
+    assert plan.context_tokens is None
+    assert plan.wider().output_tokens == 16384
+
+
+def test_reasoning_model_scales_output_by_task_size() -> None:
+    endpoint = _endpoint(model="mimo-v2.6-flash")
+    summary = generation.plan_call("conversation_summary", endpoint, "task")
+    answer = generation.plan_call("tutor_answer", endpoint, "task")
+    document = generation.plan_call("artifact_generation", endpoint, "task")
+    assert summary.output_tokens == 4096
+    assert answer.output_tokens == 8192
+    assert document.output_tokens == 16384
+    assert summary.output_tokens < answer.output_tokens < document.output_tokens
 
 
 def test_empty_is_retried_only_once_and_background_summary_does_not_retry(
@@ -272,7 +284,7 @@ def test_requested_token_limit_stops_retry_before_transport(
     assert len(calls) == 1
 
 
-def test_late_complete_reply_is_not_published_and_usage_is_still_recorded(
+def test_late_complete_reply_is_published_and_usage_is_still_recorded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = [0.0]
@@ -282,12 +294,11 @@ def test_late_complete_reply_is_not_published_and_usage_is_still_recorded(
         on_post=lambda: now.__setitem__(0, 11.0),
     )
     policy = load_generation_policy().model_copy(update={"max_elapsed_seconds": 10})
-    with (
-        generation.operation(policy, clock=lambda: now[0]),
-        pytest.raises(provider.ProviderUnavailableError, match="took too long"),
-    ):
-        provider.generate("tutor_answer", "task")
+    with generation.operation(policy, clock=lambda: now[0]) as operation:
+        result = provider.generate("tutor_answer", "task")
+    assert result.text == "late complete answer"
     assert len(calls) == 1 and usage_repo.cloud_tokens_this_month() == 15
+    assert operation.calls == 1
 
 
 def test_cancellation_is_not_recovered(monkeypatch: pytest.MonkeyPatch) -> None:

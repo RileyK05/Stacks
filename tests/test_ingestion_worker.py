@@ -159,12 +159,9 @@ def test_mixed_source_indexes_when_malformed_ocr_only_affects_blank_pages(
         coverage["pages_total"],
         coverage["pages_empty"],
         coverage["pages_ocr"],
-    ) == (52, 2, 0)
+    ) == (52, 0, 2)
     assert stage["status"] == IngestionStatus.SUCCEEDED.value
-    assert (
-        "warning:" in stage["error_message"]
-        and "unresolved pages 51, 52" in stage["error_message"]
-    )
+    assert stage["error_message"] is None
 
 
 def test_ocr_batches_continue_after_failure_and_keep_rendered_page_ids(
@@ -282,7 +279,9 @@ def test_ocr_retries_only_the_transient_failed_batch(monkeypatch) -> None:
     def generate(*args, **kwargs):
         calls.append(1)
         if len(calls) == 1:
-            raise ProviderUnavailableError("could not reach provider endpoint")
+            raise ProviderUnavailableError(
+                "could not reach provider endpoint", transient=True
+            )
         return GenerationResult(
             "A legible page transcript with sufficient words.", "test", 1, 1
         )

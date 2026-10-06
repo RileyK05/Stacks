@@ -230,6 +230,13 @@ def test_request_words_are_not_what_is_searched_for() -> None:
     assert chat.retrieval_query("make me a study guide on Weber", None) == "Weber"
 
 
+def test_count_words_are_not_what_is_searched_for() -> None:
+    assert retrieval_topic("Make an 8-slide deck on Week 2") == "Week 2"
+    assert retrieval_topic("Quiz me with 10 questions on Week 3") == "Week 3"
+    assert retrieval_topic("Can you make me a one-page cheat sheet?") == ""
+    assert retrieval_topic("Make a 300 slide deck") == ""
+
+
 def test_a_request_without_a_subject_takes_the_subject_of_the_chat() -> None:
     context = chat.ChatContext(
         summary="", recent=(), previous_questions=("What is a basis?",)

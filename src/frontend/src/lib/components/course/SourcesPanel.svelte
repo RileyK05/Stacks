@@ -345,6 +345,9 @@
               {#if source.error_message}
                 <p class="mt-1 text-xs text-danger-text">{source.error_message}</p>
               {/if}
+              {#if source.warning}
+                <p class="mt-1 text-xs text-warning-text">{source.warning}</p>
+              {/if}
             </div>
             <div class="flex shrink-0 items-center gap-2">
               {#if source.status === 'failed'}

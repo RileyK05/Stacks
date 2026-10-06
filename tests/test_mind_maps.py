@@ -389,7 +389,7 @@ def test_quiz_is_saved_idempotent_and_only_submission_changes_memory(
     ).json()["suite"]
     score = client.post(
         f"/courses/{course}/practice/{suite['suite_id']}/runs",
-        json={"run_id": str(uuid4()), "answers": [0]},
+        json={"run_id": str(uuid4()), "answers": [suite["questions"][0]["answer"]]},
     )
     assert score.status_code == 200 and score.json()["results"] == [True]
     assert client.get(f"/courses/{course}/learning").json()["runs"]

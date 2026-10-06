@@ -121,17 +121,8 @@ def execute_pipeline(
 def is_transient_error(error: Exception) -> bool:
     if isinstance(error, ProviderRateLimitedError):
         return True
-    if type(error) is ProviderUnavailableError:
-        message = str(error).lower()
-        return any(
-            marker in message
-            for marker in (
-                "could not reach",
-                "did not answer in time",
-                "had a server error",
-                "could not answer:",
-            )
-        )
+    if isinstance(error, ProviderUnavailableError):
+        return error.transient
     if isinstance(error, BudgetExceededError):
         return False
     if isinstance(error, sqlite3.OperationalError):

@@ -85,9 +85,8 @@ def marker_numbers(marker: str) -> list[int]:
         last = int(bounds[-1])
         if len(bounds) == 1:
             numbers.append(first)
-        elif abs(last - first) <= 1000:
-            step = 1 if last >= first else -1
-            numbers.extend(range(first, last + step, step))
+        elif first <= last and abs(last - first) <= 1000:
+            numbers.extend(range(first, last + 1))
         else:
             # An invalid sentinel fails closed without expanding a hostile range.
             numbers.append(0)

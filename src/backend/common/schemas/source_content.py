@@ -28,6 +28,7 @@ class Source(BaseRecord):
     size_bytes: int | None = Field(default=None, ge=0)
     file_hash: str | None = None
     error_message: str | None = None
+    warning: str | None = None
     pages_total: int | None = None
     pages_empty: int | None = None
     pages_low_quality: int | None = None

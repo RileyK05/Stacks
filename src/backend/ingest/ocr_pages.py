@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 
 OCR_PAGE_BOUNDARY = "\n\n---\n\n"
-_PAGE_BOUNDARY = re.compile(r"(?:\r?\n)+[ \t]*---[ \t]*(?:\r?\n)+")
+_PAGE_BOUNDARY = re.compile(r"(?:^|(?:\r?\n)+)[ \t]*---[ \t]*(?=\r?\n|$)")
 
 
 def split_ocr_pages(text: str, page_count: int) -> list[str]:
@@ -22,5 +22,6 @@ def split_ocr_pages(text: str, page_count: int) -> list[str]:
     if len(parts) == page_count + 1 and not parts[-1].strip():
         parts.pop()
     if len(parts) == page_count:
-        return parts
+        stripped = [p.strip() for p in parts]
+        return ["" if p.casefold() == "[blank]" else p for p in stripped]
     raise ValueError("OCR page boundaries do not match the rendered pages")

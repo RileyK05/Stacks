@@ -103,6 +103,15 @@ def test_ocr_refuses_to_guess_multiple_pages_without_boundaries() -> None:
         split_ocr_pages("two pages merged into one response", 2)
 
 
+def test_ocr_accepts_blank_pages_between_separators() -> None:
+    assert split_ocr_pages("A\n---\n---\nC\n---\nD", 4) == ["A", "", "C", "D"]
+    assert split_ocr_pages("---\nB\n---\nC\n---\nD", 4) == ["", "B", "C", "D"]
+
+
+def test_ocr_blank_marker_becomes_empty_text() -> None:
+    assert split_ocr_pages("A\n---\n[blank]\n---\nC", 3) == ["A", "", "C"]
+
+
 def _upload(course_id, body: bytes):
     return sources_repo.upload_source(
         course_id,

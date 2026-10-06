@@ -3,14 +3,14 @@ from src.backend.evals.answer import citation_validity
 
 
 def test_grouped_and_descending_markers_expand_without_phantom_numbers():
-    assert cited_numbers("Supported [1, 3–4] and reversed [5-3].") == {
-        1,
-        3,
-        4,
-        5,
-    }
-    assert marker_numbers("5-3") == [5, 4, 3]
+    assert cited_numbers("Supported [1, 3–4].") == {1, 3, 4}
+    assert marker_numbers("3-4") == [3, 4]
     assert 0 in cited_numbers("bad [1-1000000000]")
+
+
+def test_reversed_citation_range_is_rejected():
+    assert marker_numbers("5-3") == [0]
+    assert cited_numbers("see [5-3]") == {0}
 
 
 def test_subscripts_code_and_markdown_literals_are_not_citations():

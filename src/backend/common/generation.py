@@ -73,7 +73,13 @@ def plan_call(
     ceiling = profile.output_token_limit if profile else None
     ceiling = ceiling or preferred
     thinking = profile.reasoning if profile else defaults.enable_thinking
-    desired = preferred if thinking else min(demand.desired_output_tokens, preferred)
+    if thinking:
+        # A reasoning model still needs room to think, but it must not claim
+        # its full maximum for every task: a 1024-token summary reserving
+        # 16384 against the shared budget starves the rest of the operation.
+        desired = min(preferred, demand.desired_output_tokens * 4)
+    else:
+        desired = min(demand.desired_output_tokens, preferred)
     output = min(desired, ceiling)
     context = profile.context_window_tokens if profile else None
     if endpoint.name == "local":
@@ -252,7 +258,6 @@ def complete[T](
             token = _CALL.set(_Call(op, limits))
             try:
                 result = invoke()
-                op.remaining_seconds()
                 return result
             except Exception as error:
                 kind = classify(error)

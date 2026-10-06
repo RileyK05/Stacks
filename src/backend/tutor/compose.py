@@ -21,7 +21,9 @@ exactly what users get.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import random
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -143,6 +145,11 @@ _DOCUMENT_REQUEST = re.compile(
     re.IGNORECASE,
 )
 
+# "Give me the notes from Week 3" / "show me my notes" point at material the
+# student already uploaded, not a request to generate a new document. A
+# definite article or possessive before "notes" is the retrieval signal.
+_RETRIEVAL_NOTES = re.compile(r"\b(?:the|my|our)\s+notes\b", re.IGNORECASE)
+
 
 _SMALL_TALK = re.compile(
     r"(?:(?:oh |ok |okay )?(?:hi|hello|hey|hiya|howdy|yo|sup|greetings"
@@ -177,6 +184,8 @@ def classify_intent(question: str) -> Intent:
     if is_small_talk(question):
         return Intent.CHAT
     if not _ARTIFACT_REQUEST.search(question):
+        return Intent.ANSWER
+    if _RETRIEVAL_NOTES.search(question):
         return Intent.ANSWER
     if _DOCUMENT_REQUEST.search(question):
         return Intent.DOCUMENT
@@ -313,6 +322,36 @@ _OVERVIEW_QUESTION = re.compile(
 )
 _WORD = re.compile(r"[\w'-]+")
 
+_NUMBER_WORDS = frozenset(
+    {
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+    }
+)
+
+
+def _is_count_token(token: str) -> bool:
+    head = re.split(r"[- ]", token, maxsplit=1)[0]
+    return head.isdigit() or head.casefold() in _NUMBER_WORDS
+
 
 def retrieval_topic(question: str) -> str:
     """What to search the course for. A plain question is its own topic; a
@@ -321,7 +360,17 @@ def retrieval_topic(question: str) -> str:
     about. Empty when the request names no subject."""
     if classify_intent(question) in (Intent.ANSWER, Intent.GRADED, Intent.CHAT):
         return question
-    words = [w for w in _WORD.findall(question) if w.casefold() not in _REQUEST_WORDS]
+    tokens = _WORD.findall(question)
+    words: list[str] = []
+    for index, token in enumerate(tokens):
+        if token.casefold() in _REQUEST_WORDS:
+            continue
+        if _is_count_token(token):
+            previous = tokens[index - 1] if index > 0 else ""
+            if previous and previous[0].isupper():
+                words.append(token)
+            continue
+        words.append(token)
     return " ".join(words)
 
 
@@ -582,7 +631,7 @@ def workspace_schema(
                 "slides": {
                     "type": "array",
                     "minItems": slide_count or 1,
-                    "maxItems": slide_count or 200,
+                    "maxItems": slide_count or 50,
                     "items": _object(
                         {
                             "title": _string(500),
@@ -642,7 +691,9 @@ def parse_json_object(text: str) -> dict[str, Any] | None:
 
 _SCHEMA_REMINDER = (
     "\n\nRespond with ONE JSON object only (no prose around it), shaped as: "
-    '{"reply": "...", "item": {...}}.'
+    '{"reply": "...", "item": {...}}. When a text field contains multiple lines '
+    "(such as a table, bullet list, or code block), escape each line break as "
+    "\\n within the JSON string value."
 )
 
 _PLACEHOLDER_OPTION = re.compile(
@@ -851,6 +902,43 @@ def _usable_quiz_questions(
     ]
 
 
+def _shuffle_quiz_options(item: dict[str, Any]) -> dict[str, Any]:
+    """Permute each question's options so the correct answer is not always
+    first. Small models put the key at index 0, so a student could score
+    100% by always picking A. The permutation is seeded from the question
+    text, so re-rendering or re-saving the same quiz never reorders it."""
+    questions = item.get("questions")
+    if not isinstance(questions, list):
+        return item
+    shuffled: list[Any] = []
+    for question in questions:
+        if not isinstance(question, dict):
+            shuffled.append(question)
+            continue
+        options = question.get("options")
+        answer = question.get("answer")
+        if not isinstance(options, list) or type(answer) is not int:
+            shuffled.append(question)
+            continue
+        order = list(range(len(options)))
+        seed = hashlib.sha256(
+            (
+                str(question.get("prompt", ""))
+                + "\x00"
+                + "\x00".join(str(option) for option in options)
+            ).encode("utf-8")
+        ).digest()
+        random.Random(seed).shuffle(order)
+        shuffled.append(
+            {
+                **question,
+                "options": [options[index] for index in order],
+                "answer": order.index(answer),
+            }
+        )
+    return {**item, "questions": shuffled}
+
+
 def _workspace_response(
     parsed: dict[str, Any] | None,
     intent: Intent,
@@ -869,6 +957,8 @@ def _workspace_response(
             item = DeckDraft.model_validate(item).workspace()
     except ValueError:
         return None
+    if intent is Intent.QUIZ:
+        item = _shuffle_quiz_options(item)
     if intent is Intent.MIND_MAP:
         try:
             original = extract_workspace_items(
@@ -961,9 +1051,9 @@ def compose_answer(
         )
     if quiz_count is not None:
         teaching += "\n" + load_prompt("workspace_quiz_count").format(count=quiz_count)
-    if slide_count is not None and not 1 <= slide_count <= 200:
+    if slide_count is not None and not 1 <= slide_count <= 50:
         return Composed(
-            "A slide deck supports 1–200 slides. Choose a count in that range.",
+            "A slide deck supports 1–50 slides. Choose a count in that range.",
             intent,
             structured=False,
             candidates=candidates,
@@ -1051,12 +1141,14 @@ def compose_answer(
                     "artifact_generation", repair_prompt, response_schema=schema
                 )
             except Exception as err:
-                if on_schema_rejected is None or not on_schema_rejected(err):
-                    raise
-                else:
+                if on_schema_rejected is not None and on_schema_rejected(err):
                     repaired = generate(
                         "artifact_generation", repair_prompt + _SCHEMA_REMINDER
                     )
+                elif accepted:
+                    break
+                else:
+                    raise
             parsed = parse_json_object(repaired)
             item = parsed.get("item") if parsed else None
             collect(parsed)

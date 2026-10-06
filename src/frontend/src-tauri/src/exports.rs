@@ -208,13 +208,15 @@ fn choose_and_write(
     let path = file_path
         .into_path()
         .map_err(|error| format!("Could not use the selected destination: {error}"))?;
-    if !path
+    let path = if path
         .extension()
         .and_then(|value| value.to_str())
         .is_some_and(|value| value.eq_ignore_ascii_case(extension))
     {
-        return Err(format!("Choose a destination ending in .{extension}."));
-    }
+        path
+    } else {
+        path.with_extension(extension)
+    };
     let confirmed_target = target_snapshot(&path)?;
     if confirmed_target.is_some() {
         let replace = app

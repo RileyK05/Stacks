@@ -9,21 +9,27 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MAX_MATERIAL_CHARS = 200_000
+_TITLE_MAX = 120
 
 
 def has_body(markdown: str, title: str = "") -> bool:
-    lines = [
-        line.strip()
-        for line in markdown.splitlines()
-        if line.strip() and not re.match(r"^\s*(?:#{1,6}\s|[-*_]{3,}\s*$)", line)
-    ]
+    lines: list[str] = []
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        content = re.sub(r"^\s*#{1,6}\s+", "", stripped)
+        content = content.strip(" *_`").strip()
+        if not content or re.match(r"^[-*_]{3,}$", content):
+            continue
+        lines.append(content)
     return bool(lines) and any(
-        line.strip(" *_`").casefold()
+        content.casefold()
         not in {"content", "deck", "markdown", "body", title.strip().casefold()}
-        for line in lines
+        for content in lines
     )
 
 
@@ -50,15 +56,22 @@ class Section(_Draft):
 
     def markdown(self) -> str:
         body = "\n\n".join(paragraph.strip() for paragraph in self.paragraphs)
-        heading = self.heading.strip().lstrip("# ")
+        heading = re.sub(r"^#{1,6}\s+", "", self.heading.strip())
         return f"## {heading}\n\n{body}" if heading else body
 
 
 class DocumentDraft(_Draft):
     type: Literal["document"]
-    title: str = Field(max_length=120)
+    title: str = Field(max_length=_TITLE_MAX)
     sections: list[Section] = Field(min_length=1, max_length=64)
     sources: list[int] = Field(min_length=1)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _truncate_title(cls, value: object) -> object:
+        if isinstance(value, str) and len(value) > _TITLE_MAX:
+            return value[:_TITLE_MAX]
+        return value
 
     def workspace(self) -> dict[str, object]:
         content = "\n\n".join(section.markdown() for section in self.sections)
@@ -94,14 +107,22 @@ class Slide(_Draft):
 
     def markdown(self) -> str:
         body = "\n\n".join(paragraph.strip() for paragraph in self.paragraphs)
-        return f"# {self.title.strip().lstrip('# ')}\n\n{body}"
+        title = re.sub(r"^#{1,6}\s+", "", self.title.strip())
+        return f"# {title}\n\n{body}"
 
 
 class DeckDraft(_Draft):
     type: Literal["slides"]
-    title: str = Field(max_length=120)
+    title: str = Field(max_length=_TITLE_MAX)
     slides: list[Slide] = Field(min_length=1, max_length=200)
     sources: list[int] = Field(min_length=1)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _truncate_title(cls, value: object) -> object:
+        if isinstance(value, str) and len(value) > _TITLE_MAX:
+            return value[:_TITLE_MAX]
+        return value
 
     def workspace(self) -> dict[str, object]:
         deck = "\n\n---\n\n".join(slide.markdown() for slide in self.slides)

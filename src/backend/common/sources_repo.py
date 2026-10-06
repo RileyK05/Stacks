@@ -164,6 +164,7 @@ def _to_source(row: dict[str, Any], segmentation_version: str) -> Source:
         has_index=bool(row.get("has_index", False)),
         file_hash=row["file_hash"],
         error_message=row["error_message"],
+        warning=row.get("warning"),
         pages_total=row.get("pages_total"),
         pages_empty=row.get("pages_empty"),
         pages_low_quality=row.get("pages_low_quality"),

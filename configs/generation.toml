@@ -22,7 +22,7 @@ desired_output_tokens = 16384
 max_recoveries = 2
 
 [tasks.ocr]
-desired_output_tokens = 16384
+desired_output_tokens = 2048
 max_recoveries = 1
 
 [tasks.conversation_summary]
