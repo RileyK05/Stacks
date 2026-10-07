@@ -3,7 +3,8 @@
 The upload is read for topics, difficulty, and question formats. It is not
 stored as a course source and its questions are not answered. New questions
 are written from the course's own passages, then dropped when they reuse a
-run of the upload's wording.
+run of the upload's wording. A copied explanation is cleared. A copied
+required point is removed.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from src.backend.ingest.ocr_pages import split_ocr_pages
 from src.backend.retrieval import funnel
 from src.backend.retrieval.config import load_retrieval_policy
 from src.backend.retrieval.funnel import Candidate
-from src.backend.student_model.grading import content_words
+from src.backend.student_model.grading import content_words, point_covered
 from src.backend.tutor.answer import embed_search
 from src.backend.tutor.compose import (
     _shuffle_quiz_options,
@@ -110,6 +111,7 @@ def copies_exemplar(text: str, exemplar: str) -> bool:
 def _png_from_photo(raw: bytes) -> bytes:
     from PIL import Image
 
+    previous_limit = Image.MAX_IMAGE_PIXELS
     Image.MAX_IMAGE_PIXELS = 20_000_000
     try:
         with Image.open(io.BytesIO(raw)) as image:
@@ -123,11 +125,15 @@ def _png_from_photo(raw: bytes) -> bytes:
             return buffer.getvalue()
     except ExamStyleError:
         raise
-    except (OSError, ValueError) as err:
+    except (OSError, ValueError, Image.DecompressionBombError) as err:
         raise ExamStyleError("This image could not be read.") from err
+    finally:
+        Image.MAX_IMAGE_PIXELS = previous_limit
 
 
-def _transcribe(course_id: UUID, images: list[bytes]) -> list[str]:
+def _transcribe(
+    course_id: UUID, images: list[bytes], *, skip_unreadable: bool = False
+) -> list[str]:
     if not images:
         return []
     try:
@@ -142,14 +148,17 @@ def _transcribe(course_id: UUID, images: list[bytes]) -> list[str]:
         raise
     except ValueError:
         if len(images) == 1:
+            if skip_unreadable:
+                return [""]
             raise ExamStyleError(
                 "The scan could not be read. Try a clearer photo "
                 "or a PDF with selectable text."
             ) from None
-        texts: list[str] = []
-        for image in images:
-            texts.extend(_transcribe(course_id, [image]))
-        return texts
+        return [
+            text
+            for image in images
+            for text in _transcribe(course_id, [image], skip_unreadable=skip_unreadable)
+        ]
 
 
 def read_upload(course_id: UUID, kind: Literal["pdf", "image"], raw: bytes) -> str:
@@ -195,7 +204,11 @@ def _read_pdf(course_id: UUID, raw: bytes) -> str:
         if rendered:
             for index, text in zip(
                 [page.page_index for page in rendered],
-                _transcribe(course_id, [page.image for page in rendered]),
+                _transcribe(
+                    course_id,
+                    [page.image for page in rendered],
+                    skip_unreadable=True,
+                ),
                 strict=True,
             ):
                 recognized[index] = text
@@ -258,17 +271,24 @@ def profile_from_model(raw: object) -> StyleProfile:
         raise ExamStyleError("That file does not look like a quiz or exam.") from err
 
 
-def _safe_style(profile: StyleProfile, exemplar: str) -> StyleProfile:
+_FALLBACK_STYLE = (
+    "Match the listed formats and difficulty. Ask about the listed topics in a new way."
+)
+_FALLBACK_TOPIC = "Course material"
+
+
+def _safe_profile(profile: StyleProfile, exemplar: str) -> StyleProfile:
+    """Keep the upload's wording out of the saved profile (origin, title,
+    and each question's topic)."""
+    update: dict[str, Any] = {}
     if copies_exemplar(profile.style, exemplar):
-        return profile.model_copy(
-            update={
-                "style": (
-                    "Match the listed formats and difficulty. "
-                    "Ask about the listed topics in a new way."
-                )
-            }
-        )
-    return profile
+        update["style"] = _FALLBACK_STYLE
+    topics = [topic for topic in profile.topics if not copies_exemplar(topic, exemplar)]
+    if not topics:
+        update["topics"] = [_FALLBACK_TOPIC]
+    elif len(topics) != len(profile.topics):
+        update["topics"] = topics
+    return profile.model_copy(update=update) if update else profile
 
 
 def describe_style(course_id: UUID, exemplar: str) -> StyleProfile:
@@ -286,7 +306,7 @@ def describe_style(course_id: UUID, exemplar: str) -> StyleProfile:
             course_id=course_id,
         )
     parsed = parse_json_object(result.text)
-    return _safe_style(profile_from_model(parsed), exemplar)
+    return _safe_profile(profile_from_model(parsed), exemplar)
 
 
 def _passages(course_id: UUID, topics: list[str]) -> tuple[Candidate, ...]:
@@ -313,10 +333,9 @@ def _numbered(candidates: tuple[Candidate, ...]) -> str:
 
 
 def _grounded(text: str, evidence: str) -> bool:
-    needed = content_words(text)
-    if not needed:
-        return False
-    return all(word in set(content_words(evidence)) for word in needed)
+    """The same mechanical check as short-answer grading, so a point that
+    says the opposite of the passage, or a different short number, is dropped."""
+    return point_covered(evidence, text)
 
 
 def _topic_for(raw: str, topics: list[str]) -> str:
@@ -342,6 +361,14 @@ def _capability(raw: object, difficulty: str) -> str:
     return "recognition"
 
 
+def _inherited(part: dict[str, Any], parent: dict[str, Any], key: str) -> object:
+    """A nested part keeps its own value, and otherwise the shared item's."""
+    value = part.get(key)
+    if value is None or value == "" or value == []:
+        return parent.get(key)
+    return value
+
+
 def _flatten(raw_questions: object) -> list[dict[str, Any]]:
     if not isinstance(raw_questions, list):
         return []
@@ -360,6 +387,10 @@ def _flatten(raw_questions: object) -> list[dict[str, Any]]:
                         **part,
                         "stem": part.get("stem") or stem,
                         "part": part.get("part") or chr(ord("a") + offset),
+                        "sources": _inherited(part, item, "sources"),
+                        "topic": _inherited(part, item, "topic"),
+                        "explanation": _inherited(part, item, "explanation"),
+                        "capability": _inherited(part, item, "capability"),
                     }
                 )
             continue
@@ -395,10 +426,35 @@ def _usable_short(question: dict[str, Any], candidates: tuple[Candidate, ...]) -
         isinstance(point, str) and _grounded(point, evidence) for point in points
     ):
         return False
-    expected_words = content_words(expected)
-    return not expected_words or bool(
-        set(expected_words) & set(content_words(evidence))
-    )
+    return point_covered(evidence, expected)
+
+
+def _fit_question(question: dict[str, Any]) -> dict[str, Any] | None:
+    """Drop a question when one field cannot be stored. Labels can be shortened."""
+    prompt = question.get("prompt")
+    stem = question.get("stem") or ""
+    expected = question.get("expected") or ""
+    if (
+        not isinstance(prompt, str)
+        or len(prompt) > 5000
+        or not isinstance(stem, str)
+        or len(stem) > 2000
+        or not isinstance(expected, str)
+        or len(expected) > 5000
+    ):
+        return None
+    raw_points = question.get("points") or []
+    if not isinstance(raw_points, list) or any(
+        not isinstance(point, str) or len(point) > 300 for point in raw_points
+    ):
+        return None
+    raw_part = question.get("part")
+    raw_explanation = question.get("explanation")
+    raw_topic = question.get("topic")
+    part = raw_part.strip()[:8] if isinstance(raw_part, str) else ""
+    explanation = raw_explanation[:5000] if isinstance(raw_explanation, str) else ""
+    topic = raw_topic[:160] if isinstance(raw_topic, str) else ""
+    return {**question, "part": part, "explanation": explanation, "topic": topic}
 
 
 def accept_questions(
@@ -407,8 +463,11 @@ def accept_questions(
     candidates: tuple[Candidate, ...],
     exemplar: str,
 ) -> list[dict[str, Any]]:
+    if not isinstance(raw_questions, list):
+        raise ExamStyleError("The model's new questions could not be read. Try again.")
     accepted: list[dict[str, Any]] = []
     seen: set[str] = set()
+    repeated = False
     for item in _flatten(raw_questions):
         fmt = item.get("format")
         if fmt not in {"multiple_choice", "short_answer"}:
@@ -418,18 +477,35 @@ def accept_questions(
         raw_stem = item.get("stem")
         stem = raw_stem if isinstance(raw_stem, str) else ""
         if copies_exemplar(prompt, exemplar) or copies_exemplar(stem, exemplar):
+            repeated = True
             continue
         if fmt == "multiple_choice" and any(
             isinstance(option, str) and copies_exemplar(option, exemplar)
             for option in item.get("options") or []
         ):
+            repeated = True
             continue
         if (
             fmt == "short_answer"
             and isinstance(item.get("expected"), str)
             and copies_exemplar(item["expected"], exemplar)
         ):
+            repeated = True
             continue
+        raw_explanation = item.get("explanation")
+        explanation = (
+            ""
+            if not isinstance(raw_explanation, str)
+            or copies_exemplar(raw_explanation, exemplar)
+            else raw_explanation.strip()
+        )
+        raw_points = item.get("points")
+        points: list[object] = []
+        for point in raw_points if isinstance(raw_points, list) else []:
+            if isinstance(point, str) and copies_exemplar(point, exemplar):
+                repeated = True
+                continue
+            points.append(point)
         key = " ".join(_words(prompt))
         if not key or key in seen:
             continue
@@ -447,7 +523,7 @@ def accept_questions(
                         "prompt": prompt,
                         "options": item.get("options"),
                         "answer": item.get("answer"),
-                        "explanation": item.get("explanation") or "",
+                        "explanation": explanation,
                         "sources": item.get("sources"),
                         "topic": topic,
                         "capability": capability,
@@ -476,21 +552,29 @@ def accept_questions(
                 "expected": str(item.get("expected") or "").strip(),
                 "points": [
                     " ".join(str(point).split())
-                    for point in item.get("points") or []
+                    for point in points
                     if str(point).strip()
                 ],
-                "explanation": str(item.get("explanation") or "").strip(),
+                "explanation": explanation,
                 "sources": item.get("sources"),
                 "topic": topic,
                 "capability": capability,
             }
             if not _usable_short(question, candidates):
                 continue
+        fitted = _fit_question(question)
+        if fitted is None:
+            continue
         seen.add(key)
-        accepted.append(question)
+        accepted.append(fitted)
     if not accepted:
+        if repeated:
+            raise ExamStyleError(
+                "No new questions could be written without repeating the uploaded exam."
+            )
         raise ExamStyleError(
-            "No new questions could be written without repeating the uploaded exam."
+            "No usable new questions could be written from the course material "
+            "for that quiz's topics."
         )
     return accepted
 
@@ -510,17 +594,15 @@ def write_questions(
     exemplar: str,
 ) -> list[dict[str, Any]]:
     instruction = load_prompt("exam_style_quiz")
-    try:
-        result = provider.generate(
-            "artifact_generation",
-            grounded_prompt(instruction, _material(profile, candidates)),
-            course_id=course_id,
-        )
-    except provider.ProviderUnavailableError:
-        raise
-    parsed = parse_json_object(result.text) or {}
-    raw = parsed.get("questions") if isinstance(parsed, dict) else None
-    return accept_questions(raw, profile, candidates, exemplar)
+    result = provider.generate(
+        "artifact_generation",
+        grounded_prompt(instruction, _material(profile, candidates)),
+        course_id=course_id,
+    )
+    parsed = parse_json_object(result.text)
+    if parsed is None:
+        raise ExamStyleError("The model's new questions could not be read. Try again.")
+    return accept_questions(parsed.get("questions"), profile, candidates, exemplar)
 
 
 def _title(profile: StyleProfile) -> str:

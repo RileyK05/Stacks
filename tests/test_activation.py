@@ -7,6 +7,7 @@ rollback. A failed activation restores the previous library.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,82 @@ def test_activation_records_a_failure_and_restores_the_previous_library(
     )
     record = activation.last_activation()
     assert record is not None and not record.activated and record.error
+
+
+def test_activation_uses_a_database_and_files_outside_the_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.backend.common.db import connect
+
+    backup_id = _make_backup_with_course("Original")
+    data_dir = Path(get_settings().data_dir)
+    source = Path(get_settings().database_path)
+    conn = connect(source)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    library = tmp_path / "outside" / "library.db"
+    files = tmp_path / "outside" / "files"
+    library.parent.mkdir()
+    files.mkdir()
+    shutil.copyfile(source, library)
+    (files / "keep.txt").write_text("live", encoding="utf-8")
+    (data_dir / "raw").mkdir(parents=True, exist_ok=True)
+    (data_dir / "raw" / "untouched.txt").write_text("default raw", encoding="utf-8")
+    (data_dir / "course_assistant.db").write_bytes(b"decoy")
+    monkeypatch.setenv("DATABASE_PATH", str(library))
+    monkeypatch.setenv("STORAGE_ROOT", str(files))
+    courses_repo.create_course("Changed later")
+    assert _course_names() == {"Original", "Changed later"}
+
+    result = activation.activate_backup(backup_id)
+    assert result.ok
+    assert _course_names() == {"Original"}
+    assert (data_dir / "course_assistant.db").read_bytes() == b"decoy"
+    assert (data_dir / "raw" / "untouched.txt").read_text(encoding="utf-8") == (
+        "default raw"
+    )
+    assert result.rollback_dir is not None
+    assert (result.rollback_dir / "library.db").is_file()
+    assert (result.rollback_dir / "raw" / "keep.txt").read_text(encoding="utf-8") == (
+        "live"
+    )
+
+
+def test_failed_activation_restores_a_database_outside_the_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.backend.common.db import connect
+
+    backup_id = _make_backup_with_course("Original")
+    data_dir = Path(get_settings().data_dir)
+    source = Path(get_settings().database_path)
+    conn = connect(source)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        conn.close()
+    library = tmp_path / "outside" / "library.db"
+    files = tmp_path / "outside" / "files"
+    library.parent.mkdir()
+    files.mkdir()
+    shutil.copyfile(source, library)
+    (files / "keep.txt").write_text("live", encoding="utf-8")
+    (data_dir / "course_assistant.db").write_bytes(b"decoy")
+    monkeypatch.setenv("DATABASE_PATH", str(library))
+    monkeypatch.setenv("STORAGE_ROOT", str(files))
+    courses_repo.create_course("Changed later")
+
+    def boom() -> None:
+        raise RuntimeError("injected failure after the swap")
+
+    monkeypatch.setattr(activation, "migrate", boom)
+    with pytest.raises(activation.ActivationError):
+        activation.activate_backup(backup_id)
+    assert _course_names() == {"Original", "Changed later"}
+    assert (files / "keep.txt").read_text(encoding="utf-8") == "live"
+    assert (data_dir / "course_assistant.db").read_bytes() == b"decoy"
 
 
 def test_activation_rejects_an_unknown_backup() -> None:

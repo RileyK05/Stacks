@@ -295,11 +295,13 @@
   async function pollSourcesUntilSettled() {
     // Fresh uploads sit at uploaded→scanned→indexed invisibly otherwise.
     // Poll every 1.5s while anything is in flight; one loop at a time.
+    // A scan can run longer than 15 minutes, so this does not stop on a
+    // fixed attempt count. Leaving the page, or five failed fetches, stops it.
     if (polling) return;
     polling = true;
     let failures = 0;
     try {
-      for (let attempt = 0; attempt < 600 && anyPending && !destroyed; attempt++) {
+      while (anyPending && !destroyed) {
         await new Promise((resolve) => setTimeout(resolve, 1500));
         if (destroyed) return;
         try {

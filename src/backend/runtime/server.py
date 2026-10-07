@@ -357,10 +357,13 @@ class LlamaServer:
             time.sleep(0.5)
         raise RuntimeUnavailableError("llama-server did not become healthy in time")
 
-    def stop(self) -> None:
+    def stop(self, *, forget: bool = True) -> None:
+        """Stop the process. An explicit Stop forgets the active model.
+        Shutdown passes forget=False so a model change during exit is kept."""
         with self._lock:
             self._stop_locked()
-            settings_repo.delete_setting(ACTIVE_MODEL_SETTING)
+            if forget:
+                settings_repo.delete_setting(ACTIVE_MODEL_SETTING)
 
     def _stop_locked(self) -> None:
         process, self._process = self._process, None

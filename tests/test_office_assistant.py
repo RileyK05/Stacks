@@ -74,7 +74,10 @@ def test_dangling_office_marker_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
     course_id = _course()
     add_chunk(course_id, "Linearity means preserving addition and scaling.")
     configure_test_provider(monkeypatch, "The map preserves sums [42].")
-    with connection() as conn, pytest.raises(ValueError, match="not given"):
+    with (
+        connection() as conn,
+        pytest.raises(office.UngroundedAnswerError, match="not given"),
+    ):
         office.answer(
             conn,
             course_id,

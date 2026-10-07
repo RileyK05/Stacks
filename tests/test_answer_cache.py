@@ -106,6 +106,19 @@ def test_changed_material_or_model_misses(
     assert len(fingerprints) == 1, "entries for the old material were dropped"
 
 
+def test_a_withheld_citation_is_not_cached(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course_id = _course(client)
+    calls = configure_test_provider(monkeypatch, "The dimension is 4 [99].")
+    first = _ask(client, course_id, "What is linearity?")
+    second = _ask(client, course_id, "What is linearity?")
+    assert "withheld" in first["text"]
+    assert first["cached"] is False and second["cached"] is False
+    assert len(calls) == 2, "a refusal must be generated again"
+    assert _rows() == 0
+
+
 def test_workspace_requests_are_never_cached(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -106,7 +106,7 @@
     <fieldset class="flex min-w-0 flex-col gap-2">
       <legend class="mb-2 max-w-full">
         <span class="block text-[11px] font-semibold uppercase tracking-[0.1em] text-subtle">
-          {question.part ? `Part ${question.part}` : `Question ${questionIndex + 1}`} of {questions.length}
+          Question {questionIndex + 1} of {questions.length}{question.part ? ` · Part ${question.part}` : ''}
         </span>
         <span class="mt-1 block whitespace-pre-wrap text-[15px] font-medium leading-snug text-fg [overflow-wrap:anywhere]">{question.prompt}</span>
       </legend>

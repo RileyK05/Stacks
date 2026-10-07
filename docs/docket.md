@@ -1,6 +1,7 @@
 # Active engineering docket
 
-Updated 2026-10-04 during the bug-fix pass after the round-2 retest of `92be710`. This file contains
+Updated 2026-10-06 during the exam-style review pass and the round-3 transfer.
+This file contains
 unresolved problems, observed quality gaps, required platform verification and
 decisions with real tradeoffs. This is the only work queue, including remaining
 review checks and feature decisions. Confirmed failures, partial fixes and
@@ -16,6 +17,10 @@ artifact/answer replays and probes used MiMo. The Week5 re-run used a mismatched
 shell credential and did not establish successful OCR. Findings below are reported
 by that external retest, not a claim that the five-PDF corpus was independently rerun locally.
 `R2-NEW-*` preserves the report's NEW-1 through NEW-7 identifiers.
+
+Evidence: [RETEST-round3.md](RETEST-round3.md), 2026-10-04, scratch checkout at
+`d98d365`, the same five PDFs with MiMo OCR. `R3-NEW-*` preserves that report's
+new-issue identifiers; `f595461` is the subsequent fix pass.
 
 The retest verified STK-001, STK-006, STK-007, STK-008, STK-010, STK-014 and
 STK-040. These do not remain standalone tasks. STK-010's original word-joining
@@ -233,16 +238,81 @@ Tests of delimiters and limits establish behavior on fixtures, not OCR accuracy
 or readable digits on the affected course files. Generated answers must not use
 illegible evidence as if it were verified.
 
+### Round-3 new items — R3-NEW-1…R3-NEW-17
+
+From the round-3 retest of `d98d365` ([RETEST-round3.md](RETEST-round3.md));
+`f595461` then addressed this list in one pass. Statuses follow that scope and
+spot-checks on 2026-10-06, not a retest: every fixed row stays **Fixed in code —
+awaiting verification** until confirmed. GUI-dependent rows need the report's §6
+checks.
+
+| ID | Description | Current status |
+| --- | --- | --- |
+| R3-NEW-1 | OCR prompt emitted empty pages the splitter rejected, so most batches were dropped (Week3 0/27 pages) | Fixed in code — awaiting verification — `ingest/ocr_pages.py` accepts empty segments and `[blank]` |
+| R3-NEW-2 | Strict `json_schema` replies flattened tables/bullets inside one paragraph in documents/decks | Fixed in code — awaiting verification — prompts escape `\\n` inside JSON strings (`configs/prompts.toml`); retest a table-bearing study guide |
+| R3-NEW-3 | OCR warnings never reached the student (stage row only) | Fixed in code — awaiting verification — coverage/stage warnings surface failed pages; GUI check |
+| R3-NEW-4 | `generation.complete` discarded a reply that finished after the deadline | Fixed in code — awaiting verification — `common/generation.py` checks the deadline before the call, not after |
+| R3-NEW-5 | Reasoning models reserved their full max output for every task against the shared budget | Fixed in code — awaiting verification — `plan_call` caps desired output at 4× demand |
+| R3-NEW-6 | Reversed citation ranges `[5-3]` were accepted as valid | Fixed in code — awaiting verification — `common/citations.py` |
+| R3-NEW-7 | Draft heading handling rejected single-line headings and ate leading `#` from real headings | Fixed in code — awaiting verification — `tutor/materials.py` |
+| R3-NEW-8 | Quiz repair aborted on a non-schema error instead of degrading | Fixed in code — awaiting verification — `tutor/compose.py` |
+| R3-NEW-9 | Slide counts up to 200 accepted although 200 slides cannot fit one reply | Partial — budget recovery helps, but `tutor/compose.py:568` `maxLength: 200` still accepts the request |
+| R3-NEW-10 | OCR cost/runaway: one batch burned the full 16,384 output tokens; four 0/0 ledger rows | Partial — covered by the R3-NEW-5 cap; `usage_reported = 0` rows already flagged |
+| R3-NEW-11 | Intent false positive: "give me the notes from Week 3" generated a document | Fixed in code — awaiting verification — `tutor/compose.py` intent handling |
+| R3-NEW-12 | Export dialog oddities: a missing extension errors instead of appending; double overwrite prompt; bytes cross IPC as `number[]` | Fixed in code — awaiting verification — `src-tauri/src/exports.rs`; GUI check |
+| R3-NEW-13 | Quiz answer keys not shuffled — a 10-question quiz had every answer = A | Fixed in code — awaiting verification — seeded `_shuffle_quiz_options` (`tutor/compose.py`) |
+| R3-NEW-14 | `retrieval_topic` kept count words ("10 Week 3", "one-page") | Fixed in code — awaiting verification — `tutor/compose.py` |
+| R3-NEW-15 | Round-2 NEW-8…NEW-11 were absent from the docket/notes | Closed — the Round-2 table below and this table record them |
+| R3-NEW-16 | OCR retry decided "transient" by matching English message text; a dropped connection was not retried | Fixed in code — awaiting verification — `ingest/pipeline.py` `is_transient_error` uses structured errors |
+| R3-NEW-17 | A provider refusal ("considered high risk") was treated as model text | Fixed in code — awaiting verification — `common/provider.py` `_REFUSAL_RE` |
+
 ### Round-2 NEW items not previously tracked — NEW-8…NEW-11
 
 These were omitted from the docket and notes; added here for completeness.
 
 | ID | Description | Current status |
 | --- | --- | --- |
-| NEW-8 | Poll cap ~15 min — course-page poll loop caps at 600 × 1.5 s while OCR can run >17 min | Not fixed — `routes/(app)/courses/[id]/+page.svelte:302` `attempt < 600` |
-| NEW-9 | No keyring → 503 — `secrets.get_api_key` raises on keyring-less Linux; `GET /api/settings/providers` → 503 | Not fixed — `secrets.py:28–30`, `api/settings.py:177` |
+| NEW-8 | Poll cap ~15 min — course-page poll loop caps at 600 × 1.5 s while OCR can run >17 min | Fixed in code — awaiting verification — the course page polls until the source settles, the page closes, or five fetches fail |
+| NEW-9 | No keyring → 503 — `secrets.get_api_key` raises on keyring-less Linux; `GET /api/settings/providers` → 503 | Fixed in code — awaiting verification — no keyring backend is an absent key; a locked store is still 503 |
 | NEW-10 | MiMo OCR did nothing — 0/0 usage rows; Week3 0/27 pages | Partial — see R3-NEW-1, R3-NEW-10 above |
 | NEW-11 | "Sources used" empty — `loadCitations` used raw array instead of reactive proxy | Fixed in code — awaiting verification (AR-28) |
+
+### Sweep 2026-10-06 — short answers and exam-style practice
+
+Found by reading the current short-answer path, including uncommitted exam-style
+edits. Each row is **Fixed in code — awaiting verification**. Tests:
+`test_exam_style.py`, `test_practice_support.py::test_short_answer_help_includes_the_shared_stem`.
+
+| ID | Description | Fix |
+| --- | --- | --- |
+| SW-01 | Short-answer grading ignored "no" and "not", so "the derivative is not constant" was marked covered by "the derivative is constant" | `student_model/grading.py` requires those words in addition to content words |
+| SW-02 | Blank lines in the required-points editor counted toward the six-point cap, so a valid quiz failed to save | Quiz and practice schemas drop blank lines, then enforce six real points |
+| SW-03 | A nested multi-part item dropped the parent's sources, topic, and explanation, so a grounded part was rejected | `exam_style._flatten` inherits omitted parent fields |
+| SW-04 | A required point that repeated the uploaded exam stayed as the grading key | Copied points are removed; a question with only copied points is rejected as a repeat |
+| SW-05 | An oversized photo raised Pillow's decompression error as a 500 and left a lower process-wide pixel limit | The limit is restored, and the bomb becomes "this image could not be read" |
+| SW-06 | Hint and explain saw only the part prompt, not the shared stem the student sees | `practice_support._asked` |
+| SW-07 | Quiz Markdown labeled questions `a`/`b` and the answer key `1`/`2` | The key uses the same part label |
+
+### Sweep 2026-10-06 — continued
+
+Found by reading tutor, learning, runtime, ingest, and quiz editing. Each row
+is **Fixed in code — awaiting verification**.
+
+| ID | Description | Fix |
+| --- | --- | --- |
+| SW-08 | A positive required point was covered by a negated answer, and a 1–2 digit number was ignored, so "dimension is 9" covered "dimension is 2". Exam-style grounding used the same loose overlap | `point_covered` keeps short numbers and rejects a nearby "no"/"not"; exam-style points and expected answers use that check |
+| SW-09 | Explain on an excluded short answer still sent the expected answer and required points to the model | Those fields are omitted; the prompt says the key is withheld |
+| SW-10 | A hint could quote a two-word required point and then be graded correct | Short-answer hints withhold a quoted point of two or more words |
+| SW-11 | "Make a quiz from my notes" was classified as retrieving notes | Retrieval wins only when the request does not also name another artifact |
+| SW-12 | A quiz filtered down to nothing was stored as a teaching event and still cited the quiz's passages | No teaching row, and the message's chunk list is cleared |
+| SW-13 | A citation refusal was cached, so the same question never reached the model again | `Composed.withheld` skips the answer cache |
+| SW-14 | An Office answer that cited a missing passage was HTTP 500 | `UngroundedAnswerError` is returned as 422 |
+| SW-15 | Deleting the running model while its file was still verifying stopped llama-server and forgot it, then returned 409 | The delete is refused before the server is stopped |
+| SW-16 | Activation with a database path outside the data folder swapped `course_assistant.db` and `<data dir>/raw`, then migrated the untouched database | Activation swaps the configured database and the configured source-file folder |
+| SW-17 | Shutdown wrote back the active model it had read before `stop()`, undoing a switch that landed while the process was exiting | Shutdown stops with `forget=False` and does not write the setting |
+| SW-18 | A text file's trailing newline was counted as an extra line, so the last line-range label ran one line past the file | That offset is not a line |
+| SW-19 | A quiz proposal's Now and After columns showed "Open the saved quiz" instead of the questions | A non-editable quiz with no practice session renders the questions read-only |
+| SW-20 | A schema-compliant quiz edit had no short-answer fields, so the required points were saved as multiple choice | The edit schema and hint include format, expected, points, topic, and capability |
 
 ### Source classification and ingestion visibility — STK-017, STK-018
 
@@ -350,6 +420,7 @@ independent task. Keep each addressed bug marked “Fixed in code — awaiting v
 | B-09 | Companion analysis and recovery (future work) | Multi-pass companion review and recovery expansion are new capabilities. |
 | B-12 | Additional live hosts (deferred design) | Google live hosts and Mac window capture are additional integrations. |
 | F-19 | Quiz picks reset when question count changes | Edits invalidate question identity; authoritative saved-suite loading replaces the initial preview and restores saved runs. Reopen only for lost picks with unchanged question/version identity or picks applied to different questions. **Fixed in code — awaiting verification.** |
+| F-20 | Exam-style practice: upload a quiz/exam for style, generate same-style questions from course passages | Implemented 2026-10-05/06 (Artifacts tab beside mind maps). Copy filter clears copied explanations, drops copied topics, and removes copied required points; unreadable scan pages are skipped instead of failing the upload; nested parts keep the parent citation; quiz editor can author short answers. Blank lines between required points no longer fail the save. **Fixed in code — awaiting verification.** Open acceptance: a live model evaluation of generated question quality has not been run — quality is structural only (citations, grounded points, upload overlap). GUI checks: PDF and photo upload, short-answer taking/grading, Memory review of a short answer. Tradeoff noted: the generate request is synchronous like `/from-message` (OCR + two model calls can run minutes behind the spinner); job progress is a capability choice. |
 | STK-011 | Question naming a reading retrieved nothing from that reading (Q12) | Observed named-reading miss belongs to B-07 real-corpus acceptance; reproduce before a separate ranking change. |
 | STK-024 | Clickable inline citations | Round-2 confirms filename/page hover and preserved passage line breaks. Opening the cited source from a marker remains an interaction enhancement. |
 | STK-032 | False "not in the material" refusals in follow-ups: a keyword hit doesn't steer the passage window; follow-up queries are diluted (T7 laws, T11 empresarios) | Follow-up refusal/window quality belongs to B-07; current-window tests exist but real-course acceptance is open. |

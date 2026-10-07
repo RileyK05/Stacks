@@ -132,7 +132,8 @@ def _quiz_markdown(title: str, content: dict[str, Any]) -> str:
             answer = question.get("expected") or ""
         else:
             answer = "ABCDEFGH"[question["answer"]]
-        lines.append(f"{number}. {answer}{explanation}")
+        label = question.get("part") or str(number)
+        lines.append(f"{label}. {answer}{explanation}")
     return "\n".join(lines)
 
 

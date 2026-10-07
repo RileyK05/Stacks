@@ -197,13 +197,15 @@ def delete_model(model_id: str) -> RuntimeView:
     model = user_models.find_model(model_id)
     if model is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown model: {model_id}")
-    if get_server().status().model_id == model_id:
-        get_server().stop()
+    # Refuse a file that is still downloading before stopping the server.
+    # Stopping first forgot the running model even when the delete was rejected.
     if model.local_path is None:
         try:
             model_store.delete_model(model)
         except ValueError as err:
             raise HTTPException(status.HTTP_409_CONFLICT, str(err)) from err
+    if get_server().status().model_id == model_id:
+        get_server().stop()
     if model.added_by_user:
         user_models.remove(model_id)
     return _overview()

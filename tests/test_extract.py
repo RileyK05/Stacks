@@ -116,9 +116,11 @@ def test_markdown_sections_slice_correct_text() -> None:
 def test_line_locators_partition_text() -> None:
     text = "line 1\nline 2\nline 3\nline 4\n"
     spans = _line_locators(text, block_size=2)
-    assert spans[0].label == "lines 1-2"
-    assert spans[1].label == "lines 3-4"
+    assert [span.label for span in spans] == ["lines 1-2", "lines 3-4"]
     assert spans[-1].end == len(text)
+    hello = _line_locators("hello\n")
+    assert [span.label for span in hello] == ["lines 1-1"]
+    assert hello[0].end == len("hello\n")
 
 
 def test_bom_is_stripped_not_located() -> None:

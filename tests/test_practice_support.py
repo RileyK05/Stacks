@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from src.backend.common import conversations_repo, provider
 from src.backend.common.db import connection
+from src.backend.common.schemas.learning import PracticeQuestion
 from src.backend.student_model import learning, practice_support
 from src.backend.student_model.archive import export_learning, import_learning
 from tests.factories import add_chunk, make_course
@@ -45,6 +46,138 @@ def help_url(course, suite, index=0):
 
 def rating_url(course, suite, index=0):
     return f"/courses/{course}/practice/{suite}/questions/{index}/feedback"
+
+
+def test_short_answer_help_includes_the_shared_stem(client, monkeypatch) -> None:
+    course = make_course()
+    chunk = add_chunk(
+        course.course_id, "Linear maps preserve addition and scaling.", label="page 8"
+    )
+    with connection() as conn:
+        suite = learning.create_suite(
+            conn,
+            course.course_id,
+            "Parts",
+            [
+                PracticeQuestion(
+                    format="short_answer",
+                    stem="A map sends every vector to twice itself.",
+                    prompt="What two operations do linear maps preserve?",
+                    expected="Addition and scaling.",
+                    points=["preserve addition", "preserve scaling"],
+                    sources=[1],
+                    topic="Linear maps",
+                    capability="explanation",
+                )
+            ],
+            (chunk,),
+            {"by": "test", "batch": str(uuid4())},
+        )
+        conn.commit()
+    calls = stub(monkeypatch)
+    response = client.post(
+        help_url(course.course_id, suite),
+        json={"run_id": str(uuid4()), "kind": "hint"},
+    )
+    assert response.status_code == 200, response.text
+    prompt = calls[0][1]
+    assert "A map sends every vector to twice itself." in prompt
+    assert "What two operations do linear maps preserve?" in prompt
+    assert "Addition and scaling." not in prompt
+
+
+def test_two_word_required_point_cannot_appear_in_a_hint(client, monkeypatch) -> None:
+    course = make_course()
+    chunk = add_chunk(
+        course.course_id, "Linear maps preserve addition and scaling.", label="page 8"
+    )
+    with connection() as conn:
+        suite = learning.create_suite(
+            conn,
+            course.course_id,
+            "Points",
+            [
+                PracticeQuestion(
+                    format="short_answer",
+                    prompt="What two operations do linear maps preserve?",
+                    expected="Addition and scaling.",
+                    points=["preserve addition", "preserve scaling"],
+                    sources=[1],
+                    topic="Linear maps",
+                    capability="explanation",
+                )
+            ],
+            (chunk,),
+            {"by": "test", "batch": str(uuid4())},
+        )
+        conn.commit()
+    stub(monkeypatch, "Linear maps preserve addition. [1]")
+    response = client.post(
+        help_url(course.course_id, suite),
+        json={"run_id": str(uuid4()), "kind": "hint"},
+    )
+    assert response.status_code == 422
+    assert "withheld" in response.json()["detail"]
+
+
+def test_excluded_short_answer_explain_omits_the_key(client, monkeypatch) -> None:
+    course = make_course()
+    chunk = add_chunk(
+        course.course_id, "Linear maps preserve addition and scaling.", label="page 8"
+    )
+    with connection() as conn:
+        suite = learning.create_suite(
+            conn,
+            course.course_id,
+            "Explain",
+            [
+                PracticeQuestion(
+                    format="short_answer",
+                    prompt="What two operations do linear maps preserve?",
+                    expected="Addition and scaling.",
+                    points=["preserve addition", "preserve scaling"],
+                    sources=[1],
+                    topic="Linear maps",
+                    capability="explanation",
+                )
+            ],
+            (chunk,),
+            {"by": "test", "batch": str(uuid4())},
+        )
+        conn.commit()
+    calls = stub(
+        monkeypatch, "The source describes the defining properties of a linear map. [1]"
+    )
+    run = uuid4()
+    submitted = _submit(
+        client,
+        course.course_id,
+        suite,
+        ["I am not sure."],
+        run_id=run,
+    )
+    assert submitted.status_code == 200, submitted.text
+    shown = client.post(
+        help_url(course.course_id, suite),
+        json={"run_id": str(run), "kind": "explain"},
+    )
+    assert shown.status_code == 200, shown.text
+    assert '"expected": "Addition and scaling."' in calls[-1][1]
+    excluded = client.patch(
+        f"/courses/{course.course_id}/practice/{suite}/questions/0",
+        json={"answer": None, "reason": "ambiguous"},
+    )
+    assert excluded.status_code == 200, excluded.text
+    hidden = client.post(
+        help_url(course.course_id, suite),
+        json={"run_id": str(run), "kind": "explain"},
+    )
+    assert hidden.status_code == 200, hidden.text
+    prompt = calls[-1][1]
+    assert "Excluded; key withheld pending review" in prompt
+    assert '"expected"' not in prompt
+    assert '"points"' not in prompt
+    assert "Addition and scaling." not in prompt
 
 
 def test_hint_is_grounded_cached_and_reload_cannot_hide_assistance(

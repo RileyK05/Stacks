@@ -20,12 +20,29 @@ class CredentialStoreUnavailableError(RuntimeError):
         )
 
 
+def _no_keyring(err: BaseException) -> bool:
+    """True when the machine has no credential backend at all.
+
+    A locked or failing store is a different error: that key may exist,
+    so the caller must not be told it is missing.
+    """
+    try:
+        from keyring.errors import NoKeyringError
+    except ImportError:
+        return True
+    return isinstance(err, NoKeyringError)
+
+
 def get_api_key(provider: str) -> str | None:
     try:
         import keyring
 
         return keyring.get_password(SERVICE_NAME, provider)
+    except ImportError:
+        return None
     except Exception as err:
+        if _no_keyring(err):
+            return None
         logger.exception("could not read the %s key from the OS keyring", provider)
         raise CredentialStoreUnavailableError() from err
 

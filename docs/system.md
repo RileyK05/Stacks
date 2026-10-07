@@ -105,8 +105,10 @@ passages and queue active sources to rebuild omitted search data.
 Desktop activation (`src/backend/activation.py`, B-14) completes recovery: the
 shell stops the backend, runs the one-shot `stacks-backend --activate <id>`, and
 restarts the backend against the activated library. Activation re-verifies the
-archive, migrates the restored schema, and swaps the database and `raw/` into
-the live data folder while no writer is open. The previous library is moved
+archive, migrates the restored schema, and swaps the configured database and
+the configured source-file folder (normally `<data dir>/raw`) while no writer
+is open. A database path outside the data folder is that file, not a second
+`course_assistant.db` inside the data folder. The previous library is moved
 aside first, so a failure during the switch restores it and the app restarts
 against the unchanged library. Downloaded models, the llama.cpp runtime, and
 Office certificate state are machine setup and are left in place. The last
@@ -170,6 +172,7 @@ aids that return original supporting passages, never a replacement factual
 index. Every support passage must still be eligible under the selected sources.
 Missing/excluded support suppresses the whole aid. Toggle/version changes take
 effect on the next request; generated lookup disables answer-cache reuse.
+A reply withheld because it cited a passage it was not given is not cached.
 Student-memory panels and work-document captures are not indexed as course facts.
 
 Two eval harnesses record whether behavior regressed. The retrieval eval
@@ -396,7 +399,8 @@ On Windows and macOS, connecting Office performs per-user setup:
 4. Start the pane host alongside the desktop backend.
 
 The pane calls `/office/courses`, `/office/assist`, and `/office/read` on the
-same HTTPS origin. Host adapters use Word, Excel, or PowerPoint APIs with the
+same HTTPS origin. An answer that cites a passage it was not given is refused
+with 422, as graded work is. Host adapters use Word, Excel, or PowerPoint APIs with the
 Office Common API as fallback. Document mutations always go through Office.js;
 the backend never rewrites a `.docx`, `.xlsx`, or `.pptx`.
 
@@ -482,8 +486,9 @@ Experiments that depended on the changed key reopen for a fresh check.
 
 **Hint** is available before complete-test submission. Its versioned prompt
 receives the question and cited passages, without options or the answer key,
-and asks for a short reasoning question. Exact multiword option echoes are
-withheld; semantic answer leakage still requires evaluation. Successful help
+and asks for a short reasoning question. Exact option echoes of three or more
+words are withheld, and so is a required point of two or more words. Semantic
+answer leakage still requires evaluation. Successful help
 is committed before delivery. Its question fingerprint marks subsequent answers
 assisted even after reload, a new attempt ID, or an unchecked help box. Generating
 help does not itself create a capability observation or teaching-method success.
@@ -492,7 +497,9 @@ after submission. Failed/withheld help can be retried and creates no help eviden
 
 **Explain** requires a completed session and uses its selected answer plus the
 current corrected key. Excluded questions get a separate concept-explanation
-prompt with the key withheld. Cache identity includes the current assessment;
+prompt with the key withheld. An excluded short answer omits the expected
+answer and the required points from that prompt, not only the multiple-choice
+key. Cache identity includes the current assessment;
 a key changed during generation invalidates that reply. Both help types cite
 only that question's saved passages. Valid declared source numbers receive
 visible citation markers when the model omits inline markers; invalid numbers
@@ -856,19 +863,34 @@ Explicit numeric or one-through-twenty quiz counts set the generation schema's
 count within the existing 20-question workspace limit. Verified repairs are not
 clipped to three. An incomplete requested suite is withheld with an honest count;
 it does not become a practice suite. Title-only documents/decks are withheld.
+A quiz whose questions were all filtered out is not stored as a teaching event,
+and that message cites no passages. Asking for a quiz, slides, or study guide
+"from my notes" is that artifact; "give me the notes" still retrieves uploaded
+notes. A proposal that changes a quiz shows the questions, and a quiz edit keeps
+short-answer fields, topic, and capability.
 
 Exam-style practice sits on the Artifacts tab beside mind maps. A student uploads
 a PDF or photo of a quiz or exam. Stacks reads that file for topics, difficulty,
 and question formats, then writes new questions from retrieved course passages.
 The upload is not stored as a source, its text is not kept on the artifact, and
-its original questions are not answered. Generated prompts, stems, options, and
-expected answers that repeat a six-word run from the upload are dropped. Multiple
-choice stays an index match. Short answers, including parts that share one stem,
-are correct only when every required point's content words appear in the
-student's answer. A paraphrase that drops those source terms is incomplete.
+its original questions are not answered. Generated prompts, stems, options,
+expected answers, and required points that repeat a six-word run from the upload
+are dropped or removed; a copied explanation is cleared and a copied topic is
+replaced. A nested part keeps the parent item's sources, topic, and explanation
+when the part omits them. A scanned PDF page that cannot be read is skipped
+instead of failing the upload. A photo that Pillow refuses as a decompression
+bomb is rejected, and that check does not change Pillow's process-wide limit.
+Multiple choice stays an index match. Short answers, including parts that share
+one stem, are correct only when every required point is covered: its content
+words appear, a one- or two-digit number in the point matches, any "no" or
+"not" in the point appears, and a "no" or "not" in the three words before a
+match does not flip a positive point. The same check decides whether a new
+exam-style point or expected answer is grounded in the cited passage. Hint and
+explain see that shared stem. A paraphrase that drops those source terms is
+incomplete.
 Points are checked mechanically, without a model judge. Question quality here is
 structural: citations, grounded points, and overlap with the upload. A live model
-evaluation of these questions has not been run.
+evaluation of these questions has not been run (docket F-20).
 
 Study sheets route to documents. Budgeted whole-unit output recovery is implemented
 (§8); long-material splitting/checkpoints remain planned in `plan-notebook.md`.
@@ -885,7 +907,8 @@ Provider connections, user-model catalog mutations and conversation sequence
 allocation serialize their read/write operations. Model catalog IDs are selected
 inside the write transaction; hashing/network work happens beforehand. A failed
 OS keychain read is distinct from an absent key; desktop/Office APIs return an
-actionable 503. SQLite and the OS credential store remain separate resources.
+actionable 503. A machine with no keyring backend has no saved keys, so
+provider settings still load and local models stay usable. SQLite and the OS credential store remain separate resources.
 Migration 020 records usage locality and excludes known local calls from cloud
 totals. Each HTTP completion records reported usage before output validation or
 a retry; budget checks remain a soft stop, not concurrent spending reservations.

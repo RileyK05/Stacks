@@ -49,6 +49,15 @@ def feedback(
     ]
 
 
+def _asked(question: PracticeQuestion) -> str:
+    """The question the student sees, including a shared multi-part stem."""
+    stem = question.stem.strip()
+    prompt = question.prompt.strip()
+    if not stem:
+        return prompt
+    return f"{stem}\n\n{prompt}"
+
+
 def _question(test: PracticeSuite, index: int) -> PracticeQuestion:
     if not 0 <= index < len(test.questions):
         raise LookupError("question not found")
@@ -193,7 +202,7 @@ def help_with(
                 "this question has no saved source passages to support help"
             )
         parts: dict[str, Any] = {
-            "question": question.prompt,
+            "question": _asked(question),
             "topic": question.topic,
             "passages": {str(n): str(e["text"]) for n, e in passages.items()},
         }
@@ -208,8 +217,11 @@ def help_with(
             if question.format == "short_answer":
                 written = run.answers[index]
                 parts["student_answer"] = written if isinstance(written, str) else ""
-                parts["expected"] = question.expected
-                parts["points"] = question.points
+                if run.results[index] is None:
+                    parts["assessment"] = "Excluded; key withheld pending review"
+                else:
+                    parts["expected"] = question.expected
+                    parts["points"] = question.points
             else:
                 picked = run.answers[index]
                 if type(picked) is not int:
@@ -218,13 +230,10 @@ def help_with(
                     )
                 parts["options"] = question.options
                 parts["student_answer"] = question.options[picked]
-            if question.format == "short_answer":
-                if run.results[index] is None:
+                if key is not None:
+                    parts["current_key"] = question.options[key]
+                else:
                     parts["assessment"] = "Excluded; key withheld pending review"
-            elif key is not None:
-                parts["current_key"] = question.options[key]
-            else:
-                parts["assessment"] = "Excluded; key withheld pending review"
             opinions = [
                 {"target": f.target, "rating": f.rating, "reason": f.reason}
                 for f in feedback(conn, course_id, suite_id)
@@ -285,10 +294,14 @@ def help_with(
                 if question.format == "short_answer"
                 else question.options
             )
+            # A required point is often two words ("preserve addition").
+            # One-word multiple-choice options stay unguarded so a hint can
+            # still use ordinary course words.
+            minimum = 2 if question.format == "short_answer" else 3
             if any(
                 " ".join(re.findall(r"\w+", option.casefold())) in normalized
                 for option in guarded
-                if len(re.findall(r"\w+", option)) >= 3
+                if len(re.findall(r"\w+", option)) >= minimum
             ):
                 raise ValueError("the hint revealed an answer; it was withheld")
         metadata.update(

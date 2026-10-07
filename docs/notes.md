@@ -3972,3 +3972,56 @@ correct only when every point's content words appear in the student's words.
 That check is mechanical, so a paraphrase that drops the source's terms is
 incomplete. No new generation task and no SQL migration. Prompt policy is 44.
 A live model evaluation of the generated questions has not been run.
+
+## 2026-10-06 — Exam-style review fixes; round-3 items enter the docket
+
+Review of the exam-style work tightened the copy filter (copied explanations
+are cleared, copied topics replaced) and separated unreadable model output from
+copy rejections; one unreadable scan page is now skipped instead of failing the
+upload. The quiz editor authors short answers and multi-format quizzes. Tests
+cover scanned-PDF OCR, size/text rejections, quiz export with stems and short
+answers, and learning-archive round-trips of written answers. The round-3
+retest's R3-NEW-1…17 are now docket rows (statuses from `f595461`, awaiting
+verification), which resolves the report's dangling references; the report
+itself remains `docs/RETEST-round3.md` (untracked evidence). Exam-style question
+quality stays structural only; live model evaluation is docket F-20.
+
+## 2026-10-06 — Bug sweep of exam-style practice and short answers
+
+A full sweep found seven defects in the new short-answer path. Grading ignored
+"no" and "not", so a negated required point was marked covered. Blank lines in
+the required-points editor counted toward the six-point cap and rejected a
+valid quiz. Nested multi-part items dropped the parent citation, topic, and
+explanation. A required point copied from the upload stayed as the grading key.
+An unreadable photo raised Pillow's decompression error as a server failure and
+left a lower process-wide pixel limit behind. Hint and explain omitted a shared
+stem. Quiz Markdown numbered the answer key while the questions used part
+letters. Each is fixed in code and awaiting a retest (docket SW-01 through
+SW-07). Live model quality is still F-20.
+
+## 2026-10-06 — Bug sweep, continued
+
+The same sweep found another thirteen defects after the short-answer pass.
+Grading still accepted "do not preserve addition" for the point "preserve
+addition", and it dropped one- and two-digit numbers. Exam-style grounding
+used that loose overlap. An excluded short answer's explanation included the
+key, and a hint could quote a two-word required point. "Make a quiz from my
+notes" was treated as a request to fetch notes. A quiz filtered to nothing
+was recorded as a lesson. A citation refusal was cached. An Office answer
+with a dangling citation was a server error. Deleting a model that was still
+verifying stopped the server before the delete was refused. Activation with
+a database outside the data folder swapped the wrong files. Shutdown could
+restore a stale active model. A trailing newline inflated the last line-range
+label by one. Quiz proposals hid every question, and a quiz edit's schema
+dropped short-answer keys. Each is fixed in code and awaiting a retest
+(docket SW-08 through SW-20). Live model quality is still F-20. The proposal
+preview was not opened in a browser.
+
+## 2026-10-06 — Two open docket bugs
+
+The course page stopped asking about an in-progress source after 15 minutes,
+which is shorter than a long scan. It now keeps polling until the source
+settles, the page closes, or several fetches fail. A machine with no keyring
+backend made the provider settings request fail; that case is an absent key,
+so the settings page and local models still load. A locked keychain is still
+a 503, because the key may exist. Docket NEW-8 and NEW-9.

@@ -149,6 +149,16 @@ _DOCUMENT_REQUEST = re.compile(
 # student already uploaded, not a request to generate a new document. A
 # definite article or possessive before "notes" is the retrieval signal.
 _RETRIEVAL_NOTES = re.compile(r"\b(?:the|my|our)\s+notes\b", re.IGNORECASE)
+# The same sentence can still ask for a new artifact: "Make a quiz from my
+# notes" is a quiz. Bare "notes" is not listed here, so retrieval still wins
+# when notes are the only thing named.
+_OTHER_ARTIFACT = re.compile(
+    r"\b(?:quiz(?:zes)?|flash ?cards?|slides?|slide deck|presentation|"
+    r"study guide|(?:study|cheat|review) ?sheet|essay|paper|document|"
+    r"table|spreadsheet|mind[ -]?map|concept[ -]?map|topic[ -]?map|"
+    r"outline|code)\b",
+    re.IGNORECASE,
+)
 
 
 _SMALL_TALK = re.compile(
@@ -185,7 +195,7 @@ def classify_intent(question: str) -> Intent:
         return Intent.CHAT
     if not _ARTIFACT_REQUEST.search(question):
         return Intent.ANSWER
-    if _RETRIEVAL_NOTES.search(question):
+    if _RETRIEVAL_NOTES.search(question) and not _OTHER_ARTIFACT.search(question):
         return Intent.ANSWER
     if _DOCUMENT_REQUEST.search(question):
         return Intent.DOCUMENT
@@ -413,6 +423,8 @@ class Composed:
     # in the chunk it named. Rejected quotes are never shown.
     quotes: tuple[quote_anchors.Quote, ...] = ()
     rejected_quotes: tuple[quote_anchors.Quote, ...] = ()
+    # The text is a citation refusal, not an answer worth replaying from cache.
+    withheld: bool = False
 
 
 def numbered_passages(candidates: tuple[Candidate, ...]) -> str:
@@ -1071,13 +1083,18 @@ def compose_answer(
         instruction = "tutor_steer" if intent is Intent.GRADED else "tutor_answer"
         prompt = grounded_prompt(load_prompt(instruction) + teaching, material)
         text = generate("tutor_answer", prompt)
-        if any(n < 1 or n > len(candidates) for n in cited_numbers(text)):
+        out_of_range = any(n < 1 or n > len(candidates) for n in cited_numbers(text))
+        if out_of_range:
             text = (
                 "The answer referred to source material it was not given. "
                 "Try again; this reply was withheld."
             )
         return Composed(
-            strip_fence_echo(text), intent, structured=False, candidates=candidates
+            strip_fence_echo(text),
+            intent,
+            structured=False,
+            candidates=candidates,
+            withheld=out_of_range,
         )
 
     prompt = grounded_prompt(
@@ -1266,7 +1283,8 @@ def _compose_quoted(
             "tutor_answer",
             grounded_prompt(load_prompt("tutor_answer") + teaching, material),
         )
-        if any(n < 1 or n > len(candidates) for n in cited_numbers(text)):
+        out_of_range = any(n < 1 or n > len(candidates) for n in cited_numbers(text))
+        if out_of_range:
             text = (
                 "The answer referred to source material it was not given. "
                 "Try again; this reply was withheld."
@@ -1276,13 +1294,15 @@ def _compose_quoted(
             Intent.ANSWER,
             structured=False,
             candidates=candidates,
+            withheld=out_of_range,
         )
     verified, rejected = quote_anchors.verify(
         quote_anchors.parse_quotes(parsed.get("quotes") if parsed else None),
         tuple(candidate.text for candidate in candidates),
     )
     text = quote_anchors.anchor_citations(strip_fence_echo(answer.strip()), verified)
-    if any(n < 1 or n > len(candidates) for n in cited_numbers(text)):
+    out_of_range = any(n < 1 or n > len(candidates) for n in cited_numbers(text))
+    if out_of_range:
         text = (
             "The answer referred to source material it was not given. "
             "Try again; this reply was withheld."
@@ -1294,4 +1314,5 @@ def _compose_quoted(
         candidates=candidates,
         quotes=tuple(verified),
         rejected_quotes=tuple(rejected),
+        withheld=out_of_range,
     )

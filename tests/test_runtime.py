@@ -227,6 +227,67 @@ def test_delete_model_check_and_removal_are_atomic(
     assert observed["pop_locked"] is True
 
 
+def test_deleting_a_model_that_is_still_verifying_does_not_stop_the_server(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.backend.api import runtime as runtime_api
+    from src.backend.common import settings_repo
+    from src.backend.runtime.model_store import DownloadState
+
+    stopped: list[bool] = []
+
+    class _Status:
+        model_id = "minicpm5-2b"
+
+    class _Server:
+        def status(self) -> _Status:
+            return _Status()
+
+        def stop(self, *, forget: bool = True) -> None:
+            stopped.append(forget)
+
+    monkeypatch.setattr(runtime_api, "get_server", lambda: _Server())
+    monkeypatch.setattr(
+        model_store,
+        "_downloads",
+        {
+            "minicpm5-2b": DownloadState(
+                model_id="minicpm5-2b", total=8, status="verifying"
+            )
+        },
+    )
+    settings_repo.put_setting(server.ACTIVE_MODEL_SETTING, "minicpm5-2b")
+    response = client.delete("/runtime/models/minicpm5-2b")
+    assert response.status_code == 409, response.text
+    assert stopped == []
+    assert settings_repo.get_setting(server.ACTIVE_MODEL_SETTING) == "minicpm5-2b"
+
+
+def test_shutdown_keeps_a_model_chosen_while_stopping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.backend.common import settings_repo
+    from src.backend.runtime import supervisor
+
+    settings_repo.put_setting(server.ACTIVE_MODEL_SETTING, "first")
+
+    class _Server:
+        def stop(self, *, forget: bool = True) -> None:
+            assert forget is False
+            settings_repo.put_setting(server.ACTIVE_MODEL_SETTING, "second")
+
+    monkeypatch.setattr(supervisor, "get_server", lambda: _Server())
+    supervisor._stop_without_forgetting()
+    assert settings_repo.get_setting(server.ACTIVE_MODEL_SETTING) == "second"
+
+    kept = server.LlamaServer()
+    settings_repo.put_setting(server.ACTIVE_MODEL_SETTING, "kept")
+    kept.stop(forget=False)
+    assert settings_repo.get_setting(server.ACTIVE_MODEL_SETTING) == "kept"
+    kept.stop()
+    assert settings_repo.get_setting(server.ACTIVE_MODEL_SETTING) is None
+
+
 def test_external_copy_is_verified_once_then_remembered(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

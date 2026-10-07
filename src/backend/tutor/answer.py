@@ -383,9 +383,14 @@ def answer_question(
             item = item.model_copy(update={"practice_id": suite_id})
         items.append(item)
     answer.workspace_items = tuple(items)
+    # A withheld quiz replaced the reply. The passages belonged to questions
+    # the student will not see, so the message cites nothing and is not a lesson.
+    if answer.withheld and not items:
+        answer.chunk_ids = ()
     if (
         method
         and answer.chunk_ids
+        and not answer.withheld
         and not any(
             isinstance(item, (WorkspaceQuiz, WorkspaceMindMap)) for item in items
         )
@@ -405,6 +410,8 @@ def answer_question(
         cache is not None
         and not answer.fell_back_to_local
         and not answer.workspace_items
+        and not composed.withheld
+        and not answer.withheld
     ):
         answer_cache.store(
             conn,

@@ -64,6 +64,10 @@ def _candidates(count: int = 2) -> tuple[Candidate, ...]:
         # material, not a request to generate a new document.
         ("Give me the notes from Week 3", Intent.ANSWER),
         ("Show me my notes", Intent.ANSWER),
+        ("Make a quiz from my notes", Intent.QUIZ),
+        ("Create slides from the notes", Intent.SLIDES),
+        ("Write a study guide from my notes", Intent.DOCUMENT),
+        ("Make flashcards from our notes", Intent.QUIZ),
         # Graded work never gets a workspace item, whatever shape it names.
         ("Give me the filled-in answer sheet to submit", Intent.GRADED),
         ("Take this quiz for me", Intent.GRADED),

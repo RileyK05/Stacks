@@ -187,9 +187,13 @@ _FORMAT_HINTS: dict[str, str] = {
         '"notes": "..."}]}.'
     ),
     "quiz": (
-        'Return JSON: {"questions": [{"prompt": "...", "options": ["..."], '
-        '"answer": 0, "explanation": "...", "sources": [1]}]}; '
-        '"answer" is the index of the correct option.'
+        'Return JSON: {"questions": [{"format": "multiple_choice", '
+        '"prompt": "...", "stem": "", "part": "", "options": ["..."], '
+        '"answer": 0, "expected": "", "points": [], "explanation": "...", '
+        '"sources": [1], "topic": "", "capability": "recognition"}]}. '
+        'Use "short_answer" for a written question: options is empty, answer '
+        "is 0, expected is the answer, and points lists the required claims. "
+        "Copy topic and capability unless the request changes them."
     ),
     "flashcards": (
         'Return JSON: {"cards": [{"front": "...", "back": "...", "sources": [1]}]}.'
@@ -241,11 +245,30 @@ def _schema(kind: str, material_count: int) -> dict[str, Any] | None:
                 "questions": _string_array(
                     obj(
                         {
+                            "format": {
+                                "type": "string",
+                                "enum": ["multiple_choice", "short_answer"],
+                            },
                             "prompt": string,
+                            "stem": string,
+                            "part": string,
                             "options": _string_array(),
                             "answer": {"type": "integer", "minimum": 0},
+                            "expected": string,
+                            "points": _string_array(),
                             "explanation": string,
                             "sources": _string_array(number),
+                            "topic": string,
+                            "capability": {
+                                "type": "string",
+                                "enum": [
+                                    "recognition",
+                                    "explanation",
+                                    "application",
+                                    "counterexample",
+                                    "transfer",
+                                ],
+                            },
                         }
                     )
                 )

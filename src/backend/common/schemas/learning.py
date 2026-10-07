@@ -61,7 +61,9 @@ class PracticeQuestion(BaseModel):
     options: list[str] = Field(default_factory=list, max_length=8)
     answer: int = Field(default=0, ge=0)
     expected: str = Field(default="", max_length=5000)
-    points: list[str] = Field(default_factory=list, max_length=6)
+    # Blank lines from the editor sit between real points. They are removed
+    # below; the cap is the raw list, and six is the cap after cleaning.
+    points: list[str] = Field(default_factory=list, max_length=24)
     explanation: str = Field(default="", max_length=5000)
     sources: list[int] = Field(default_factory=list)
     topic: str = Field(default="", max_length=160)
@@ -74,9 +76,17 @@ class PracticeQuestion(BaseModel):
                 raise ValueError("a short answer has no options")
             if not self.expected.strip():
                 raise ValueError("a short answer needs an expected answer")
-            cleaned = [point.strip() for point in self.points if point.strip()]
+            cleaned: list[str] = []
+            for point in self.points:
+                if not isinstance(point, str):
+                    raise ValueError("a short answer needs required points")
+                text = point.strip()
+                if text:
+                    cleaned.append(text)
             if not cleaned or any(len(point) > 300 for point in cleaned):
                 raise ValueError("a short answer needs required points")
+            if len(cleaned) > 6:
+                raise ValueError("a short answer can have at most 6 required points")
             self.points = cleaned
             self.answer = 0
             return self

@@ -174,6 +174,78 @@ def test_sparse_workspace_marker_keeps_full_material_slot_mapping(client, monkey
     assert saved.evidence[2]["chunk_id"] == str(chunk_ids[2])
 
 
+def test_a_withheld_quiz_is_not_recorded_as_teaching(client, monkeypatch):
+    from src.backend.common.db import connection
+    from src.backend.retrieval import funnel, labels
+    from src.backend.retrieval.config import load_retrieval_policy
+    from src.backend.retrieval.funnel import Candidate, RetrievalResult
+    from src.backend.tutor import answer as tutor_answer
+    from src.backend.tutor.compose import Composed, Intent
+    from tests.factories import chunk_source_locator
+
+    course_id = UUID(
+        client.post("/courses", json={"name": "Filtered quiz"}).json()["course_id"]
+    )
+    chunk_ids = [
+        add_chunk(course_id, f"Course passage {index} explains a property.")
+        for index in range(1, 4)
+    ]
+    candidates = []
+    for index, chunk_id in enumerate(chunk_ids):
+        source_id, locator_id = chunk_source_locator(chunk_id)
+        candidates.append(
+            Candidate(
+                chunk_id=chunk_id,
+                source_id=source_id,
+                locator_id=locator_id,
+                chunk_index=index,
+                text=f"Course passage {index + 1} explains a property.",
+                layers=frozenset({"keyword"}),
+                rank=1.0,
+            )
+        )
+    all_candidates = tuple(candidates)
+    quiz = {
+        "type": "quiz",
+        "title": "Filtered",
+        "questions": [
+            {
+                "prompt": "Which property does passage three explain?",
+                "options": ["A property", "No property"],
+                "answer": 0,
+                "explanation": "Passage three explains a property.",
+                "sources": [3],
+            }
+        ],
+    }
+    text = "```workspace\n" + json.dumps(quiz) + "\n```"
+    monkeypatch.setattr(
+        funnel, "retrieve", lambda *args, **kwargs: RetrievalResult(all_candidates)
+    )
+    monkeypatch.setattr(labels, "attach_passage_context", lambda conn, items: items)
+    monkeypatch.setattr(
+        tutor_answer,
+        "compose_answer",
+        lambda *args, **kwargs: Composed(
+            text, Intent.QUIZ, True, candidates=all_candidates
+        ),
+    )
+    monkeypatch.setattr(learning, "allocate_questions", lambda *args, **kwargs: [])
+    with connection() as conn:
+        result = tutor_answer.answer_question(
+            conn,
+            course_id,
+            "Make a quiz about passage three",
+            load_retrieval_policy(),
+        )
+        events = inspection.rows(conn, "teaching_events", course_id=course_id)
+        conn.commit()
+    assert result.workspace_items == ()
+    assert result.chunk_ids == ()
+    assert result.withheld
+    assert events == []
+
+
 def test_submission_retry_is_idempotent_and_conflicting_answers_are_rejected(client):
     course = make_course()
     chunk = add_chunk(course.course_id, "Course evidence.")

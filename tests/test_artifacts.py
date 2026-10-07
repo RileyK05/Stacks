@@ -544,6 +544,70 @@ def test_a_scoped_edit_changes_only_its_section(
     assert body["content"]["markdown"] == "# One\nfirst\n\n# Two\nshorter\n"
 
 
+def test_a_quiz_edit_keeps_a_short_answer_key(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    course_id, _chunks = _course(client)
+    quiz = _create(client, course_id, "quiz", title="Maps")
+    saved = _save(
+        client,
+        course_id,
+        quiz,
+        content={
+            "questions": [
+                {
+                    "format": "short_answer",
+                    "prompt": "What do linear maps preserve?",
+                    "options": [],
+                    "answer": 0,
+                    "expected": "They preserve addition and scaling.",
+                    "points": ["preserve addition", "preserve scaling"],
+                    "explanation": "The passage names both.",
+                    "sources": [],
+                    "topic": "Linear maps",
+                    "capability": "explanation",
+                }
+            ]
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    quiz = saved.json()
+    reply = {
+        "questions": [
+            {
+                "format": "short_answer",
+                "prompt": "Which two operations do linear maps preserve?",
+                "stem": "",
+                "part": "",
+                "options": [],
+                "answer": 0,
+                "expected": "They preserve addition and scaling.",
+                "points": ["preserve addition", "preserve scaling"],
+                "explanation": "Linearity means preserving addition and scaling [1].",
+                "sources": [1],
+                "topic": "Linear maps",
+                "capability": "explanation",
+            }
+        ]
+    }
+    calls = configure_test_provider(monkeypatch, json.dumps(reply))
+    response = client.post(
+        f"/courses/{course_id}/artifacts/{quiz['artifact_id']}/propose-edit",
+        json={"request": "ask which two operations"},
+    )
+    assert response.status_code == 200, response.text
+    question = response.json()["content"]["questions"][0]
+    assert question["format"] == "short_answer"
+    assert question["points"] == ["preserve addition", "preserve scaling"]
+    assert question["expected"] == "They preserve addition and scaling."
+    assert question["capability"] == "explanation"
+    assert "short_answer" in str(calls[-1]["prompt"])
+    schema = artifact_edit._schema("quiz", 1)
+    assert schema is not None
+    properties = schema["properties"]["questions"]["items"]["properties"]
+    assert {"format", "expected", "points", "capability"} <= set(properties)
+
+
 def test_a_sheet_edit_uses_structured_output(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

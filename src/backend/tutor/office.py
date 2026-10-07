@@ -74,6 +74,10 @@ class NotAllowedError(RuntimeError):
     never does for the student."""
 
 
+class UngroundedAnswerError(ValueError):
+    """The model cited a passage number it was not given."""
+
+
 @dataclass(frozen=True)
 class Citation:
     """One cited chunk: what the model read and where it came from."""
@@ -260,7 +264,7 @@ def answer(
     text = strip_fence_echo(generation.text)
     markers = cited_numbers(text)
     if any(number < 1 or number > len(candidates) for number in markers):
-        raise ValueError("the answer cited source material it was not given")
+        raise UngroundedAnswerError("the answer cited source material it was not given")
     used = dataclasses.replace(result, candidates=tuple(candidates))
     stored = trace.record_trace(
         conn,

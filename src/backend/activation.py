@@ -12,7 +12,8 @@ so the swap must happen with the backend stopped. The desktop shell runs
 `stacks-backend --activate <id>`, waits for it to exit, then restarts the
 normal backend against the now-active data folder.
 
-Only the database and `raw/` are swapped. The data folder's other
+Only the configured database and the configured source-file folder
+(normally `<data dir>/raw`) are swapped. The data folder's other
 contents — downloaded models, the llama.cpp runtime, Office certificate
 state — are machine setup, not course data, and are left in place.
 """
@@ -94,14 +95,27 @@ def _stamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _live_database(data_dir: Path) -> Path:
-    """Where the active database file actually lives. Normally
-    `course_assistant.db`; tests and the CLI may point DATABASE_PATH at a
-    different name, so honor the configured basename."""
-    configured = Path(get_settings().database_path)
-    if configured.parent == data_dir:
-        return configured
-    return data_dir / DATABASE_FILENAME
+def _live_database(_data_dir: Path) -> Path:
+    """The database the app is serving.
+
+    A custom DATABASE_PATH is that file even when it sits outside the data
+    directory. Falling back to ``course_assistant.db`` left the real library
+    in place and migrated the wrong file.
+    """
+    return Path(get_settings().database_path)
+
+
+def _raw_dir(data_dir: Path) -> Path:
+    """The folder source files are served from. Normally `<data dir>/raw`."""
+    raw = Path(get_settings().storage_root)
+    root = data_dir.resolve()
+    resolved = raw.resolve()
+    if resolved == root or resolved in root.parents:
+        raise ActivationError(
+            "source files are stored in the data folder itself; "
+            "choose a folder inside it before activating a backup"
+        )
+    return raw
 
 
 def _database_files(data_dir: Path) -> list[Path]:
@@ -181,18 +195,20 @@ def activate_backup(
     # Quiescent: fold the WAL, then move the current library aside. A
     # rename within one directory is atomic, so if anything below fails,
     # moving it back fully restores the prior state.
+    raw_dir = _raw_dir(root)
     _checkpoint_and_close(root)
     live_db = _live_database(root)
     had_db = live_db.exists()
     if had_db:
         _move_database(live_db, rollback / live_db.name)
-    raw_dir = root / "raw"
     if raw_dir.exists():
         raw_dir.replace(rollback / "raw")
 
     try:
+        live_db.parent.mkdir(parents=True, exist_ok=True)
         _move_database(staging / DATABASE_FILENAME, live_db)
         if (staging / "raw").exists():
+            raw_dir.parent.mkdir(parents=True, exist_ok=True)
             (staging / "raw").replace(raw_dir)
         migrate()
         _verify(live_db)
@@ -233,12 +249,16 @@ def _restore_rollback(root: Path, rollback: Path, had_db: bool) -> None:
     restored before the error propagates."""
     for stray in _database_files(root):
         stray.unlink(missing_ok=True)
-    shutil.rmtree(root / "raw", ignore_errors=True)
+    raw_dir = _raw_dir(root)
+    if raw_dir.exists():
+        shutil.rmtree(raw_dir, ignore_errors=True)
     live_db = _live_database(root)
     if had_db and (rollback / live_db.name).exists():
+        live_db.parent.mkdir(parents=True, exist_ok=True)
         _move_database(rollback / live_db.name, live_db)
     if (rollback / "raw").exists():
-        (rollback / "raw").replace(root / "raw")
+        raw_dir.parent.mkdir(parents=True, exist_ok=True)
+        (rollback / "raw").replace(raw_dir)
     # Best effort: the database file is already back in place, so a
     # migration retry failure here must not mask the original error.
     with suppress(Exception):

@@ -315,6 +315,9 @@ def _line_of(line_starts: list[int], offset: int) -> int:
 def _line_locators(text: str, *, block_size: int = 80) -> tuple[LocatorSpan, ...]:
     spans: list[LocatorSpan] = []
     line_starts = [0] + [match.end() for match in re.finditer(r"\n", text)]
+    # A trailing newline's end offset is the end of the file, not another line.
+    if len(line_starts) > 1 and line_starts[-1] == len(text):
+        line_starts.pop()
     total_lines = len(line_starts)
     for block_start in range(0, total_lines, block_size):
         block_end = min(block_start + block_size, total_lines)

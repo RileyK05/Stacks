@@ -153,8 +153,8 @@ def test_supervisor_survives_a_transient_tick_failure(monkeypatch):
                     raise sqlite3.OperationalError("database is busy")
                 asyncio_loop.call_soon_threadsafe(stop.set)
 
-            def stop(self):
-                stopped.append(True)
+            def stop(self, *, forget: bool = True) -> None:
+                stopped.append(forget)
 
         asyncio_loop = asyncio.get_running_loop()
         monkeypatch.setattr(supervisor, "get_server", lambda: Manager())
@@ -165,7 +165,7 @@ def test_supervisor_survives_a_transient_tick_failure(monkeypatch):
 
     asyncio.run(scenario())
     assert calls == ["tick", "tick"]
-    assert stopped == [True]
+    assert stopped == [False]
 
 
 def test_null_usage_does_not_discard_a_successful_model_response(monkeypatch):

@@ -56,15 +56,8 @@ async def run_forever(stop: asyncio.Event) -> None:
 
 def _stop_without_forgetting() -> None:
     """Stop the process on shutdown but keep the active-model setting, so
-    the next launch resumes it (unlike an explicit Stop from the UI)."""
-    server = get_server()
-    try:
-        remembered = settings_repo.get_setting(ACTIVE_MODEL_SETTING)
-    except Exception:
-        logger.exception("could not read the active model during shutdown")
-        remembered = None
-    try:
-        server.stop()
-    finally:
-        if remembered:
-            settings_repo.put_setting(ACTIVE_MODEL_SETTING, remembered)
+    the next launch resumes it (unlike an explicit Stop from the UI).
+
+    The setting is left as it is. Writing back a value read before stop()
+    replaced a model the user switched to while the process was exiting."""
+    get_server().stop(forget=False)

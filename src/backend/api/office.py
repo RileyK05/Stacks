@@ -296,6 +296,8 @@ def assist(request: AssistRequest) -> AssistResult:
             conn.commit()
     except office_tutor.NotAllowedError as err:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(err)) from err
+    except office_tutor.UngroundedAnswerError as err:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(err)) from err
     except office_tutor.NothingRelevantFoundError as err:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(err)) from err
     except provider.ProviderUnavailableError as err:

@@ -30,6 +30,34 @@ def test_unavailable_keychain_is_not_reported_as_missing(
             REAL_DELETE("test")
 
 
+def test_missing_keyring_backend_is_an_absent_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from keyring.errors import NoKeyringError
+
+    def missing(*args: object, **kwargs: object) -> None:
+        raise NoKeyringError("No recommended backend was available.")
+
+    monkeypatch.setattr(keyring, "get_password", missing)
+    monkeypatch.setattr(secrets, "get_api_key", REAL_GET)
+    assert REAL_GET("openai") is None
+
+
+def test_providers_load_when_no_keyring_backend_is_installed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from keyring.errors import NoKeyringError
+
+    def missing(*args: object, **kwargs: object) -> None:
+        raise NoKeyringError("No recommended backend was available.")
+
+    monkeypatch.setattr(keyring, "get_password", missing)
+    monkeypatch.setattr(secrets, "get_api_key", REAL_GET)
+    response = client.get("/settings/providers")
+    assert response.status_code == 200, response.text
+    assert response.json()["presets"]
+
+
 def test_credential_error_returns_actionable_http_status(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

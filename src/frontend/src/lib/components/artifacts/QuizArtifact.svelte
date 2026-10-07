@@ -43,6 +43,23 @@
     onchange();
   }
 
+  function setFormat(index: number, format: 'multiple_choice' | 'short_answer') {
+    const q = quiz.questions[index];
+    if ((q.format ?? 'multiple_choice') === format) return;
+    q.format = format;
+    q.answer = 0;
+    if (format === 'short_answer') {
+      q.options = [];
+      q.expected = q.expected || 'Expected answer';
+      q.points = q.points?.length ? q.points : ['Required point'];
+    } else {
+      q.options = ['Option A', 'Option B'];
+      q.expected = '';
+      q.points = [];
+    }
+    onchange();
+  }
+
   function removeQuestion(index: number) {
     quiz.questions.splice(index, 1);
     onchange();
@@ -66,6 +83,7 @@
 </script>
 
 <div class="flex flex-col gap-4">
+  {#if editable || practice}
   <div class="flex items-center gap-1 self-start rounded-lg border border-line bg-surface p-0.5 shadow-card">
     {#each [['take', 'Take quiz'], ['edit', 'Edit questions']] as [value, label] (value)}
       <button
@@ -80,6 +98,7 @@
       </button>
     {/each}
   </div>
+  {/if}
 
   {#if quiz.questions.length === 0}
     <p class="rounded-xl border border-dashed border-line-strong p-6 text-center text-sm text-muted">
@@ -90,7 +109,46 @@
   {#if mode === 'take'}
     {#if practice?.ready && quiz.questions.length}
       <Quiz {session} sources={[]} courseId={practice.courseId} />
-    {:else}
+    {:else if !editable && quiz.questions.length}
+      {#each quiz.questions as question, index (index)}
+        <section class="flex flex-col gap-2 rounded-2xl border border-line bg-surface p-5 shadow-card">
+          <p class="text-xs font-semibold uppercase tracking-wide text-subtle">
+            Question {index + 1}{question.part ? ` (${question.part})` : ''}
+          </p>
+          {#if question.stem}
+            <p class="text-[13px] text-fg-soft">{question.stem}</p>
+          {/if}
+          <p class="text-[14px] text-fg">{question.prompt}</p>
+          {#if question.format === 'short_answer'}
+            <p class="text-[13px] text-fg"><span class="font-medium text-muted">Expected answer. </span>{question.expected}</p>
+            {#if question.points?.length}
+              <div>
+                <p class="text-[13px] font-medium text-muted">Required points</p>
+                <ul class="list-disc pl-5 text-[13px] text-fg">
+                  {#each question.points as point, pointIndex (pointIndex)}
+                    <li>{point}</li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+          {:else}
+            <ol class="flex flex-col gap-1 text-[13px] text-fg">
+              {#each question.options as option, optionIndex (optionIndex)}
+                <li>
+                  {option}
+                  {#if question.answer === optionIndex}
+                    <span class="ml-2 text-xs font-medium text-accent-text">Correct</span>
+                  {/if}
+                </li>
+              {/each}
+            </ol>
+          {/if}
+          {#if question.explanation}
+            <p class="text-[13px] text-fg-soft">{question.explanation}</p>
+          {/if}
+        </section>
+      {/each}
+    {:else if editable || practice}
       <p class="text-sm text-muted">{practice ? 'Save your changes before taking this test.' : 'Open the saved quiz to take a recorded practice test.'}</p>
     {/if}
   {:else}
@@ -98,6 +156,10 @@
       <section class="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-5 shadow-card">
         <div class="flex items-center gap-2">
           <span class="text-xs font-semibold uppercase tracking-wide text-subtle">Question {index + 1}</span>
+          <select aria-label="Question format" value={question.format ?? 'multiple_choice'} onchange={(event) => setFormat(index, event.currentTarget.value as 'multiple_choice' | 'short_answer')} class="rounded border border-line bg-surface px-2 py-1 text-xs text-fg">
+            <option value="multiple_choice">Multiple choice</option>
+            <option value="short_answer">Short answer</option>
+          </select>
           <button type="button" onclick={() => removeQuestion(index)} class="ml-auto rounded-md p-1 text-subtle hover:bg-danger-soft hover:text-danger-text" title="Delete question">
             <Icon name="trash" class="h-4 w-4" />
           </button>
