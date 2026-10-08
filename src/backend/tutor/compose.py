@@ -91,7 +91,9 @@ _INTENT_RULES: tuple[tuple[Intent, re.Pattern[str]], ...] = (
     (Intent.MIND_MAP, re.compile(r"\b(?:mind|concept|topic)[ -]?map\b", re.IGNORECASE)),
     (
         Intent.SLIDES,
-        re.compile(r"\bslides?\b|\bslide deck\b|\bpresentation\b", re.IGNORECASE),
+        re.compile(
+            r"\bslides?\b|\bslide deck\b|\bdeck\b|\bpresentation\b", re.IGNORECASE
+        ),
     ),
     (
         Intent.SHEET,
@@ -153,7 +155,7 @@ _RETRIEVAL_NOTES = re.compile(r"\b(?:the|my|our)\s+notes\b", re.IGNORECASE)
 # notes" is a quiz. Bare "notes" is not listed here, so retrieval still wins
 # when notes are the only thing named.
 _OTHER_ARTIFACT = re.compile(
-    r"\b(?:quiz(?:zes)?|flash ?cards?|slides?|slide deck|presentation|"
+    r"\b(?:quiz(?:zes)?|flash ?cards?|slides?|slide deck|deck|presentation|"
     r"study guide|(?:study|cheat|review) ?sheet|essay|paper|document|"
     r"table|spreadsheet|mind[ -]?map|concept[ -]?map|topic[ -]?map|"
     r"outline|code)\b",
@@ -330,7 +332,79 @@ _OVERVIEW_QUESTION = re.compile(
     r"(?:course|class|material|materials|sources?)\b",
     re.IGNORECASE,
 )
-_WORD = re.compile(r"[\w'-]+")
+_WORD = re.compile(r"[\w'-]+(?:\.\d+)*")
+
+# "week 3" and "Table 2.2" name material; "10 questions" names a request
+# size. The word before the number, and the word after it, say which (R4-NEW-g).
+_NUMBERING_HEADS = frozenset(
+    {
+        "week",
+        "weeks",
+        "chapter",
+        "chapters",
+        "section",
+        "sections",
+        "unit",
+        "units",
+        "part",
+        "parts",
+        "day",
+        "days",
+        "lecture",
+        "lectures",
+        "module",
+        "modules",
+        "session",
+        "sessions",
+        "exam",
+        "exams",
+        "table",
+        "tables",
+        "figure",
+        "figures",
+        "appendix",
+        "page",
+        "pages",
+        "problem",
+        "problems",
+        "exercise",
+        "exercises",
+        "handout",
+        "handouts",
+    }
+)
+_SIZE_UNITS = frozenset(
+    {
+        "word",
+        "words",
+        "page",
+        "pages",
+        "slide",
+        "slides",
+        "question",
+        "questions",
+        "minute",
+        "minutes",
+        "second",
+        "seconds",
+        "point",
+        "points",
+        "item",
+        "items",
+        "card",
+        "cards",
+        "example",
+        "examples",
+        "bullet",
+        "bullets",
+        "line",
+        "lines",
+        "sentence",
+        "sentences",
+        "paragraph",
+        "paragraphs",
+    }
+)
 
 _NUMBER_WORDS = frozenset(
     {
@@ -360,7 +434,7 @@ _NUMBER_WORDS = frozenset(
 
 def _is_count_token(token: str) -> bool:
     head = re.split(r"[- ]", token, maxsplit=1)[0]
-    return head.isdigit() or head.casefold() in _NUMBER_WORDS
+    return head.replace(".", "").isdigit() or head.casefold() in _NUMBER_WORDS
 
 
 def retrieval_topic(question: str) -> str:
@@ -373,11 +447,22 @@ def retrieval_topic(question: str) -> str:
     tokens = _WORD.findall(question)
     words: list[str] = []
     for index, token in enumerate(tokens):
-        if token.casefold() in _REQUEST_WORDS:
-            continue
+        previous = tokens[index - 1] if index > 0 else ""
+        following = tokens[index + 1] if index + 1 < len(tokens) else ""
         if _is_count_token(token):
-            previous = tokens[index - 1] if index > 0 else ""
-            if previous and previous[0].isupper():
+            head = token.split("-", 1)[0]
+            if "-" in token or following.casefold() in _SIZE_UNITS:
+                continue
+            numbered = previous[:1].isupper() or previous.casefold() in _NUMBERING_HEADS
+            if numbered or (head.replace(".", "").isdigit() and len(head) >= 3):
+                words.append(token)
+            continue
+        if token.casefold() in _REQUEST_WORDS or all(
+            part in _REQUEST_WORDS for part in token.casefold().split("-") if part
+        ):
+            # "Table 2.2" is a reference into the material, not the asked-for
+            # table: a numbered head keeps its number and itself.
+            if token.casefold() in _NUMBERING_HEADS and _is_count_token(following):
                 words.append(token)
             continue
         words.append(token)
@@ -712,6 +797,22 @@ _PLACEHOLDER_OPTION = re.compile(
     r"^(?:option|answer|choice|distractor)\s*\d*\s*[.:)]?$|^(?:a|b|c|d)[.)]?$",
     re.IGNORECASE,
 )
+_LETTER_REF = re.compile(
+    r"\b((?:option|choice|answer|alternative)\s+)([a-d])\b", re.IGNORECASE
+)
+_BOTH_OPTIONS = re.compile(
+    r"^\s*both\s+([a-d])\s+and\s+([a-d])\s*[.:;]?\s*$", re.IGNORECASE
+)
+_ALL_NONE_OPTIONS = re.compile(
+    r"^\s*(all|none)\s+of\s+the\s+(?:above|below|choices?|options?|list)\s*[.:;]?\s*$",
+    re.IGNORECASE,
+)
+_POSITIONAL_OPTION = re.compile(
+    r"\b(?:both|neither|either)\s+[a-d]\s+(?:and|or)\s+[a-d]\b"
+    r"|\b(?:all|none)\s+of\s+the\s+(?:above|below|choices?|options?|list)\b"
+    r"|\b(?:option|choice|answer|alternative)\s+[a-d]\b",
+    re.IGNORECASE,
+)
 _GENERIC_QUIZ_PROMPT = re.compile(
     r"^(?:question about (?:the )?(?:topic|material|subject)|what is the answer)\??$",
     re.IGNORECASE,
@@ -818,7 +919,11 @@ def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> boo
         if len(set(list_keys)) != len(list_keys):
             return False
         selected_phrase = re.sub(r"^(?:the|a|an)\s+", "", normalized[answer])
-        if len(selected_phrase) >= 8 and selected_phrase in prompt.casefold():
+        # Whole words: "Paris" inside "comparison" must not give the question
+        # away (CR-11).
+        if len(selected_phrase) >= 8 and re.search(
+            rf"(?<!\w){re.escape(selected_phrase)}(?!\w)", prompt.casefold()
+        ):
             return False
         if any(_PLACEHOLDER_OPTION.fullmatch(option) for option in normalized):
             return False
@@ -914,11 +1019,50 @@ def _usable_quiz_questions(
     ]
 
 
+def _self_contained_option(text: object, options: list[Any]) -> object:
+    """Rewrite an option that points at the other options by position so it
+    keeps its meaning wherever the shuffle puts it (R4-NEW-b)."""
+    if not isinstance(text, str):
+        return text
+    all_none = _ALL_NONE_OPTIONS.match(text)
+    if all_none:
+        kind = "All" if all_none.group(1).casefold() == "all" else "None"
+        return f"{kind} of these choices"
+    both = _BOTH_OPTIONS.match(text)
+    if both:
+        picks = [ord(both.group(index).casefold()) - ord("a") for index in (1, 2)]
+        if all(0 <= pick < len(options) for pick in picks):
+            first, second = (str(options[pick]).strip() for pick in picks)
+            return f"Both: {first} and {second}"
+    return text
+
+
+def _relettered(explanation: object, order: list[int]) -> object:
+    """Follow the shuffle: a letter that named the option now names where it
+    moved. "Option A is correct" stays true after the permutation."""
+    if not isinstance(explanation, str):
+        return explanation
+
+    def replace(match: re.Match[str]) -> str:
+        letter = match.group(2)
+        index = ord(letter.casefold()) - ord("a")
+        if not 0 <= index < len(order):
+            return match.group(0)
+        moved = chr(ord("a") + order.index(index))
+        return match.group(1) + (moved.upper() if letter.isupper() else moved)
+
+    return _LETTER_REF.sub(replace, explanation)
+
+
 def _shuffle_quiz_options(item: dict[str, Any]) -> dict[str, Any]:
     """Permute each question's options so the correct answer is not always
     first. Small models put the key at index 0, so a student could score
     100% by always picking A. The permutation is seeded from the question
-    text, so re-rendering or re-saving the same quiz never reorders it."""
+    text, so re-rendering or re-saving the same quiz never reorders it.
+
+    An option that still names other options by letter after rewriting pins
+    the question to its authored order: moving it would change what the
+    letters mean (R4-NEW-b)."""
     questions = item.get("questions")
     if not isinstance(questions, list):
         return item
@@ -932,6 +1076,13 @@ def _shuffle_quiz_options(item: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(options, list) or type(answer) is not int:
             shuffled.append(question)
             continue
+        rewritten = [_self_contained_option(option, options) for option in options]
+        if any(
+            isinstance(option, str) and _POSITIONAL_OPTION.search(option)
+            for option in rewritten
+        ):
+            shuffled.append(question)
+            continue
         order = list(range(len(options)))
         seed = hashlib.sha256(
             (
@@ -941,13 +1092,14 @@ def _shuffle_quiz_options(item: dict[str, Any]) -> dict[str, Any]:
             ).encode("utf-8")
         ).digest()
         random.Random(seed).shuffle(order)
-        shuffled.append(
-            {
-                **question,
-                "options": [options[index] for index in order],
-                "answer": order.index(answer),
-            }
-        )
+        moved: dict[str, Any] = {
+            **question,
+            "options": [rewritten[index] for index in order],
+            "answer": order.index(answer),
+        }
+        if "explanation" in question:
+            moved["explanation"] = _relettered(question.get("explanation"), order)
+        shuffled.append(moved)
     return {**item, "questions": shuffled}
 
 

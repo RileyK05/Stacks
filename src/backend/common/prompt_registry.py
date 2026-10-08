@@ -134,7 +134,12 @@ def load_prompt_policy(
 ) -> PromptPolicy:
     with path.open("rb") as config_file:
         raw = tomllib.load(config_file)
-    prompts = {name: section["text"] for name, section in raw["prompt"].items()}
+    prompts: dict[str, str] = {}
+    for name, section in raw["prompt"].items():
+        body = section.get("text") if isinstance(section, dict) else None
+        if not isinstance(body, str):
+            raise ValueError(f"prompt.{name} must define a text body")
+        prompts[name] = body
     return PromptPolicy(
         prompts_config_version=raw["version"]["prompts_config_version"],
         prompts=prompts,

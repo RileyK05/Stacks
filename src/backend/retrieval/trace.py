@@ -75,11 +75,16 @@ def record_trace(
         },
     ).fetchone()
     assert row is not None
-    chunk_uuids = tuple(UUID(str(entry["chunk_id"])) for entry in per_chunk)
+    chunk_uuids: list[UUID] = []
+    for entry in per_chunk:
+        try:
+            chunk_uuids.append(UUID(str(entry["chunk_id"])))
+        except ValueError:
+            continue
     return StoredTrace(
         trace_id=row["trace_id"],
         query=query,
-        chunk_ids=chunk_uuids,
+        chunk_ids=tuple(chunk_uuids),
         layer_contribution=contribution,
         created_at=row["created_at"],
     )

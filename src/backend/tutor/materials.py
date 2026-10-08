@@ -7,12 +7,42 @@ erase them. These are transient response contracts, not another material store.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MAX_MATERIAL_CHARS = 200_000
 _TITLE_MAX = 120
+_LINE_BREAK = re.compile(r"(?:<br\s*/?>|\r\n|\r|\n)+", re.IGNORECASE)
+_TABLE_ROW = re.compile(r"^\s*\|.+\|\s*$")
+
+
+def _reflowed(paragraphs: Sequence[str]) -> list[str]:
+    """Undo what a strict-JSON string does to line structure: the model
+    joins lines with <br> instead of escaping newlines, and drops a table
+    into one paragraph per row, which renders as literal pipes rather than
+    a table (R3-NEW-2)."""
+    out: list[str] = []
+    table: list[str] = []
+
+    def flush() -> None:
+        if table:
+            out.append("\n".join(table))
+            table.clear()
+
+    for paragraph in paragraphs:
+        lines = [
+            line.strip() for line in _LINE_BREAK.split(str(paragraph)) if line.strip()
+        ]
+        if lines and all(_TABLE_ROW.match(line) for line in lines):
+            table.extend(lines)
+            continue
+        flush()
+        if lines:
+            out.append("\n".join(lines))
+    flush()
+    return out or list(paragraphs)
 
 
 def has_body(markdown: str, title: str = "") -> bool:
@@ -25,12 +55,15 @@ def has_body(markdown: str, title: str = "") -> bool:
         content = content.strip(" *_`").strip()
         if not content or re.match(r"^[-*_]{3,}$", content):
             continue
+        labels = {"content", "deck", "markdown", "body", title.strip().casefold()}
+        if content.casefold() in labels:
+            continue
+        # A bare label ("Overview", "Exam Essentials") is still a heading,
+        # whatever marker it wears (R4-NEW-i).
+        if len(content.split()) < 3 and not re.search(r"[^\w\s]", content):
+            continue
         lines.append(content)
-    return bool(lines) and any(
-        content.casefold()
-        not in {"content", "deck", "markdown", "body", title.strip().casefold()}
-        for content in lines
-    )
+    return bool(lines)
 
 
 class _Draft(BaseModel):
@@ -40,6 +73,11 @@ class _Draft(BaseModel):
 class Section(_Draft):
     heading: str = Field(max_length=500)
     paragraphs: list[str] = Field(min_length=1, max_length=64)
+
+    @field_validator("paragraphs", mode="before")
+    @classmethod
+    def _lines(cls, value: object) -> object:
+        return _reflowed(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
     def _usable(self) -> Section:
@@ -88,6 +126,11 @@ class DocumentDraft(_Draft):
 class Slide(_Draft):
     title: str = Field(max_length=500)
     paragraphs: list[str] = Field(min_length=1, max_length=32)
+
+    @field_validator("paragraphs", mode="before")
+    @classmethod
+    def _lines(cls, value: object) -> object:
+        return _reflowed(value) if isinstance(value, list) else value
 
     @model_validator(mode="after")
     def _usable(self) -> Slide:

@@ -130,7 +130,20 @@ class ModelRefusalError(ProviderUnavailableError):
     shown to the student as the answer or trigger a pointless repair cycle."""
 
 
-_REFUSAL_RE = re.compile(r"request was rejected|considered high risk", re.IGNORECASE)
+# A moderation refusal is a short canned message about the request itself, so
+# it is matched as the whole reply. An unanchored phrase search turns ordinary
+# prose ("The 1836 request was rejected by the Mexican Congress.") into a
+# refusal that loses the answer or the OCR page (R4-NEW-a).
+_REFUSAL_RE = re.compile(
+    r"^\W{0,4}(?:i (?:am|'m) sorry[,:]?\s+|sorry[,:]?\s+)?"
+    r"(?:(?:the|this|your|a) )?(?:request|query|prompt) "
+    r"(?:was|has been) (?:rejected|blocked|declined|flagged)"
+    r"(?:[,:]?\s*(?:because\s+)?(?:it\s+)?(?:was|has been)\s+)?"
+    r"(?:(?:considered|flagged|deemed|classified)\s+(?:as\s+)?"
+    r"(?:high[- ]risk|unsafe|harmful|inappropriate))?"
+    r"[.!]?\s*$",
+    re.IGNORECASE,
+)
 
 
 def generate(
@@ -484,7 +497,9 @@ def _call_provider(
     who = endpoint.label or endpoint.name
     learned = _ADAPTATIONS.setdefault((endpoint.base_url, endpoint.model), set())
     try:
-        while True:
+        # Bounded: each round re-bills the request, and a 400 vocabulary is
+        # small (CR-19).
+        for _ in range(_MAX_ADAPTATIONS):
             _apply_adaptations(body, learned)
             remaining = generation.before_http(body)
             timeout = defaults.request_timeout_seconds
@@ -541,10 +556,13 @@ def _call_provider(
         recorder = _USAGE_RECORDER.get()
         try:
             payload = response.json()
-        except ValueError:
+        except ValueError as err:
             if recorder is not None:
                 recorder(0, 0, False)
-            raise
+            raise ProviderUnavailableError(
+                f"{who} sent a reply Stacks could not read ({endpoint.model}): {err}",
+                transient=True,
+            ) from err
         usage = payload.get("usage") if isinstance(payload, dict) else None
         usage = usage if isinstance(usage, dict) else {}
         input_tokens, input_reported = _usage_count(usage.get("prompt_tokens"))
@@ -573,7 +591,7 @@ def _call_provider(
         if not isinstance(message, dict):
             raise TypeError("completion message is not an object")
         text = _visible_message_text(message.get("content"))
-        if _REFUSAL_RE.search(text):
+        if choice.get("finish_reason") == "content_filter" or _REFUSAL_RE.match(text):
             raise ModelRefusalError(
                 f"{who} ({endpoint.model}) refused to answer this request. "
                 "Try rephrasing or pick another model."
@@ -624,7 +642,7 @@ def _call_provider(
             "a faster model.",
             transient=True,
         ) from err
-    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as err:
+    except httpx.HTTPError as err:
         logger.warning(
             "unreadable reply from %s (task=%s, model=%s): %r",
             endpoint.name,
@@ -635,6 +653,20 @@ def _call_provider(
         raise ProviderUnavailableError(
             f"{who} sent a reply Stacks could not read ({endpoint.model}): {err}",
             transient=True,
+        ) from err
+    except (KeyError, IndexError, TypeError, ValueError) as err:
+        # A reply of the wrong shape is the model's deterministic output, not
+        # a dropped connection: retrying it re-bills the same failure (R4-NEW-f).
+        logger.warning(
+            "malformed reply from %s (task=%s, model=%s): %r",
+            endpoint.name,
+            task,
+            endpoint.model,
+            err,
+        )
+        raise ProviderUnavailableError(
+            f"{who} sent a reply Stacks could not read ({endpoint.model}): {err}",
+            transient=False,
         ) from err
     return text, input_tokens, output_tokens
 
@@ -654,6 +686,7 @@ def _usage_count(value: Any) -> tuple[int, bool]:
 # Request adjustments learned per (base_url, model) from the endpoint's own
 # 400 replies. Process-local: a restart simply relearns them in one call.
 _ADAPTATIONS: dict[tuple[str, str], set[str]] = {}
+_MAX_ADAPTATIONS = 4
 _DETAIL_LIMIT = 300
 
 

@@ -140,6 +140,8 @@ class IngestionHandlers:
             self.source.source_id,
             self.source.stored_encoding,
         )
+        if page_count == 0:
+            raise ValueError("this PDF has no readable pages")
         page_indexes = list(range(min(page_count, self.ocr_max_pages)))
         recognized: dict[int, str] = {}
         failures: list[str] = []
@@ -256,7 +258,12 @@ class IngestionHandlers:
                     images=[page.image for page in rendered],
                 )
             except (provider.ProviderUnavailableError, BudgetExceededError) as err:
-                if attempt < self.ocr_max_attempts and is_transient_error(err):
+                # A moderation refusal is a coin flip, and the same batch often
+                # succeeds on resend (R4-NEW-l): a dropped page is permanent.
+                retryable = is_transient_error(err) or isinstance(
+                    err, provider.ModelRefusalError
+                )
+                if attempt < self.ocr_max_attempts and retryable:
                     delay = (
                         self.retry_backoff_seconds
                         * self.retry_backoff_multiplier ** (attempt - 1)
@@ -264,10 +271,26 @@ class IngestionHandlers:
                     if delay > 0:
                         self.sleeper(delay)
                     continue
-                failures.append(
-                    f"pages {self._page_labels(indexes)} OCR failed after "
-                    f"{attempt} attempt(s): {err}"
+                if len(rendered) > 1 and isinstance(err, provider.ModelRefusalError):
+                    for page in rendered:
+                        self._recognize_single_page(page, recognized, failures)
+                    return
+                logger.warning(
+                    "OCR failed for source %s after %d attempt(s): %s",
+                    self.source.source_id,
+                    attempt,
+                    err,
                 )
+                if isinstance(err, provider.ModelRefusalError):
+                    failures.append(
+                        f"pages {self._page_labels(indexes)} were declined by "
+                        "the reading model"
+                    )
+                else:
+                    failures.append(
+                        f"pages {self._page_labels(indexes)} could not be read "
+                        f"after {attempt} attempt(s): {err}"
+                    )
                 return
             break
         try:
@@ -275,32 +298,59 @@ class IngestionHandlers:
         except ValueError as err:
             if len(rendered) > 1:
                 for page in rendered:
-                    self._recognize_bounded_batch([page], recognized, failures)
+                    self._recognize_single_page(page, recognized, failures)
                 return
+            logger.warning(
+                "OCR page split failed for source %s: %s", self.source.source_id, err
+            )
             failures.append(
-                f"pages {self._page_labels(indexes)} OCR format failed: {err}"
+                f"pages {self._page_labels(indexes)} came back without readable "
+                "page breaks"
             )
             return
         recognized.update(zip(indexes, page_texts, strict=True))
+
+    @generation.operation(fresh=True)
+    def _recognize_single_page(
+        self,
+        page: extract.RasterizedPage,
+        recognized: dict[int, str],
+        failures: list[str],
+    ) -> None:
+        """Retried alone on its own budget: the batch's spent attempts must
+        not leave the page unrecoverable (R4-NEW-e)."""
+        self._recognize_bounded_batch([page], recognized, failures)
 
     def _warn_if_incomplete(
         self, unresolved: list[int], failures: list[str], *, cap_exceeded: bool
     ) -> None:
         if not unresolved and not failures and not cap_exceeded:
             return
+        texts = self.extracted.page_texts if self.extracted is not None else []
+        blank: list[int] = []
+        thin: list[int] = []
+        for index in sorted(unresolved):
+            if index < len(texts) and texts[index].strip():
+                thin.append(index)
+            else:
+                blank.append(index)
         details = []
-        if unresolved:
-            details.append(f"unresolved pages {self._page_labels(unresolved)}")
-        if cap_exceeded:
+        if blank:
+            details.append(f"unresolved pages {self._page_labels(blank)}")
+        if thin:
             details.append(
-                f"page cap left OCR pages after {self.ocr_max_pages} unprocessed"
+                f"pages {self._page_labels(thin)} have only a little text to index"
             )
+        if cap_exceeded:
+            details.append(f"only the first {self.ocr_max_pages} pages were read")
         details.extend(failures)
-        message = "; ".join(details) or "OCR coverage is incomplete"
+        message = "; ".join(
+            detail[:-1] if detail.endswith(".") else detail for detail in details
+        )
         logger.warning(
             "OCR incomplete for source %s: %s", self.source.source_id, message
         )
-        raise StageWarning(message[:450])
+        raise StageWarning(message)
 
     @staticmethod
     def _page_labels(indexes: list[int]) -> str:

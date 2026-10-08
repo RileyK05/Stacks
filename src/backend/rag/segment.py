@@ -330,6 +330,8 @@ def segment(
                 bounded = windows(
                     value, policy.search_window_tokens, 0, token_count=count
                 )
+                if not bounded:
+                    bounded = ((0, len(value)),)
                 first, last = bounded[0], bounded[-1]
                 boundary_texts.extend(
                     [value[first[0] : first[1]], value[last[0] : last[1]]]

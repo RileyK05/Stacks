@@ -77,7 +77,9 @@ def plan_call(
         # A reasoning model still needs room to think, but it must not claim
         # its full maximum for every task: a 1024-token summary reserving
         # 16384 against the shared budget starves the rest of the operation.
-        desired = min(preferred, demand.desired_output_tokens * 4)
+        desired = min(
+            preferred, demand.desired_output_tokens * demand.reasoning_multiplier
+        )
     else:
         desired = min(demand.desired_output_tokens, preferred)
     output = min(desired, ceiling)
@@ -211,10 +213,16 @@ _CALL: ContextVar[_Call | None] = ContextVar("generation_call", default=None)
 
 @contextmanager
 def operation(
-    policy: GenerationPolicy | None = None, *, clock: Callable[[], float] | None = None
+    policy: GenerationPolicy | None = None,
+    *,
+    clock: Callable[[], float] | None = None,
+    fresh: bool = False,
 ) -> Iterator[Operation]:
+    """Bound one unit of model work. Nested calls join the outer operation
+    unless `fresh` is set: a recovery that must not be starved by the work
+    that already failed (a per-page OCR fallback) starts its own budget."""
     active = _OPERATION.get()
-    if active is not None:
+    if active is not None and not fresh:
         yield active
         return
     active = Operation(policy or load_generation_policy(), clock or time.monotonic)

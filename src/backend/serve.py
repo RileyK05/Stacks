@@ -60,7 +60,10 @@ def _stop_when_stdin_closes(server: uvicorn.Server) -> None:
     def watch() -> None:
         stream = sys.stdin.buffer if sys.stdin else None
         if stream is not None:
-            while stream.read(4096):
+            try:
+                while stream.read(4096):
+                    pass
+            except (OSError, ValueError):
                 pass
         _logger.info("stdin closed; shutting down")
         server.should_exit = True

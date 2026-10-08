@@ -40,9 +40,7 @@ def _similarity_pairs(
             i = batch[offset]
             row = scores[offset]
             ordered_hits = np.argsort(-row, kind="stable")
-            hits = [
-                j for j in ordered_hits if j != i and row[j] >= floor and row[j] > 0
-            ][:neighbors]
+            hits = [j for j in ordered_hits if j != i and row[j] >= floor][:neighbors]
             for j in hits:
                 j = int(j)
                 if i == j:

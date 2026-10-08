@@ -114,12 +114,11 @@ def stream_to_temp(
     caller owns it and must discard it via discard_temp()."""
     digest = hashlib.sha256()
     received = 0
-    handle = tempfile.NamedTemporaryFile(  # noqa: SIM115 - closed in try/with below
+    with tempfile.NamedTemporaryFile(
         prefix="upload-", suffix=".tmp", delete=False
-    )
-    temp_path = Path(handle.name)
-    try:
-        with handle:
+    ) as handle:
+        temp_path = Path(handle.name)
+        try:
             while True:
                 chunk = stream.read(chunk_size)
                 if not chunk:
@@ -129,12 +128,12 @@ def stream_to_temp(
                     raise RawUploadLimitExceededError(max_bytes, received)
                 digest.update(chunk)
                 handle.write(chunk)
-        if received == 0:
-            raise EmptyUploadError()
-        return temp_path, digest.hexdigest(), received
-    except BaseException:
-        discard_temp(temp_path)
-        raise
+            if received == 0:
+                raise EmptyUploadError()
+            return temp_path, digest.hexdigest(), received
+        except BaseException:
+            discard_temp(temp_path)
+            raise
 
 
 def discard_temp(temp_path: Path) -> None:

@@ -21,7 +21,7 @@ def test_generation_policy_loads_all_known_tasks_and_operation_bounds() -> None:
     assert policy.max_requested_tokens == 262144
     assert set(policy.tasks) == KNOWN_GENERATION_TASKS
     assert policy.tasks["tutor_answer"] == GenerationTask(
-        desired_output_tokens=2048, max_recoveries=2
+        desired_output_tokens=2048, max_recoveries=2, reasoning_multiplier=6
     )
     assert policy.tasks["artifact_generation"].desired_output_tokens == 16384
     assert policy.tasks["ocr"].max_recoveries == 1

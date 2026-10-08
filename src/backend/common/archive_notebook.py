@@ -205,8 +205,11 @@ def export_notebook(course_id: UUID) -> Notebook:
         for work in work_sessions:
             for turn in work.turns:
                 if turn.reply.trace_id:
-                    trace_ids.add(UUID(turn.reply.trace_id))
-                cited_ids.update(UUID(c.chunk_id) for c in turn.reply.citations)
+                    with suppress(ValueError):
+                        trace_ids.add(UUID(str(turn.reply.trace_id)))
+                for citation in turn.reply.citations:
+                    with suppress(ValueError):
+                        cited_ids.add(UUID(str(citation.chunk_id)))
         traces: list[Trace] = []
         for trace_id in sorted(trace_ids, key=str):
             row = conn.execute(
@@ -216,11 +219,7 @@ def export_notebook(course_id: UUID) -> Notebook:
             if row is None:
                 continue
             payload = row["retrieved_chunk_ids"]
-            chunk_ids = (
-                [UUID(cid) for cid in payload.get("chunk_ids", [])]
-                if isinstance(payload, dict)
-                else []
-            )
+            chunk_ids = _payload_uuid_list(payload, "chunk_ids")
             has_citation_mapping = (
                 isinstance(payload, dict) and "cited_chunk_ids" in payload
             )

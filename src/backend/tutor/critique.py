@@ -83,8 +83,22 @@ def critique_instruction(score: int, genre: str, behavior: str) -> str:
     )
 
 
+_ADVICE = re.compile(
+    r"^\s*(?:"
+    r"(?:how|what|where|when|why|which|who)\b"
+    r"|(?:can|could|would|will|may) (?:you|someone|anybody)\s+"
+    r"(?:help|advise|suggest|tell|explain|show|give)\b"
+    r"|(?:any |some |give me |i (?:want|need) )"
+    r"(?:tips|advice|feedback|suggestions|ideas|thoughts|guidance|direction)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
 def refuses_rewrite(instruction: str) -> bool:
-    return bool(_REWRITE.search(instruction))
+    """A demand for the text itself is refused; asking how to write is advice
+    the critic may answer (R4-NEW-h)."""
+    return bool(_REWRITE.search(instruction)) and not _ADVICE.match(instruction)
 
 
 def _words(text: str) -> set[str]:
@@ -234,10 +248,31 @@ def latest_included(work: WorkSession) -> set[int] | None:
     return None
 
 
+def _related(word: str, other: str) -> bool:
+    """Morphological near-match: "unsupported" vs "supported", "hasty" vs
+    "hastily", "generalization" vs "generalize"."""
+    if word == other:
+        return True
+    if len(word) >= 4 and (word in other or other in word):
+        return True
+    shorter, longer = sorted((word, other), key=len)
+    return len(shorter) >= 4 and any(
+        shorter[index : index + 4] in longer for index in range(len(shorter) - 3)
+    )
+
+
 def _names_fallacy(feedback: str, fallacy: str) -> bool:
-    label = FALLACY_LABELS[fallacy]
-    folded = feedback.casefold()
-    return label in folded or label.replace(" ", "") in folded
+    """The feedback must engage the assigned fallacy. The label is not asked
+    for verbatim, so its words may appear in any inflection ("post-hoc",
+    "generalize hastily"); a feedback that shares nothing with the label is
+    commenting on something else (R4-NEW-n)."""
+    label = FALLACY_LABELS[fallacy].replace("-", " ")
+    folded = feedback.casefold().replace("-", " ")
+    if label.replace(" ", "") in folded.replace(" ", ""):
+        return True
+    return any(
+        _related(word, other) for word in label.split() for other in folded.split()
+    )
 
 
 def validate_findings(
@@ -250,6 +285,10 @@ def validate_findings(
     citations: list[WorkCitation],
     open_quotes: set[str],
 ) -> tuple[list[CritiqueFinding], list[WorkCitation]]:
+    """Keep the findings that hold up. One unusable finding costs that
+    finding, not the whole review (R4-NEW-n); a reply whose findings all
+    fail is rejected so the student is not shown an empty critique as if
+    the draft had none."""
     try:
         output = CritiqueModelOutput.model_validate(raw)
     except ValidationError as err:
@@ -258,6 +297,7 @@ def validate_findings(
         ) from err
     allowed = {citation.number for citation in citations}
     checked: list[CritiqueFinding] = []
+    dropped: list[str] = []
     outside = (
         "The critique referred to a passage outside the reviewed draft. "
         "Try again or select a passage."
@@ -269,31 +309,37 @@ def validate_findings(
             or original not in document_text
             or original not in scope
         ):
-            raise ValueError(outside)
+            dropped.append(outside)
+            continue
         if original in open_quotes:
-            raise ValueError(
+            dropped.append(
                 "The critique repeated a passage that is still in the draft. Try again."
             )
+            continue
         if genre in CRAFT_GENRES and finding.fallacy != "none":
-            raise ValueError(
-                "A creative or reflective critique cannot assign a fallacy."
-            )
+            dropped.append("A creative or reflective critique cannot assign a fallacy.")
+            continue
         if finding.fallacy != "none" and not _names_fallacy(
             finding.feedback, finding.fallacy
         ):
-            raise ValueError("The critique named a fallacy it did not explain.")
+            dropped.append("The critique named a fallacy it did not explain.")
+            continue
         numbers = cited_numbers(finding.feedback)
         if not numbers.issubset(allowed):
-            raise ValueError("The critique cited a source it was not given.")
+            dropped.append("The critique cited a source it was not given.")
+            continue
         # A craft note that cites a real supplied passage is a course judgment.
         grounding: Literal["course", "craft"] = finding.grounding
         if grounding == "craft" and numbers:
             grounding = "course"
         if grounding == "course" and not numbers:
-            raise ValueError(
+            dropped.append(
                 "A course-based comment needs a citation from the supplied passages."
             )
+            continue
         checked.append(finding.model_copy(update={"grounding": grounding}))
+    if output.findings and not checked:
+        raise ValueError(dropped[0] if dropped else outside)
     kept = checked[:cap]
     used_numbers: set[int] = set()
     for finding in kept:

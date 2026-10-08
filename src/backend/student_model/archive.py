@@ -168,9 +168,9 @@ def import_learning(
             origin={"imported_suite": str(suite.suite_id), **suite.origin},
         )
     for run in archive.runs:
-        if run.suite_id not in suite_map:
+        test = next((s for s in archive.suites if s.suite_id == run.suite_id), None)
+        if test is None or run.suite_id not in suite_map:
             raise ValueError("an archived attempt has no test suite")
-        test = next(s for s in archive.suites if s.suite_id == run.suite_id)
         if (
             len(run.answers) != len(test.questions)
             or len(run.helped) != len(run.answers)

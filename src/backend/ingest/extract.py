@@ -269,7 +269,12 @@ def read_decoded(
             raise
         finally:
             blocks.close()
-        return "".join(parts).replace("\x00", "")
+        decoded = "".join(parts)
+        # A wide encoding already resolved its bytes: stripping here would
+        # drop a character the file really contains (CR-22).
+        if chosen in {"utf-16", "utf-32"}:
+            return decoded
+        return decoded.replace("\x00", "")
 
     try:
         return decode(None)
@@ -403,6 +408,9 @@ def _markdown_locators(text: str) -> tuple[LocatorSpan, ...]:
     return tuple(spans)
 
 
+_PRINTABLE = re.compile(r"[^\x00-\x1f\x7f-\x9f]")
+
+
 def clean_text(text: str) -> str:
     """Text the database can store. A PDF with a broken font map (or a model
     that answered with half an emoji) yields lone UTF-16 surrogates, which
@@ -411,12 +419,17 @@ def clean_text(text: str) -> str:
     names stay visible for quality detection and OCR."""
     without_controls = (
         text.replace("\r\n", "\n")
-        .replace("\x00", "")
+        .replace("\r", "\n")
         .replace("\u00a0", " ")
         .replace("\ufffe", "")
         .replace("\u00ad", "")
     )
-    return without_controls.encode("utf-8", "replace").decode("utf-8")
+    cleaned = "".join(
+        character
+        for character in without_controls
+        if character in "\t\n" or _PRINTABLE.match(character)
+    )
+    return cleaned.encode("utf-8", "replace").decode("utf-8")
 
 
 def page_quality(text: str) -> float:
@@ -431,7 +444,7 @@ def page_quality(text: str) -> float:
     glyph_penalty = len(_GLYPH_NAME.findall(text)) / word_count
     stop_ratio = sum(word in _STOPWORDS for word in words) / word_count
     alpha_ratio = sum(char.isalpha() or char.isspace() for char in text) / len(text)
-    return min(stop_ratio / 0.15, 1.0) * alpha_ratio - glyph_penalty
+    return max(0.0, min(1.0, min(stop_ratio / 0.15, 1.0) * alpha_ratio - glyph_penalty))
 
 
 def choose_page_text(primary: str, alternate: str | None, *, has_table: bool) -> str:

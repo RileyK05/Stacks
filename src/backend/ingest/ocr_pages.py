@@ -18,10 +18,20 @@ _PAGE_BOUNDARY = re.compile(r"(?:^|(?:\r?\n)+)[ \t]*---[ \t]*(?=\r?\n|$)")
 def split_ocr_pages(text: str, page_count: int) -> list[str]:
     if page_count < 1:
         raise ValueError("OCR requires at least one page")
+
+    def clean(part: str) -> str:
+        stripped = part.strip()
+        return "" if stripped.casefold() == "[blank]" else stripped
+
+    if page_count == 1:
+        # One rendered page is the whole reply, separator or not: a Markdown
+        # rule inside the page must not fail the page (R4-NEW-d).
+        return [clean(text)]
     parts = _PAGE_BOUNDARY.split(text)
     if len(parts) == page_count + 1 and not parts[-1].strip():
         parts.pop()
+    if len(parts) == page_count + 1 and not parts[0].strip():
+        parts.pop(0)
     if len(parts) == page_count:
-        stripped = [p.strip() for p in parts]
-        return ["" if p.casefold() == "[blank]" else p for p in stripped]
+        return [clean(part) for part in parts]
     raise ValueError("OCR page boundaries do not match the rendered pages")

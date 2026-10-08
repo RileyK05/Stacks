@@ -61,7 +61,13 @@ def delete_api_key(provider: str) -> None:
         return
     try:
         import keyring
-
+        from keyring.errors import PasswordDeleteError
+    except Exception as err:
+        raise CredentialStoreUnavailableError() from err
+    try:
         keyring.delete_password(SERVICE_NAME, provider)
+    except PasswordDeleteError:
+        # Already gone: deleting a key is idempotent (CR-17).
+        return
     except Exception as err:
         raise CredentialStoreUnavailableError() from err

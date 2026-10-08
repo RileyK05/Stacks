@@ -16,6 +16,12 @@ DEFAULT_GENERATION_POLICY_PATH = PROJECT_ROOT / "configs" / "generation.toml"
 class GenerationTask(BaseModel):
     desired_output_tokens: int = Field(ge=1)
     max_recoveries: int = Field(ge=0, le=3)
+    # A reasoning model spends part of its output budget thinking, so the
+    # allowance is a multiple of the answer size. Interactive answers set a
+    # higher multiple: a truncated answer is thrown away and re-asked, which
+    # costs the student the whole wait (R4-NEW-q). The multiple must still
+    # leave a widening step below the model's ceiling.
+    reasoning_multiplier: int = Field(default=4, ge=1, le=16)
 
 
 class GenerationPolicy(BaseModel):

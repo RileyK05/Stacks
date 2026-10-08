@@ -15,6 +15,7 @@ checks that parity against the torch implementation.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ from typing import Any
 
 import numpy as np
 from src.backend.common.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -125,7 +128,10 @@ def _tokenizer(root: Path, spec: EncoderSpec, max_length: int) -> Any:
             value["content"] if isinstance(value, dict) else (value or pad_token)
         )
     pad_id = tokenizer.token_to_id(pad_token)
-    tokenizer.enable_padding(pad_id=pad_id or 0, pad_token=pad_token)
+    if pad_id is None:
+        logger.warning("pad token %r has no id; padding with id 0", pad_token)
+        pad_id = 0
+    tokenizer.enable_padding(pad_id=pad_id, pad_token=pad_token)
     return tokenizer
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import re
+import threading
 from typing import Any, Literal
 from uuid import UUID
 
@@ -108,27 +109,33 @@ def copies_exemplar(text: str, exemplar: str) -> bool:
     return len(words) >= 8 and " ".join(words) in " ".join(source)
 
 
+_PIXEL_LIMIT_LOCK = threading.Lock()
+
+
 def _png_from_photo(raw: bytes) -> bytes:
     from PIL import Image
 
-    previous_limit = Image.MAX_IMAGE_PIXELS
-    Image.MAX_IMAGE_PIXELS = 20_000_000
-    try:
-        with Image.open(io.BytesIO(raw)) as image:
-            converted = image.convert("RGB")
-            if converted.width * converted.height > OCR_MAX_PIXELS:
-                raise ExamStyleError(
-                    "This photo is too large to read. Use a smaller image."
-                )
-            buffer = io.BytesIO()
-            converted.save(buffer, format="PNG")
-            return buffer.getvalue()
-    except ExamStyleError:
-        raise
-    except (OSError, ValueError, Image.DecompressionBombError) as err:
-        raise ExamStyleError("This image could not be read.") from err
-    finally:
-        Image.MAX_IMAGE_PIXELS = previous_limit
+    # PIL's pixel ceiling is process-global: one conversion at a time keeps a
+    # second thread from restoring a limit it never set (CR-29).
+    with _PIXEL_LIMIT_LOCK:
+        previous_limit = Image.MAX_IMAGE_PIXELS
+        Image.MAX_IMAGE_PIXELS = 20_000_000
+        try:
+            with Image.open(io.BytesIO(raw)) as image:
+                converted = image.convert("RGB")
+                if converted.width * converted.height > OCR_MAX_PIXELS:
+                    raise ExamStyleError(
+                        "This photo is too large to read. Use a smaller image."
+                    )
+                buffer = io.BytesIO()
+                converted.save(buffer, format="PNG")
+                return buffer.getvalue()
+        except ExamStyleError:
+            raise
+        except (OSError, ValueError, Image.DecompressionBombError) as err:
+            raise ExamStyleError("This image could not be read.") from err
+        finally:
+            Image.MAX_IMAGE_PIXELS = previous_limit
 
 
 def _transcribe(
@@ -476,6 +483,9 @@ def accept_questions(
         prompt = raw_prompt if isinstance(raw_prompt, str) else ""
         raw_stem = item.get("stem")
         stem = raw_stem if isinstance(raw_stem, str) else ""
+        # The question text sometimes arrives under "stem" alone (R4-NEW-o).
+        if not prompt.strip():
+            prompt, stem = stem, ""
         if copies_exemplar(prompt, exemplar) or copies_exemplar(stem, exemplar):
             repeated = True
             continue

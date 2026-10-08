@@ -318,9 +318,10 @@ def submit(
         conn, course_id, test, payload.answers, assessments, requested_help, prior
     )
     refresh_memory(conn, course_id)
-    return run_view(
-        conn, rows(conn, "run", course_id=course_id, run_id=payload.run_id)[0]
-    )
+    stored = rows(conn, "run", course_id=course_id, run_id=payload.run_id)
+    if not stored:
+        raise ValueError("the saved attempt could not be read back")
+    return run_view(conn, stored[0])
 
 
 def view(conn: Connection, course_id: UUID) -> LearningView:

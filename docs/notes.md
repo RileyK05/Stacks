@@ -4038,3 +4038,48 @@ before the model call. Rewrite requests and invented quotes save no turn.
 Word receives an empty insert payload. Excel and PowerPoint do not get the
 action. Critique writes no learning row. Docket F-21. The pass was not run
 against a live model, and the new screens were not opened in a browser.
+
+## 2026-10-08 — Round-4 retest fixes
+
+The retest's new bugs are fixed in code with tests in
+`tests/test_round4_regressions.py`. Lessons worth keeping:
+
+A moderation refusal is a coin flip on a batch, not a verdict. OCR now
+retries it and falls back to one page per call on its own generation
+budget, while a chat answer still fails closed. The refusal detector itself
+must match the whole canned reply (`finish_reason: content_filter` is the
+authoritative signal): phrase search turned "The 1836 request was rejected
+by the Mexican Congress." into a refusal that lost the answer or the page.
+
+One unusable finding must cost that finding, not the whole review. The
+critic drops what fails validation and rejects only a reply whose findings
+all fail; a fallacy may be explained in any inflection, since the prompt
+never asked for the label verbatim.
+
+Short-answer claims keep their roles. Words are matched in order ("Mexico
+paid the United States" is not "the United States paid Mexico"), numbers are
+canonical (fifteen million, $15M, 15,000,000), a capitalised acronym may
+stand for the words it abbreviates, and negation reaches as far as its
+clause and no further.
+
+Constrained string generation destroys line structure, so it is rebuilt
+mechanically: `<br>` runs become line breaks and consecutive table rows are
+joined before Markdown sees them.
+
+A reasoning model's output allowance is a per-task multiple of the answer
+size, and the multiple must leave a widening step below the model ceiling —
+a truncated call is thrown away and re-asked, so the retry needs somewhere
+to go.
+
+The exam-style question text may arrive in "stem"; the companion ranks
+document sections by how rare the shared words are and whether a heading
+says the same thing, because a flat word count favours sections full of
+generic words.
+
+Four code-review findings were closed as not-a-bug (the cited hazard is
+already guarded or contradicts a pinned test): the edit citation index
+(CR-5), passage windowing (CR-10 — `window_start` is a cursor into the full
+chunk text), `sha1(..., usedforsecurity=False)` on Python 3.8 (CR-26 — the
+project requires 3.12), and the package read bound (CR-27 — the `+1` read
+already trips the overshoot check). A finding that disagrees with a passing
+regression test is a question for the test's author, not a change.

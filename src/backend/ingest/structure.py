@@ -168,8 +168,9 @@ def _heading_start(
     """Where `title` begins a line inside the page. A miss does not invent
     a container at the page start unless the title came from the outline."""
     page_text = text[page_start:page_end]
-    boundary = r"\b" if title[-1:].isalnum() else ""
-    match = re.search(rf"(?m)^\s*{re.escape(title)}{boundary}", page_text)
+    # Not \b: a title ending in ":" or ")" must not start a longer heading
+    # ("Chapter 1:" must not claim "Chapter 1:1", "1." not "1.1") (CR-8).
+    match = re.search(rf"(?m)^\s*{re.escape(title)}(?![A-Za-z0-9])", page_text)
     if match is not None:
         return page_start + match.start()
     if allow_page_start:

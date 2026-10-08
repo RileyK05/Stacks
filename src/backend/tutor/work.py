@@ -37,24 +37,53 @@ from src.backend.tutor import critique
 from src.backend.tutor.compose import parse_json_object
 from src.backend.tutor.office import NotAllowedError, _citations, is_graded_request
 
+_WORD = re.compile(r"\w{3,}")
+_LABEL_LINE = re.compile(
+    r"^(?:paragraph|table row|row|slide|speaker notes|page|section)\s+\S+\s*$",
+    re.IGNORECASE,
+)
+
+
+def _heading_words(text: str) -> set[str]:
+    """Words in the short, unlabelled lines that stand in for headings. A
+    request about "the introduction" must reach that section even when its
+    words are common everywhere else (R4-NEW-p)."""
+    found: set[str] = set()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or len(stripped) > 100 or stripped.endswith((".", "!", "?")):
+            continue
+        if _LABEL_LINE.match(stripped):
+            continue
+        found.update(_WORD.findall(stripped.casefold()))
+    return found
+
 
 def document_context(text: str, query: str) -> tuple[str, ContextCoverage]:
     policy = load_companion_policy()
     sections = [
         text[i : i + policy.section_chars]
         for i in range(0, len(text), policy.section_chars)
-    ]
-    words = set(re.findall(r"\w{3,}", query.casefold()))
+    ] or [text]
+    words = set(_WORD.findall(query.casefold()))
     if len(text) <= policy.document_context_chars:
         chosen = list(range(len(sections)))
     else:
-        ranked = sorted(
-            range(len(sections)),
-            key=lambda i: (
-                -len(words & set(re.findall(r"\w{3,}", sections[i].casefold()))),
-                i,
-            ),
-        )
+        section_words = [set(_WORD.findall(section.casefold())) for section in sections]
+        headings = [_heading_words(section) for section in sections]
+        # A word shared with half the document says nothing; a word that
+        # names one section says everything.
+        rarity = {
+            word: sum(1 for seen in section_words if word in seen) for word in words
+        }
+
+        def score(index: int) -> float:
+            seen = section_words[index]
+            shared = words & seen
+            weight = sum(1 / rarity[word] for word in shared if rarity[word])
+            return weight + len(shared & headings[index])
+
+        ranked = sorted(range(len(sections)), key=lambda i: (-score(i), i))
         chosen = sorted(
             ranked[
                 : max(1, policy.document_context_chars // (policy.section_chars + 40))

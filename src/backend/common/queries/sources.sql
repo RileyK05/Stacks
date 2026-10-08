@@ -46,7 +46,7 @@ SELECT sources.source_id, sources.course_id, sources.filename, sources.mime_type
             LIMIT 1
         ) AS ingestion_stage,
         (
-            SELECT stage.error_message
+            SELECT substr(stage.error_message, 10)
             FROM ingestion_runs AS run
             JOIN ingestion_stage_runs AS stage ON stage.run_id = run.run_id
             WHERE run.source_id = sources.source_id
@@ -93,7 +93,7 @@ SELECT sources.source_id, sources.course_id, sources.filename, sources.mime_type
             LIMIT 1
         ) AS ingestion_stage,
         (
-            SELECT stage.error_message
+            SELECT substr(stage.error_message, 10)
             FROM ingestion_runs AS run
             JOIN ingestion_stage_runs AS stage ON stage.run_id = run.run_id
             WHERE run.source_id = sources.source_id

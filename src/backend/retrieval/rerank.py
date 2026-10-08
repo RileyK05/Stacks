@@ -115,16 +115,21 @@ def bound_passages(
         if _count(candidate.text) <= limit:
             bounded.append(candidate)
             continue
+        # A whole passage carries its full chunk text and `window_start` is the
+        # cursor to window from; a partial already holds only its window.
         base = candidate.window_start if candidate.partial else 0
         start = 0 if candidate.partial else candidate.window_start
-        span = windows(
+        spans = windows(
             candidate.text[start:],
             limit,
             0,
             token_count=_count,
             max_windows=1,
-        )[0]
-        end = start + span[1]
+        )
+        if not spans:
+            bounded.append(candidate)
+            continue
+        end = start + spans[0][1]
         bounded.append(
             replace(
                 candidate,

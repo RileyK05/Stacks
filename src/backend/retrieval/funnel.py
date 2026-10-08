@@ -750,7 +750,14 @@ def overview(
     picked: list[dict[str, Any]] = []
     for chunks in list(by_source.values())[:limit]:
         take = min(len(chunks), per_source)
-        picked.extend(chunks[index * len(chunks) // take] for index in range(take))
+        if take == 1:
+            picked.append(chunks[0])
+            continue
+        # Spread over the whole source, first and last chunk included, so a
+        # source's opening and closing material both reach the overview (CR-12).
+        picked.extend(
+            chunks[index * (len(chunks) - 1) // (take - 1)] for index in range(take)
+        )
     final = tuple(
         Candidate(
             chunk_id=row["chunk_id"],

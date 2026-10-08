@@ -41,7 +41,9 @@ class BodyLimitMiddleware:
         limit = request_limit(scope)
         headers = Headers(scope=scope)
         declared = headers.get("content-length", "")
-        if declared.isdecimal() and int(declared) > limit:
+        # A header of thousands of digits is rejected before int() ever sees
+        # it: Python caps that conversion and would answer 500 (CR-14).
+        if declared.isdecimal() and (len(declared) > 20 or int(declared) > limit):
             await JSONResponse(
                 {"detail": "Request body exceeds the upload limit."}, 413
             )(scope, receive, send)

@@ -16,6 +16,7 @@ min_output_tokens = 128
 [tasks.tutor_answer]
 desired_output_tokens = 2048
 max_recoveries = 2
+reasoning_multiplier = 6
 
 [tasks.artifact_generation]
 desired_output_tokens = 16384

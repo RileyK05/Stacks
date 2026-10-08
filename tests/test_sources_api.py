@@ -544,4 +544,4 @@ def test_sources_list_surfaces_ocr_warning(client: TestClient) -> None:
         conn.commit()
 
     rows = client.get(f"/courses/{course_id}/sources").json()
-    assert rows[0]["warning"] == "warning: 27 pages unresolved"
+    assert rows[0]["warning"] == "27 pages unresolved"

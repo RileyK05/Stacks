@@ -190,6 +190,28 @@ fn write_export(
     result
 }
 
+fn export_path(path: PathBuf, extension: &str) -> PathBuf {
+    let existing = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    // A dotted name ("week3.final", "notes.v2") is a name, not a type: only a
+    // known extension is replaced, anything else gets ours appended (R4-NEW-j).
+    if existing.eq_ignore_ascii_case(extension) {
+        path
+    } else if EXTENSIONS
+        .iter()
+        .any(|known| existing.eq_ignore_ascii_case(known))
+    {
+        path.with_extension(extension)
+    } else {
+        let mut name = path.into_os_string();
+        name.push(".");
+        name.push(extension);
+        PathBuf::from(name)
+    }
+}
+
 fn choose_and_write(
     app: tauri::AppHandle,
     filename: String,
@@ -208,15 +230,7 @@ fn choose_and_write(
     let path = file_path
         .into_path()
         .map_err(|error| format!("Could not use the selected destination: {error}"))?;
-    let path = if path
-        .extension()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case(extension))
-    {
-        path
-    } else {
-        path.with_extension(extension)
-    };
+    let path = export_path(path, extension);
     let confirmed_target = target_snapshot(&path)?;
     if confirmed_target.is_some() {
         let replace = app
@@ -277,6 +291,27 @@ mod tests {
         assert_eq!(safe_filename("source.rs").unwrap().1, "rs");
         assert!(safe_filename("CON.md").is_err());
         assert!(safe_filename("notes.exe").is_err());
+    }
+
+    #[test]
+    fn dotted_names_keep_their_name_and_known_types_are_replaced() {
+        assert_eq!(export_path(PathBuf::from("week3"), "md"), PathBuf::from("week3.md"));
+        assert_eq!(
+            export_path(PathBuf::from("week3.md"), "md"),
+            PathBuf::from("week3.md")
+        );
+        assert_eq!(
+            export_path(PathBuf::from("notes.txt"), "md"),
+            PathBuf::from("notes.md")
+        );
+        assert_eq!(
+            export_path(PathBuf::from("week3.final"), "md"),
+            PathBuf::from("week3.final.md")
+        );
+        assert_eq!(
+            export_path(PathBuf::from("notes.v2"), "md"),
+            PathBuf::from("notes.v2.md")
+        );
     }
 
     #[test]

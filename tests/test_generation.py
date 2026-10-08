@@ -145,7 +145,7 @@ def test_profile_reasoning_allowance_is_preserved_for_short_tasks() -> None:
     plan = generation.plan_call(
         "tutor_answer", _endpoint(model="mimo-v2.6-flash"), "task"
     )
-    assert plan.output_tokens == 8192
+    assert plan.output_tokens == 12288
     assert plan.context_tokens is None
     assert plan.wider().output_tokens == 16384
 
@@ -156,7 +156,7 @@ def test_reasoning_model_scales_output_by_task_size() -> None:
     answer = generation.plan_call("tutor_answer", endpoint, "task")
     document = generation.plan_call("artifact_generation", endpoint, "task")
     assert summary.output_tokens == 4096
-    assert answer.output_tokens == 8192
+    assert answer.output_tokens == 12288
     assert document.output_tokens == 16384
     assert summary.output_tokens < answer.output_tokens < document.output_tokens
 

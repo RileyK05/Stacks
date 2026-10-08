@@ -98,7 +98,7 @@ class AddinHost:
     def _stop_locked(self) -> None:
         if self._server is not None:
             self._server.should_exit = True
-        if self._thread is not None:
+        if self._thread is not None and self._thread is not threading.current_thread():
             if self._thread.ident is not None:
                 self._thread.join(_STOP_TIMEOUT)
             if self._thread.is_alive():

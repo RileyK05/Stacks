@@ -32,7 +32,7 @@ from src.backend.tutor.compose import parse_json_object
 
 
 def _help_context(run: PracticeRun | None, index: int) -> str:
-    if run is None:
+    if run is None or not 0 <= index < min(len(run.correct_answers), len(run.results)):
         return ""
     return json.dumps([run.correct_answers[index], run.results[index]])
 

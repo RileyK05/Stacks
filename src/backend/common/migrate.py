@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import re
+import sqlite3
 from pathlib import Path
 
 from src.backend.common.db import Connection, connect
@@ -99,6 +101,17 @@ def _compatible_script(conn: Connection, version: str, script: str) -> str:
     )
 
 
+def _migration_script(script: str, version: str) -> str:
+    if not re.fullmatch(r"\d{3}", version):
+        raise ValueError(f"unrecognized migration version: {version!r}")
+    return (
+        "BEGIN IMMEDIATE;\n"
+        f"{script}\n"
+        f"INSERT INTO schema_migrations (version) VALUES ('{version}');\n"
+        "COMMIT;"
+    )
+
+
 def migrate(path: Path | None = None) -> list[str]:
     """Apply any unapplied migrations in order. Returns applied versions.
 
@@ -116,16 +129,13 @@ def migrate(path: Path | None = None) -> list[str]:
                 continue
             script = migration.read_text(encoding="utf-8")
             script = _compatible_script(conn, version, script)
-            conn.executescript(
-                "BEGIN IMMEDIATE;\n"
-                f"{script}\n"
-                f"INSERT INTO schema_migrations (version) VALUES ('{version}');\n"
-                "COMMIT;"
-            )
+            conn.executescript(_migration_script(script, version))
             applied.append(version)
     except BaseException:
         if conn.in_transaction:
-            conn.execute("ROLLBACK")
+            # A failed rollback must not replace the migration's own error.
+            with contextlib.suppress(sqlite3.Error):
+                conn.execute("ROLLBACK")
         raise
     finally:
         conn.close()

@@ -791,7 +791,7 @@ def _restore_into(archive_path: Path, destination: Path) -> None:
 
 
 def recover_backup(backup_id: str) -> Path:
-    if not backup_id.isalnum() or len(backup_id) != 32:
+    if re.fullmatch(r"[0-9a-f]{32}", backup_id) is None:
         raise ValueError("invalid backup id")
     archives = [
         p for p in _backup_root().glob("backup-*.zip") if p.stem.endswith(backup_id)
