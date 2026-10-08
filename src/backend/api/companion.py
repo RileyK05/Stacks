@@ -20,6 +20,7 @@ from src.backend.common.schemas.work import (
     DocumentUpdate,
     WorkAsk,
     WorkCreate,
+    WorkCritiqueSettings,
     WorkReply,
     WorkSession,
     WorkSummary,
@@ -185,6 +186,26 @@ async def connect_file(
         session_id,
         DocumentUpdate(**document.model_dump(), expected_revision=expected_revision),
     )
+
+
+@router.patch("/courses/{course_id}/work/{session_id}", response_model=WorkSession)
+def update_critique(
+    course_id: UUID, session_id: UUID, request: WorkCritiqueSettings
+) -> WorkSession:
+    require_course(course_id)
+    try:
+        with connection() as conn:
+            work = work_repo.set_critique(
+                conn,
+                course_id,
+                session_id,
+                request.critic_score,
+                request.essay_genre,
+            )
+            conn.commit()
+            return work
+    except work_repo.WorkNotFoundError as err:
+        raise HTTPException(404, str(err)) from err
 
 
 @router.post("/courses/{course_id}/work/{session_id}/ask", response_model=WorkReply)

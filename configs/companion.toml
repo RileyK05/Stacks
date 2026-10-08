@@ -8,6 +8,20 @@ section_chars = 1800
 capture_timeout_seconds = 20
 max_screenshot_pixels = 20000000
 
+[critique]
+score_min = 10
+score_max = 100
+default_score = 50
+cap_base = 2
+cap_rise = 6
+cap_span = 90
+strong_from = 30
+severe_from = 75
+edge_sections_from = 50
+low_context_chars = 4000
+syllabus_chunks = 2
+syllabus_chars = 1800
+
 [office_live]
 poll_interval_ms = 1000
 lease_seconds = 15

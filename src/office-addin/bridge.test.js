@@ -13,6 +13,9 @@ import {
   chooseCourse,
   citationLines,
   columnName,
+  criticBand,
+  critiqueError,
+  critiqueRequest,
   describeRange,
   documentText,
   hostKey,
@@ -20,6 +23,9 @@ import {
   plainText,
   resolveBridgeBase,
   sendAssist,
+  sendCritique,
+  showWriteActions,
+  unreadAvailable,
   wholePackage,
   publishDocument
 } from './public/bridge.js';
@@ -115,6 +121,39 @@ test('assistError explains each refusal in plain words', () => {
   assert.match(assistError(503), /model/);
   assert.match(assistError(402), /budget/);
   assert.match(assistError(500), /500/);
+});
+
+test('a critique result offers nothing to insert or replace', async () => {
+  const result = {
+    action: 'critique',
+    text: 'The warrant is thin.',
+    insert_text: '',
+    citations: [{ number: 1, filename: 'syllabus.pdf', label: 'page 1', text: 'Required.' }],
+    critique: { findings: [{ feedback: 'The warrant is thin.' }] }
+  };
+  assert.equal(showWriteActions(result), false);
+  assert.equal(documentText(result), '');
+  assert.equal(showWriteActions({ text: 'Explain this.', citations: [] }), true);
+  assert.equal(criticBand(10).id, 'rough');
+  assert.equal(criticBand(50).id, 'strong');
+  assert.equal(criticBand(100).id, 'severe');
+  assert.equal(unreadAvailable([{ reply: { critique: { coverage: { complete: false } } } }]), true);
+  assert.equal(unreadAvailable([{ reply: { critique: { coverage: { complete: true } } } }]), false);
+
+  const request = critiqueRequest('c1', 's1', 3, 80, 'creative', '', 'a sentence', 'draft');
+  assert.equal(request.host, 'word');
+  assert.equal(request.critic_score, 80);
+  assert.equal(request.essay_genre, 'creative');
+  assert.equal(request.expected_revision, 3);
+  const ok = fakeFetch(jsonResponse(result));
+  assert.equal((await sendCritique(ok.impl, ORIGIN, request, 'secret')).action, 'critique');
+  assert.equal(ok.calls[0].url, `${ORIGIN}/office/critique`);
+  assert.equal(ok.calls[0].init.headers['X-Office-Token'], 'secret');
+  assert.equal(JSON.parse(ok.calls[0].init.body).insert_text, undefined);
+
+  assert.equal(critiqueError(422, 'The critic comments on your draft. It will not write or rewrite the essay.'), 'The critic comments on your draft. It will not write or rewrite the essay.');
+  assert.doesNotMatch(critiqueError(422, 'The quote is not in the draft.'), /graded work/);
+  assert.match(critiqueError(503), /model/);
 });
 
 test('ACTIONS are the four the bridge accepts', () => {

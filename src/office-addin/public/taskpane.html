@@ -39,6 +39,29 @@
         <button type="button" data-action="summarize">Summarize</button>
       </section>
 
+      <section class="panel" id="critique" hidden>
+        <label class="label" for="essay-genre">Essay kind</label>
+        <select id="essay-genre">
+          <option value="argumentative">Argumentative</option>
+          <option value="analytical">Analytical</option>
+          <option value="research">Research</option>
+          <option value="comparative">Comparative</option>
+          <option value="creative">Creative</option>
+          <option value="reflective">Reflective</option>
+          <option value="rhetorical">Rhetorical</option>
+        </select>
+        <p class="muted">Change this when the draft is something else.</p>
+        <label class="label" for="critic-score">Critic score <span id="critic-score-value">50</span></label>
+        <input id="critic-score" type="range" min="10" max="100" value="50" />
+        <p id="critic-band" class="muted">Strong reviewer. A weak warrant, mismatched evidence, or a dropped counterargument is in range.</p>
+        <p class="muted">Stacks comments on the draft and leaves the writing to you. This does not update learning memory.</p>
+        <div class="actions">
+          <button id="critique-essay" type="button" class="primary">Critique essay</button>
+          <button id="critique-unread" type="button" hidden>Critique unread sections</button>
+        </div>
+        <div id="critique-result" hidden></div>
+      </section>
+
       <section class="panel">
         <label class="label" for="question">Or ask a question</label>
         <div class="ask">

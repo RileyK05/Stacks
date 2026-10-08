@@ -55,13 +55,111 @@ export function hostKey(officeHost) {
   return key in HOSTS ? key : null;
 }
 
-/** The actions the pane offers, in display order. */
+/** The actions the pane offers, in display order. Critique is separate and Word-only. */
 export const ACTIONS = [
   { id: 'explain', label: 'Explain' },
   { id: 'find', label: 'Find in my course' },
   { id: 'quiz', label: 'Quiz me' },
   { id: 'summarize', label: 'Summarize' }
 ];
+
+export const FALLACY_LABELS = {
+  straw_man: 'straw man',
+  false_dilemma: 'false dilemma',
+  hasty_generalization: 'hasty generalization',
+  post_hoc: 'post hoc',
+  appeal_to_authority: 'appeal to authority',
+  circular: 'circular',
+  slippery_slope: 'slippery slope',
+  ad_hominem: 'ad hominem',
+  equivocation: 'equivocation',
+  unsupported_claim: 'unsupported claim',
+  missing_counterargument: 'missing counterargument'
+};
+
+export const DIMENSION_LABELS = {
+  requirements: 'Requirements',
+  reasoning: 'Reasoning',
+  evidence: 'Evidence',
+  structure: 'Structure',
+  craft: 'Craft',
+  clarity: 'Clarity'
+};
+
+/** Essay kinds the critic accepts. The student chooses; the pane does not guess. */
+export const ESSAY_GENRES = [
+  ['argumentative', 'Argumentative'],
+  ['analytical', 'Analytical'],
+  ['research', 'Research'],
+  ['comparative', 'Comparative'],
+  ['creative', 'Creative'],
+  ['reflective', 'Reflective'],
+  ['rhetorical', 'Rhetorical']
+];
+
+/** Harshness bands. Thresholds match configs/companion.toml (30 and 75). */
+export function criticBand(score) {
+  if (score < 30) {
+    return { id: 'rough', label: 'Rough draft', detail: 'Only a problem that would change the draft.' };
+  }
+  if (score < 75) {
+    return {
+      id: 'strong',
+      label: 'Strong reviewer',
+      detail: 'A weak warrant, mismatched evidence, or a dropped counterargument is in range.'
+    };
+  }
+  return {
+    id: 'severe',
+    label: 'Severe',
+    detail: 'Almost every supplied claim with a real gap. The wording is blunt.'
+  };
+}
+
+export function latestCritique(turns) {
+  if (!Array.isArray(turns)) return null;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const critique = turns[index]?.reply?.critique;
+    if (critique) return critique;
+  }
+  return null;
+}
+
+/** A partial latest critique can ask for sections that pass did not read. */
+export function unreadAvailable(turns) {
+  const critique = latestCritique(turns);
+  return Boolean(critique && critique.coverage && critique.coverage.complete === false);
+}
+
+/** Critique comments on the draft. Insert and Replace stay hidden for that result. */
+export function showWriteActions(result) {
+  return Boolean(result) && result.action !== 'critique';
+}
+
+export function critiqueRequest(courseId, sessionId, revision, score, genre, instruction = '', selection = '', focus = 'draft') {
+  return {
+    course_id: courseId,
+    session_id: sessionId,
+    host: 'word',
+    request_id: crypto.randomUUID(),
+    expected_revision: revision,
+    critic_score: score,
+    essay_genre: genre,
+    instruction: instruction ?? '',
+    selection: selection ?? '',
+    focus
+  };
+}
+
+export async function sendCritique(fetchImpl, base, request, token) {
+  return postJson(fetchImpl, `${base}/office/critique`, request, token);
+}
+
+/** A failed critique keeps the bridge's reason. It is not the graded-work refusal. */
+export function critiqueError(status, detail = '') {
+  if (status === 422 || status === 409) return detail || 'The critic could not review this draft.';
+  return assistError(status, detail);
+}
 
 export async function bridgeHealth(fetchImpl, base, token) {
   return getJson(fetchImpl, `${base}/office/health`, token);

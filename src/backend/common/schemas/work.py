@@ -5,7 +5,35 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 Purpose = Literal["paper", "slides", "practice", "reference"]
-WorkAction = Literal["review", "find", "revise", "explain", "summarize"]
+WorkAction = Literal["review", "find", "revise", "explain", "summarize", "critique"]
+EssayGenre = Literal[
+    "argumentative",
+    "analytical",
+    "research",
+    "comparative",
+    "creative",
+    "reflective",
+    "rhetorical",
+]
+CritiqueDimension = Literal[
+    "requirements", "reasoning", "evidence", "structure", "craft", "clarity"
+]
+CritiqueGrounding = Literal["course", "craft"]
+CritiqueFallacy = Literal[
+    "none",
+    "straw_man",
+    "false_dilemma",
+    "hasty_generalization",
+    "post_hoc",
+    "appeal_to_authority",
+    "circular",
+    "slippery_slope",
+    "ad_hominem",
+    "equivocation",
+    "unsupported_claim",
+    "missing_counterargument",
+]
+CritiqueFocus = Literal["draft", "unread"]
 
 
 class WorkModel(BaseModel):
@@ -31,6 +59,8 @@ class WorkSummary(WorkCreate):
     course_id: UUID
     revision: int = Field(ge=0)
     updated_at: datetime
+    critic_score: int = Field(default=50, ge=10, le=100)
+    essay_genre: EssayGenre = "argumentative"
 
 
 class WorkDocument(DocumentInput):
@@ -68,6 +98,34 @@ class DocumentReview(WorkModel):
     findings: list[ReviewFinding] = Field(min_length=1, max_length=3)
 
 
+class CritiqueFinding(WorkModel):
+    original: str = Field(min_length=1, max_length=2000)
+    feedback: str = Field(min_length=1, max_length=2000)
+    dimension: CritiqueDimension
+    grounding: CritiqueGrounding
+    fallacy: CritiqueFallacy = "none"
+
+
+class PriorFindingStatus(WorkModel):
+    original: str = Field(min_length=1, max_length=2000)
+    feedback: str = Field(min_length=1, max_length=2000)
+    status: Literal["still_present", "passage_changed"]
+
+
+class CritiqueResult(WorkModel):
+    genre: EssayGenre
+    critic_score: int = Field(ge=10, le=100)
+    syllabus_in_context: bool
+    coverage: ContextCoverage
+    findings: list[CritiqueFinding] = Field(default_factory=list, max_length=8)
+    prior: list[PriorFindingStatus] = Field(default_factory=list, max_length=8)
+    note: str = Field(default="", max_length=500)
+
+
+class CritiqueModelOutput(WorkModel):
+    findings: list[CritiqueFinding] = Field(default_factory=list, max_length=12)
+
+
 class WorkReply(WorkModel):
     text: str
     citations: list[WorkCitation]
@@ -76,6 +134,7 @@ class WorkReply(WorkModel):
     coverage: ContextCoverage
     document_revision: int = Field(ge=1)
     proposed_edit: ProposedEdit | None = None
+    critique: CritiqueResult | None = None
 
 
 class WorkTurn(WorkModel):
@@ -96,12 +155,20 @@ class DocumentUpdate(DocumentInput):
     expected_revision: int = Field(ge=0)
 
 
+class WorkCritiqueSettings(WorkModel):
+    critic_score: int = Field(ge=10, le=100)
+    essay_genre: EssayGenre
+
+
 class WorkAsk(WorkModel):
     request_id: UUID
     expected_revision: int = Field(ge=1)
     action: WorkAction = "review"
     instruction: str = Field(default="", max_length=2000)
     selection: str = Field(default="", max_length=4000)
+    critic_score: int | None = Field(default=None, ge=10, le=100)
+    essay_genre: EssayGenre | None = None
+    focus: CritiqueFocus = "draft"
 
 
 class WorkPublish(WorkModel):

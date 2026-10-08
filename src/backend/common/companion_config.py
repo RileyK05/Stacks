@@ -19,6 +19,21 @@ class OfficeLivePolicy(BaseModel):
     chunk_columns: int = Field(gt=0)
 
 
+class CritiquePolicy(BaseModel):
+    score_min: int = Field(default=10, ge=1)
+    score_max: int = Field(default=100, gt=1)
+    default_score: int = Field(default=50, ge=1)
+    cap_base: int = Field(default=2, ge=0)
+    cap_rise: int = Field(default=6, ge=0)
+    cap_span: int = Field(default=90, gt=0)
+    strong_from: int = Field(default=30, ge=1)
+    severe_from: int = Field(default=75, ge=1)
+    edge_sections_from: int = Field(default=50, ge=1)
+    low_context_chars: int = Field(default=4000, gt=0)
+    syllabus_chunks: int = Field(default=2, ge=0)
+    syllabus_chars: int = Field(default=1800, gt=0)
+
+
 class CompanionPolicy(BaseModel):
     version: int
     max_document_chars: int = Field(gt=0)
@@ -29,6 +44,7 @@ class CompanionPolicy(BaseModel):
     section_chars: int = Field(gt=0)
     capture_timeout_seconds: int = Field(gt=0)
     max_screenshot_pixels: int = Field(gt=0)
+    critique: CritiquePolicy = Field(default_factory=CritiquePolicy)
     office_live: OfficeLivePolicy
 
 

@@ -59,6 +59,8 @@ def import_work(
                 "purpose": item.purpose,
                 "revision": item.revision,
                 "updated_at": item.updated_at,
+                "critic_score": item.critic_score,
+                "essay_genre": item.essay_genre,
             },
         )
         for doc in item.documents:

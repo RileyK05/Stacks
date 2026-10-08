@@ -27,8 +27,20 @@ UPDATE work_sessions SET revision = revision WHERE session_id = :session_id AND 
 -- name: delete
 DELETE FROM work_sessions WHERE session_id = :session_id AND course_id = :course_id;
 -- name: import_session
-INSERT INTO work_sessions(session_id, course_id, title, purpose, revision, updated_at)
-VALUES(:session_id, :course_id, :title, :purpose, :revision, :updated_at);
+INSERT INTO work_sessions(
+    session_id, course_id, title, purpose, revision, updated_at,
+    critic_score, essay_genre
+)
+VALUES(
+    :session_id, :course_id, :title, :purpose, :revision, :updated_at,
+    :critic_score, :essay_genre
+);
+-- name: set_critique
+UPDATE work_sessions
+SET critic_score = :critic_score,
+    essay_genre = :essay_genre,
+    updated_at = now_utc()
+WHERE session_id = :session_id AND course_id = :course_id;
 -- name: import_document
 INSERT INTO work_documents(session_id, revision, payload, captured_at)
 VALUES(:session_id, :revision, :payload, :captured_at);

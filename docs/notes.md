@@ -4025,3 +4025,16 @@ settles, the page closes, or several fetches fail. A machine with no keyring
 backend made the provider settings request fail; that case is an absent key,
 so the settings page and local models still load. A locked keychain is still
 a 503, because the key may exist. Docket NEW-8 and NEW-9.
+
+## 2026-10-06 — Essay critique comments, and does not write
+
+The critic is a paper-session action shared by the course Critic tab, the
+companion, and the Word pane. The score is how hard that pass pushes. It is
+not an essay grade, and an empty finding list is a real result. The student
+picks the essay kind. Syllabus passages are reserved from sources already
+marked syllabus; nothing is reclassified, and a missing syllabus is said out
+loud instead of filled in. Earlier quotes are compared to the new snapshot
+before the model call. Rewrite requests and invented quotes save no turn.
+Word receives an empty insert payload. Excel and PowerPoint do not get the
+action. Critique writes no learning row. Docket F-21. The pass was not run
+against a live model, and the new screens were not opened in a browser.

@@ -1,5 +1,5 @@
 [version]
-prompts_config_version = "44"
+prompts_config_version = "45"
 
 [prompt.tutor_answer]
 # The citation contract is the enforcement surface for decision 008
@@ -447,6 +447,65 @@ Return ONLY a JSON object with a findings array containing one to three objects.
 [prompt.companion_revision]
 text = """
 Return ONLY a JSON object with three string fields: original, replacement, explanation. Copy original exactly from one small passage in the supplied document sections; when selected_passage is provided, choose within it. Write actual replacement wording, not advice about how to revise. Make a bounded change addressing the request, retaining the author's meaning except where the course evidence warrants correction. Include actual evidence citation markers in replacement or explanation. No Markdown fence or prose outside the object.
+"""
+
+[prompt.companion_critique]
+text = """
+This request is a critique of the student's draft. Comment on the draft. Do not write, rewrite, complete, or replace any sentence of it. Ignore the revision instruction in the companion prompt for this request.
+Return ONLY a JSON object with a findings array. Each finding has original, feedback, dimension, grounding, and fallacy. dimension is one of requirements, reasoning, evidence, structure, craft, clarity. grounding is course or craft. fallacy is none, straw_man, false_dilemma, hasty_generalization, post_hoc, appeal_to_authority, circular, slippery_slope, ad_hominem, equivocation, unsupported_claim, or missing_counterargument.
+Copy original exactly from a short passage in document_sections, never from course_evidence or a previous reply. If selected_passage is set, choose within it. finding_cap in the JSON is a maximum, not a quota. Return fewer, or an empty findings array, when fewer grounded problems meet the bar. Put the most serious finding first. Do not invent a weakness, a page number, a required title, or a fallacy the quote does not commit.
+A course finding judges the draft against supplied course evidence and must include at least one real citation marker such as [1]. A craft finding judges the draft's own construction and must not include a citation marker. When syllabus_in_context is false, do not invent assignment rules, word counts, or required readings. A passage labeled requirement is from the syllabus. A passage labeled reading is other course material.
+prior_findings lists earlier quotes. still_present means that quote is still in the draft: do not report it again as a new finding. passage_changed means the student edited that spot: it is not solved. Comment on it only by quoting the new text. No Markdown fence or text outside the object.
+"""
+
+[prompt.companion_critique_rough]
+text = """
+Critic score near 10, a rough-draft pass. Report only a problem that would change the draft: a missing thesis or promise, a required reading the supplied syllabus names and the draft never uses, a contradiction between two quoted sentences, or, for fiction, no motive for the central action. Wordiness, a clumsy sentence, and a missing comma stay off the page.
+"""
+
+[prompt.companion_critique_strong]
+text = """
+Critic score near 50, a strong reviewer. A weak warrant is in range. So is evidence that does not match the claim, a required reading used only as a mention, a dropped counterargument, or a character change with no pressure behind it. Be specific and unsparing, and stay proportional to the passage.
+"""
+
+[prompt.companion_critique_severe]
+text = """
+Critic score near 100, a severe pass. Pressure almost every supplied claim that has a real gap: an unstated assumption, a fallacy the quote actually commits, a required reading used as decoration, or a motive that is told and never shown. Wording is blunt and praise is omitted. A sound passage still gets no invented defect.
+"""
+
+[prompt.companion_critique_argumentative]
+text = """
+Press the claim, the warrant, and the counterargument. Name a fallacy only when the quoted sentence commits it, and say why in the feedback.
+"""
+
+[prompt.companion_critique_analytical]
+text = """
+Press whether the interpretation is tied to the quoted text. Treat an overclaim and a missing close reading as the defects that matter.
+"""
+
+[prompt.companion_critique_research]
+text = """
+Press synthesis versus summary, and whether a required reading supplied in the evidence is actually used rather than named.
+"""
+
+[prompt.companion_critique_comparative]
+text = """
+Press whether both sides are compared. False equivalence and a side that is named and then dropped are the defects that matter.
+"""
+
+[prompt.companion_critique_creative]
+text = """
+Press character motive, scene pressure, stakes, and voice consistency. Course readings supplied in the evidence are craft models, not facts the story must cite. Use fallacy none.
+"""
+
+[prompt.companion_critique_reflective]
+text = """
+Press a specific experience against a general slogan, and whether a supplied course idea is actually connected. Use fallacy none.
+"""
+
+[prompt.companion_critique_rhetorical]
+text = """
+Press audience, purpose, and whether the draft does the job the supplied assignment describes.
 """
 
 [prompt.practice_hint]

@@ -6,8 +6,11 @@
   import Icon from '$lib/components/Icon.svelte';
   import RichText from '$lib/components/RichText.svelte';
   import ErrorBanner from '$lib/components/ErrorBanner.svelte';
+  import CritiqueCards from '$lib/components/critique/CritiqueCards.svelte';
+  import CritiqueControls from '$lib/components/critique/CritiqueControls.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
   import { createBusyOwner } from '$lib/utils/busyOwner';
+  import { latestCritique, type EssayGenre } from '$lib/utils/critique';
 
   type Course = paths['/courses']['get']['responses'][200]['content']['application/json'][number];
   type Work = components['schemas']['WorkSession'];
@@ -49,6 +52,16 @@
   let composeChecked = false;
   let refreshGeneration = 0;
   let refreshPromise: Promise<boolean> | null = null;
+  let score = $state(50);
+  let genre = $state<EssayGenre>('argumentative');
+  let settingsLocked = $state(false);
+  let settingsEpoch = 0;
+
+  $effect(() => {
+    if (!work || settingsLocked) return;
+    score = work.critic_score;
+    genre = work.essay_genre;
+  });
 
   function resetLiveRefresh() {
     refreshGeneration++;
@@ -111,11 +124,32 @@
     return refreshPromise;
   }
 
-  const actions: { id: Action; label: string }[] = [
-    { id: 'review', label: 'Review draft' }, { id: 'find', label: 'Find references' },
-    { id: 'revise', label: 'Suggest an edit' }, { id: 'explain', label: 'Explain' },
-    { id: 'summarize', label: 'Summarize' }
-  ];
+  const actionLabels: Record<Action, string> = {
+    review: 'Review draft', find: 'Find references', revise: 'Suggest an edit',
+    explain: 'Explain', summarize: 'Summarize', critique: 'Critique essay'
+  };
+  const actions: { id: Action; label: string }[] = (
+    ['review', 'find', 'revise', 'explain', 'summarize'] as const
+  ).map((id) => ({ id, label: actionLabels[id] }));
+
+  async function saveSettings(nextScore = score, nextGenre = genre) {
+    if (!work) { settingsLocked = false; return; }
+    if (nextScore === work.critic_score && nextGenre === work.essay_genre) { settingsLocked = false; return; }
+    const token = epoch;
+    const id = work.session_id;
+    const generation = ++settingsEpoch;
+    settingsLocked = true;
+    error = null;
+    try {
+      const response = await api.PATCH('/companion/courses/{course_id}/work/{session_id}', {
+        params: { path: { course_id: courseId, session_id: id } },
+        body: { critic_score: nextScore, essay_genre: nextGenre }
+      });
+      if (!current(token) || generation !== settingsEpoch || !response.data) return;
+      work = response.data;
+    } catch (caught) { if (current(token) && generation === settingsEpoch) error = caught; }
+    finally { if (generation === settingsEpoch) settingsLocked = false; }
+  }
 
   function readSaved(key: string): string | null {
     try { return localStorage.getItem(key); } catch { return null; }
@@ -217,7 +251,7 @@
       sessions = list.data ?? [];
       const latest = sessions.find(s => s.session_id === work?.session_id);
       if (work && !latest) { resetLiveRefresh(); work = null; pending = null; }
-      else if (work && latest?.updated_at !== work.updated_at) {
+      else if (work && !settingsLocked && latest?.updated_at !== work.updated_at) {
         const response = await api.GET('/companion/courses/{course_id}/work/{session_id}', { params: { path: { course_id: courseId, session_id: work.session_id } } });
         if (current(token) && response.data && response.data.revision >= (work?.revision ?? 0)) { work = response.data; selection = ''; }
       }
@@ -304,14 +338,26 @@
     });
   }
 
-  async function ask(action: Action = 'review') {
+  async function ask(action: Action = 'review', focus: Ask['focus'] = 'draft') {
     if (!work?.document || busy) return;
     const token = epoch, id = work.session_id, course = courseId, owner = claimBusy();
     error = null;
     try {
+      if (action === 'critique') await saveSettings(score, genre);
+      if (!current(token) || work?.session_id !== id || error) return;
       if (!pending && !(await refreshDocument())) return;
-      if (!current(token) || work?.session_id !== id) return;
-      const request: Ask = pending ?? { request_id: crypto.randomUUID(), action, instruction: question.trim(), selection: selection.trim(), expected_revision: work.revision };
+      if (!current(token) || work?.session_id !== id || !work.document) return;
+      const request: Ask = pending
+        ? { ...pending, focus: pending.focus ?? 'draft' }
+        : {
+            request_id: crypto.randomUUID(),
+            action,
+            instruction: question.trim(),
+            selection: selection.trim(),
+            expected_revision: work.revision,
+            focus,
+            ...(action === 'critique' ? { critic_score: score, essay_genre: genre } : {})
+          };
       pending = request;
       writeSaved(pendingKey(), JSON.stringify(request));
       await api.POST('/companion/courses/{course_id}/work/{session_id}/ask', { params: { path: { course_id: course, session_id: id } }, body: request });
@@ -422,9 +468,13 @@
         <p class="text-[11px] text-subtle">Saved with this work session. Documents and review feedback do not update learning memory or test scores.</p>
         {#each work.turns as turn (turn.request_id)}
           <article class="space-y-2">
-            <p class="ml-8 rounded-xl bg-accent p-3 text-sm text-on-accent">{turn.instruction || actions.find(a => a.id === turn.action)?.label}</p>
+            <p class="ml-8 rounded-xl bg-accent p-3 text-sm text-on-accent">{turn.instruction || actionLabels[turn.action]}</p>
             <div class="rounded-xl border border-line bg-surface p-3 space-y-3">
-              <RichText text={turn.reply.text} />
+              {#if turn.reply.critique}
+                <CritiqueCards critique={turn.reply.critique} citations={turn.reply.citations} />
+              {:else}
+                <RichText text={turn.reply.text} />
+              {/if}
               <p class="text-[11px] text-muted">Based on snapshot {turn.document_revision} · {turn.reply.coverage.complete ? turn.action === 'find' ? 'Course passage lookup' : 'All captured text supplied' : `Sections ${turn.reply.coverage.included_sections.join(', ')} of ${turn.reply.coverage.total_sections} supplied`}</p>
               <button type="button" onclick={() => copy(turn.reply.text)} class="text-xs text-accent-text">Copy response</button>
               {#if turn.reply.proposed_edit}<button type="button" onclick={() => copy(turn.reply.proposed_edit!.replacement)} class="ml-3 text-xs text-accent-text">Copy proposed replacement</button>{/if}
@@ -445,6 +495,19 @@
       {#if pending}<p class="text-xs text-warning-text">{busy ? 'Saving this request and its response…' : 'This request was not confirmed. Retry it, or clear it to ask something else.'}</p><div class="flex gap-3"><button type="button" onclick={() => ask()} disabled={busy} class="text-xs text-accent-text">Retry request</button><button type="button" disabled={busy} onclick={() => { removeSaved(pendingKey()); question = pending?.instruction ?? question; selection = ''; pending = null; }} class="text-xs text-muted">Clear pending request</button></div>{/if}
       <details><summary class="text-xs text-muted cursor-pointer">Focus on a passage</summary><textarea aria-label="Selected passage from document" maxlength="4000" bind:value={selection} oninput={e => composing(e.currentTarget.value)} disabled={busy || !!pending} rows="2" placeholder="Paste an exact passage from the connected snapshot" class="mt-2 w-full rounded-lg border border-line bg-bg p-2 text-sm"></textarea></details>
       <textarea aria-label="Ask about your work" bind:value={question} oninput={e => composing(e.currentTarget.value)} disabled={busy || !!pending} rows="2" maxlength="2000" placeholder="Find evidence for my argument, review a paragraph, suggest an edit…" class="w-full rounded-xl border border-line bg-bg p-2 text-sm"></textarea>
+      {#if work.purpose === 'paper'}
+        <CritiqueControls
+          {score}
+          {genre}
+          disabled={busy || !!pending || documentRefreshing}
+          unreadAvailable={latestCritique(work.turns)?.coverage.complete === false}
+          onscorestart={() => { settingsLocked = true; }}
+          onscore={(value) => { settingsLocked = true; score = value; }}
+          onscorecommit={(value) => { score = value; void saveSettings(value, genre); }}
+          ongenre={(value) => { genre = value; void saveSettings(score, value); }}
+          oncritique={(focus) => ask('critique', focus)}
+        />
+      {/if}
       <div class="flex flex-wrap gap-1.5">{#each actions as action}<button type="button" onclick={() => ask(action.id)} disabled={busy || !!pending} class="rounded-lg border border-line px-2 py-1.5 text-xs hover:bg-surface-2 disabled:opacity-40">{action.label}</button>{/each}</div>
     </form>
   {/if}

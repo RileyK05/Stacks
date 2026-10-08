@@ -184,7 +184,7 @@ def test_upgrade_preserves_historical_counts_with_unknown_reporting_status(
         conn.commit()
     finally:
         conn.close()
-    assert migrations.migrate(path) == ["022"]
+    assert migrations.migrate(path) == ["022", "023"]
     monkeypatch.setenv("DATABASE_PATH", str(path))
     entries = usage_repo.ledger_page()
     assert {(e.input_tokens, e.output_tokens) for e in entries} == {(0, 0), (10, 5)}

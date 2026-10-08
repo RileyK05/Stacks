@@ -12,12 +12,20 @@ import {
   bridgeHealth,
   chooseCourse,
   citationLines,
+  criticBand,
+  critiqueError,
+  critiqueRequest,
   describeRange,
+  DIMENSION_LABELS,
   documentText,
+  FALLACY_LABELS,
   hostKey,
   listCourses,
   resolveBridgeBase,
   sendAssist,
+  sendCritique,
+  showWriteActions,
+  unreadAvailable,
   publishDocument,
   wholePackage,
   livePolicy, registerLive, pollLive, completeLive, disconnectLive, getWork
@@ -57,12 +65,22 @@ const el = {
   replace: /** @type {HTMLButtonElement} */ (byId('replace')),
   engine: /** @type {HTMLElement} */ (byId('engine')),
   connectWork: /** @type {HTMLButtonElement} */ (byId('connect-work')),
-  workPurpose: /** @type {HTMLSelectElement} */ (byId('work-purpose'))
+  workPurpose: /** @type {HTMLSelectElement} */ (byId('work-purpose')),
+  critique: /** @type {HTMLElement} */ (byId('critique')),
+  essayGenre: /** @type {HTMLSelectElement} */ (byId('essay-genre')),
+  criticScore: /** @type {HTMLInputElement} */ (byId('critic-score')),
+  criticScoreValue: /** @type {HTMLElement} */ (byId('critic-score-value')),
+  criticBand: /** @type {HTMLElement} */ (byId('critic-band')),
+  critiqueEssay: /** @type {HTMLButtonElement} */ (byId('critique-essay')),
+  critiqueUnread: /** @type {HTMLButtonElement} */ (byId('critique-unread')),
+  critiqueResult: /** @type {HTMLElement} */ (byId('critique-result'))
 };
 
 let host = null;
 let lastResult = null;
 let busy = false;
+let scoreDragging = false;
+let connectedPurpose = '';
 const unsavedIdentity = `unsaved:${crypto.randomUUID()}`;
 const identity = () => Office.context.document.url || unsavedIdentity;
 let pollTimer = null;
@@ -313,8 +331,12 @@ function setBusy(value) {
   for (const button of el.actions.querySelectorAll('button')) button.disabled = value || !el.course.value;
   el.ask.disabled = value || !el.course.value;
   el.connectWork.disabled = value || !el.course.value;
+  el.critiqueEssay.disabled = value || !el.course.value;
+  el.critiqueUnread.disabled = value || !el.course.value;
   el.course.disabled = value;
   el.workPurpose.disabled = value;
+  el.essayGenre.disabled = value;
+  el.criticScore.disabled = value;
   el.refresh.disabled = value;
   el.retry.disabled = value;
   updateWriteButtons();
@@ -330,9 +352,166 @@ function clearAnswer() {
 }
 
 function updateWriteButtons() {
-  const ready = Boolean(documentText(lastResult));
+  const offer = showWriteActions(lastResult);
+  el.insert.hidden = !offer;
+  el.replace.hidden = !offer;
+  const ready = offer && Boolean(documentText(lastResult));
   el.insert.disabled = busy || !ready;
   el.replace.disabled = busy || !ready;
+}
+
+function updateBand() {
+  const score = Number(el.criticScore.value);
+  const band = criticBand(score);
+  el.criticScoreValue.textContent = String(score);
+  el.criticBand.textContent = `${band.label}. ${band.detail}`;
+}
+
+function workStorageKey() {
+  return `stacks.work:${el.course.value}:${identity()}`;
+}
+
+function readConnected() {
+  try { return JSON.parse(localStorage.getItem(workStorageKey()) || 'null'); }
+  catch { return null; }
+}
+
+function applyCritiqueSession(session) {
+  if (!session) return;
+  connectedPurpose = session.purpose || '';
+  if (!scoreDragging) {
+    el.criticScore.value = String(session.critic_score ?? 50);
+    if (session.essay_genre) el.essayGenre.value = session.essay_genre;
+    updateBand();
+  }
+  el.critiqueUnread.hidden = !unreadAvailable(session.turns);
+}
+
+function addText(parent, tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  node.textContent = text;
+  parent.append(node);
+  return node;
+}
+
+function renderPrior(title, items, edited) {
+  if (!items.length) return;
+  addText(el.critiqueResult, 'h2', 'label', title);
+  for (const item of items) {
+    const card = document.createElement('article');
+    card.className = 'finding';
+    const quote = document.createElement('blockquote');
+    quote.textContent = item.original || '';
+    card.append(quote);
+    addText(card, 'p', '', item.feedback || '');
+    if (edited) addText(card, 'p', 'muted', 'The quoted passage is no longer in the draft. That does not mean the problem is solved.');
+    el.critiqueResult.append(card);
+  }
+}
+
+function renderCritique(result) {
+  const critique = result?.critique;
+  el.critiqueResult.hidden = false;
+  el.critiqueResult.replaceChildren();
+  if (!critique) return;
+  addText(el.critiqueResult, 'p', 'muted', `${critique.genre} · critic score ${critique.critic_score}`);
+  const coverage = critique.coverage || {};
+  const sections = Array.isArray(coverage.included_sections) ? coverage.included_sections.join(', ') : 'none';
+  addText(
+    el.critiqueResult,
+    'p',
+    'muted',
+    coverage.complete
+      ? 'All captured text was supplied for this pass.'
+      : `Partial review: sections ${sections || 'none'} of ${coverage.total_sections}. This pass did not read the rest of the draft.`
+  );
+  if (!critique.syllabus_in_context) {
+    addText(el.critiqueResult, 'p', 'muted', 'No syllabus passage was supplied for this pass, so no assignment rule was assumed.');
+  }
+  if (critique.note) addText(el.critiqueResult, 'p', '', critique.note);
+  const prior = Array.isArray(critique.prior) ? critique.prior : [];
+  renderPrior('Still open', prior.filter((item) => item.status === 'still_present'), false);
+  renderPrior('Passage edited', prior.filter((item) => item.status === 'passage_changed'), true);
+  const findings = Array.isArray(critique.findings) ? critique.findings : [];
+  if (findings.length && prior.length) addText(el.critiqueResult, 'h2', 'label', 'New');
+  for (const finding of findings) {
+    const card = document.createElement('article');
+    card.className = 'finding';
+    const labels = [
+      DIMENSION_LABELS[finding.dimension] || finding.dimension,
+      FALLACY_LABELS[finding.fallacy] || '',
+      finding.grounding === 'course' ? 'Course' : 'Draft'
+    ].filter(Boolean);
+    addText(card, 'p', 'muted', labels.join(' · '));
+    const quote = document.createElement('blockquote');
+    quote.textContent = finding.original || '';
+    card.append(quote);
+    addText(card, 'p', '', finding.feedback || '');
+    el.critiqueResult.append(card);
+  }
+  el.critiqueUnread.hidden = coverage.complete !== false;
+}
+
+async function critiqueEssay(focus) {
+  if (bridgeConfigurationError || host !== 'word') return;
+  const courseId = el.course.value;
+  const saved = readConnected();
+  if (!courseId || !saved?.session_id) {
+    setStatus('Connect the whole document before critiquing.', 'error');
+    return;
+  }
+  if (connectedPurpose && connectedPurpose !== 'paper') {
+    setStatus('Essay critique is for a paper draft. Connect this document as a paper.', 'error');
+    return;
+  }
+  setBusy(true);
+  setStatus('Reading the document for the critic…');
+  clearAnswer();
+  el.critiqueResult.hidden = true;
+  el.critiqueResult.replaceChildren();
+  try {
+    const score = Number(el.criticScore.value);
+    const genre = el.essayGenre.value;
+    const policy = await livePolicy(fetch, BRIDGE, TOKEN);
+    const document = await readWorkingDocument(policy.reader);
+    const published = await publishDocument(fetch, BRIDGE, {
+      course_id: courseId,
+      purpose: connectedPurpose || el.workPurpose.value,
+      session_id: saved.session_id,
+      expected_revision: saved.revision,
+      document
+    }, TOKEN);
+    try {
+      localStorage.setItem(workStorageKey(), JSON.stringify({ session_id: published.session_id, revision: published.revision }));
+    } catch { /* The critique still uses this published revision. */ }
+    applyCritiqueSession(published);
+    el.criticScore.value = String(score);
+    el.essayGenre.value = genre;
+    updateBand();
+    const request = critiqueRequest(
+      courseId,
+      published.session_id,
+      published.revision,
+      score,
+      genre,
+      el.question.value,
+      el.selection.value,
+      focus
+    );
+    const result = await sendCritique(fetch, BRIDGE, request, TOKEN);
+    renderCritique(result);
+    setStatus('Critique ready. The draft was not changed.', 'ok');
+  } catch (error) {
+    setStatus(
+      typeof error.status === 'number'
+        ? critiqueError(error.status, error.detail)
+        : (error.detail || error.message || 'Could not read this document.'),
+      'error'
+    );
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function refreshSelection() {
@@ -499,6 +678,7 @@ async function connectWork() {
     const result = await publishDocument(fetch, BRIDGE, { ...common, document }, TOKEN);
     if (changed()) { setStatus(''); return; }
     try { localStorage.setItem(storageKey, JSON.stringify({ session_id: result.session_id, revision: result.revision })); } catch { }
+    applyCritiqueSession(result);
     const connection = await registerLive(fetch, BRIDGE, { course_id: course, session_id: result.session_id, host, external_id: externalId }, TOKEN);
     if (changed()) { setStatus(''); return; }
     livePane.bind({ connection_id: connection.connection_id, session_id: result.session_id, external_id: externalId, storage_key: storageKey });
@@ -511,9 +691,11 @@ async function connectWork() {
 
 function wire() {
   const labels = HOSTS[host];
+  el.critique.hidden = host !== 'word';
   el.selection.placeholder = labels.placeholder;
   el.insert.textContent = labels.insert;
   el.replace.textContent = labels.replace;
+  updateBand();
   for (const button of el.actions.querySelectorAll('button')) {
     button.addEventListener('click', () => ask(button.dataset.action));
   }
@@ -522,12 +704,21 @@ function wire() {
     if (event.key === 'Enter') ask('explain');
   });
   el.connectWork.addEventListener('click', connectWork);
+  el.critiqueEssay.addEventListener('click', () => critiqueEssay('draft'));
+  el.critiqueUnread.addEventListener('click', () => critiqueEssay('unread'));
+  el.criticScore.addEventListener('pointerdown', () => { scoreDragging = true; });
+  el.criticScore.addEventListener('pointerup', () => { scoreDragging = false; });
+  el.criticScore.addEventListener('input', updateBand);
   el.refresh.addEventListener('click', refreshSelection);
   el.retry.addEventListener('click', connect);
   el.course.addEventListener('change', () => {
     stopLive();
     remember(el.course.value);
     clearAnswer();
+    connectedPurpose = '';
+    el.critiqueResult.hidden = true;
+    el.critiqueResult.replaceChildren();
+    el.critiqueUnread.hidden = true;
     setBusy(false);
   });
   el.insert.addEventListener('click', () => write('insert'));
@@ -551,4 +742,11 @@ Office.onReady(async (info) => {
   wire();
   await connect();
   await refreshSelection();
+  if (host === 'word' && el.course.value) {
+    const saved = readConnected();
+    if (saved?.session_id) {
+      try { applyCritiqueSession(await getWork(fetch, BRIDGE, el.course.value, saved.session_id, TOKEN)); }
+      catch { /* The next connect restores the critic. */ }
+    }
+  }
 });

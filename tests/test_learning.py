@@ -616,7 +616,7 @@ def test_upgrade_keeps_capability_history_and_only_valid_method_associations(
     assert _submit(client, course.course_id, suite_id, [0, 1]).status_code == 200
     with connection() as conn:
         assert len(inspection.rows(conn, "core_observations")) == 2
-    assert migrations.migrate(path) == ["021", "022"]
+    assert migrations.migrate(path) == ["021", "022", "023"]
     with connection() as conn:
         observations = inspection.rows(conn, "observations", course_id=course.course_id)
         assert len(observations) == 2 and all(row["correct"] for row in observations)

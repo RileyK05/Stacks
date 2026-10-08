@@ -119,6 +119,10 @@ SET source_type = :source_type
 WHERE course_id = :course_id AND source_id = :source_id
 RETURNING source_id;
 
+-- name: syllabus_ids
+SELECT source_id FROM sources
+WHERE course_id = :course_id AND source_type = 'syllabus' AND status = 'indexed';
+
 -- name: delete_source
 -- Cascades to chunks, embeddings, locators, runs, queue rows.
 DELETE FROM sources

@@ -655,6 +655,42 @@ end of the document. The response exposes included section numbers and whether
 all captured text fit. A partial context is not a whole-document review.
 Multi-pass whole-document analysis and semantic section selection remain open.
 
+### Essay critique
+
+Essay critique is a separate work action, `critique`, for a paper session. It
+comments on the student's draft. It does not write, rewrite, complete, or
+submit the essay, and the model schema has no replacement text. Review draft,
+suggest an edit, explain, find, and summarize are unchanged.
+
+The critic score is an integer from 10 to 100, default 50, remembered on the
+session and recorded on each pass. It sets how hard the reviewer pushes, not a
+grade. Score 10 reports only a problem that would change the draft. Score 50
+is a strong reviewer. Score 100 is severe about grounded gaps. The finding cap
+is `round(2 + (score - 10) * 6 / 90)` (2, 5, and 8 at those anchors). The cap
+is a maximum. A pass with no findings is valid. The student chooses one of
+seven essay kinds; the default is argumentative. Creative and reflective
+findings cannot name a fallacy.
+
+Up to two indexed chunks whose source type is syllabus are reserved inside the
+source budget, even when other chunks rank higher. Other indexed material fills
+the rest of that budget. If no syllabus passage is supplied, the pass says so
+and must not invent assignment rules. A course finding has to cite a supplied
+passage. A craft finding must not invent a citation. Quotes have to be exact
+substrings of the connected draft. Migration 023 stores the score and essay
+kind. Changing either patches the session, so the course Critic tab, the
+companion, and a later Word pass share them.
+
+Each new pass compares earlier quotes to the current snapshot before the model
+call. A quote still in the draft is still open and must not be reported again
+as new. A quote that is gone was edited, which does not mean the problem is
+solved. The reply names the sections it actually read. **Critique unread
+sections** prefers sections the latest critique did not include. One model
+call per pass. A critique writes no learning row.
+
+The course page Critic tab and the companion show the same controls for a
+paper. The Word task pane does too. Excel and PowerPoint do not. The Word
+result has an empty insert payload, and Insert and Replace are not offered.
+
 Proposed edits are shown for inspection and copying. This baseline does not
 apply companion edits directly to arbitrary external applications. Existing
 Office insertion controls are separate from the new connection action.
@@ -700,8 +736,12 @@ uses `office_addin/windows.py` or `office_addin/macos.py`.
 ### Student flow
 
 Connect Office in Settings, open the Stacks pane in the document, select a course,
-and press **Connect whole document to companion**. Select that saved work session
-in the companion and keep the Office pane open. The first nonempty input in the
+and press **Connect whole document to companion**. In Word, **Critique essay**
+reads the open document, publishes that snapshot, and reviews it. The score
+and essay kind are stored on the session, and the pane shows the findings.
+That result has nothing to insert or replace. Excel and PowerPoint do not
+offer critique. Select the saved work
+session in the companion and keep the Office pane open. The first nonempty input in the
 question or focused-passage field requests the current document. Further typing
 shares that request. Action buttons wait for it before constructing the question
 and its snapshot revision. Actions without typed text also request a refresh.
@@ -800,8 +840,7 @@ setup tests fake commands and do not touch keychains. Screenshot tests fake OCR.
 Browser fixtures exercise refresh, revision, offline recovery, reload, and course
 isolation with simulated Office commands and model replies. These establish
 application contracts, not real Office behavior, OCR accuracy, or model quality.
-`plan-notebook.md` records the latest checks and remaining release gates;
-`docket.md` owns unresolved work. No automatic companion edit application, live
+`DECISIONS.md` records open design decisions. No automatic companion edit application, live
 Google connection, or automatic Mac window capture is implemented.
 
 ## 15. Source graph and migration
@@ -834,7 +873,7 @@ appropriate; a suggestion is not a capability judgment. No prerequisite edges
 or inferred dependency chains are stored. Reduced backups omit vectors and
 similarity edges and rebuild them after recovery; citation passages remain.
 
-## 16. Reliability contracts from docket triage
+## 16. Reliability contracts
 
 Text input streams through a configured decoded-byte limit, recognizes Unicode
 BOMs and rejects binary signatures. Broken PDF font digits are never guessed;
@@ -890,10 +929,10 @@ explain see that shared stem. A paraphrase that drops those source terms is
 incomplete.
 Points are checked mechanically, without a model judge. Question quality here is
 structural: citations, grounded points, and overlap with the upload. A live model
-evaluation of these questions has not been run (docket F-20).
+evaluation of these questions has not been run.
 
 Study sheets route to documents. Budgeted whole-unit output recovery is implemented
-(§8); long-material splitting/checkpoints remain planned in `plan-notebook.md`.
+(§8); long-material splitting/checkpoints remain planned.
 Unknown models still use the default allowance without invented larger ceilings.
 
 Prior teaching evidence must come from the quiz's own conversation, not another
@@ -940,7 +979,7 @@ learning writes; CSV exports include a source legend. Browser development export
 reserve names in the configured export folder. Confirmation dialogs cycle keyboard focus
 and restore it on close. Flashcard edits reset study order/review marks rather than
 applying stale indices to new content. Native lifecycle source fixes remain
-uncompiled in this pass; semantic and installed-platform acceptance stays in
-`docket.md`. Backend startup/restart failure has an explicit retry path, and slow
+uncompiled in this pass; semantic and installed-platform acceptance remains
+open. Backend startup/restart failure has an explicit retry path, and slow
 shutdown/readiness waits run outside the shell's short backend-state mutex. API
 connection generations reject stale credentials/ports after library activation.

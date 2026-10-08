@@ -11,18 +11,19 @@ error model, then recommends what to study next. **A local-first desktop tool**
 (Tauri app): one user per SQLite file on their own machine, a bundled
 llama.cpp server running a small open model by default, and optional cloud
 providers the user chooses. Encoders (embeddings, reranker) run in-process
-on ONNX Runtime. See `docs/project.md` for the product plan,
-`docs/system.md` for the current local architecture, and
-`docs/plan-notebook.md` for the release plan and handoff (**start at its
-"Current handoff" section**). Read them before making structural decisions.
+on ONNX Runtime. See `docs/project.md` for the product plan and
+`docs/system.md` for the current local architecture. Read them before making
+structural decisions.
 
-> The six working docs (this file, `project.md`, `system.md`, `notes.md`,
-> `plan-notebook.md`, and `docket.md`) all live in `docs/`.
-> `docket.md` is the only queue for outstanding defects, acceptance gaps,
-> review checks, feature work and tradeoff decisions. Older
-> decision records and plans were removed on 2026-09-25 and survive in git
-> history; code and docs that cite "decision 0NN", `docs/decisions/` or
-> `plan-local-first.md` refer to those (`git log --all -- <path>`).
+> The durable docs (this file, `project.md`, `system.md`, `notes.md`, and
+> `DECISIONS.md`) all live in `docs/`. `notes.md` is an append-only
+> decision/lessons log (never delete its entries). `DECISIONS.md` records open
+> design decisions with tradeoffs. There is no separate work queue: fix
+> outstanding bugs in place (green tests + the intended behavior) and record any
+> lasting lesson in `notes.md`. Older decision records and plans were removed on
+> 2026-09-25 and survive in git history; code and docs that cite "decision 0NN",
+> `docs/decisions/` or `plan-local-first.md` refer to those
+> (`git log --all -- <path>`).
 
 ## Golden rules
 
@@ -123,9 +124,8 @@ docs/
   AGENTS.md      # this file
   project.md     # product plan
   system.md      # architecture
-  notes.md       # append-only decision log (never delete entries)
-  plan-notebook.md # current release plan; start here
-  docket.md      # only outstanding-work queue; verify claims before acting
+  notes.md       # append-only decision/lessons log (never delete entries)
+  DECISIONS.md   # open design decisions with tradeoffs
 ```
 
 Subsystem packages own their feature flows. Cross-cutting code
@@ -221,23 +221,19 @@ mechanical, prompt version is stamped into every run log under `runs/`.
 
 ## Documentation lifecycle
 
-- Keep the six working docs listed above as the durable home. `system.md` owns
-  implemented behavior; `project.md` owns product scope; `docket.md` owns all
-  outstanding issues, review checks, feature work and decisions;
-  `plan-notebook.md` owns the current handoff and release gates. Do not create a
-  separate backlog or duplicate issue queue.
+- Keep the durable docs listed above as the long-term home. `system.md` owns
+  implemented behavior; `project.md` owns product scope; `DECISIONS.md` owns
+  open design decisions; `notes.md` is the append-only lessons/decision log.
+  There is no work queue or duplicate issue backlog — fix bugs in place.
 - Temporary task plans/reviews are allowed while work is active. On completion,
-  transfer only lasting contracts and remaining work into those existing docs,
-  then delete the temporary file and fix current references. Do not leave a
+  transfer only lasting contracts and lessons into those existing docs, then
+  delete the temporary file and fix current references. Do not leave a
   completed checklist, duplicate issue queue, or archive directory behind.
 - Completion requires the intended behavior and relevant evidence, not merely
   green tests. Native/semantic verification gaps remain open after implementation.
-  Unverified review claims stay candidates until reproduced or cleared.
-- At the user's request (2026-10-04), retain every bug entry after implementation
-  and mark it **Fixed in code — awaiting verification** with the relevant evidence.
-  Do not delete the bug until the user confirms its retest. This overrides earlier
-  docket cleanup instructions; temporary duplicate narrative reviews can still be
-  consolidated when their findings and statuses remain in the docket.
+  Unverified claims stay candidates until reproduced or cleared.
+- Record a reusable lesson (a mistake worth not repeating) in `notes.md`. Do not
+  keep a running bug ledger; a fixed bug lives on as its test and its code.
 - Keep handoffs current rather than appending a new report for every pass.
   Existing dated notes are append-only historical records; append only concise
   consequential decisions/dispositions, not routine tool logs or repeated counts.

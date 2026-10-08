@@ -4,6 +4,7 @@ from src.backend.common.db import Connection
 from src.backend.common.queries import get
 from src.backend.common.schemas.work import (
     DocumentUpdate,
+    EssayGenre,
     WorkAsk,
     WorkCreate,
     WorkDocument,
@@ -162,13 +163,49 @@ def save_reply(
             "The document changed while Stacks was answering. Ask again using "
             "the current snapshot."
         )
+    if (
+        request.action == "critique"
+        and request.critic_score is not None
+        and request.essay_genre is not None
+    ):
+        set_critique(
+            conn,
+            course_id,
+            session_id,
+            request.critic_score,
+            request.essay_genre,
+        )
     conn.execute(
         get("work", "insert_turn"),
         {
             "session_id": session_id,
-            **request.model_dump(exclude={"expected_revision"}),
+            **request.model_dump(
+                exclude={"expected_revision", "critic_score", "essay_genre", "focus"}
+            ),
             "document_revision": request.expected_revision,
             "reply": reply.model_dump_json(),
         },
     )
     return reply
+
+
+def set_critique(
+    conn: Connection,
+    course_id: UUID,
+    session_id: UUID,
+    critic_score: int,
+    essay_genre: EssayGenre,
+) -> WorkSession:
+    session(conn, course_id, session_id)
+    changed = conn.execute(
+        get("work", "set_critique"),
+        {
+            "course_id": course_id,
+            "session_id": session_id,
+            "critic_score": critic_score,
+            "essay_genre": essay_genre,
+        },
+    )
+    if changed.rowcount != 1:
+        raise WorkNotFoundError("Work session not found in this course.")
+    return session(conn, course_id, session_id)

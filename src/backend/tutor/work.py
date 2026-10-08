@@ -16,8 +16,11 @@ from src.backend.common.prompt_registry import (
     load_prompt,
     strip_fence_echo,
 )
+from src.backend.common.queries import get
 from src.backend.common.schemas.work import (
     ContextCoverage,
+    CritiqueModelOutput,
+    CritiqueResult,
     DocumentReview,
     ProposedEdit,
     WorkAsk,
@@ -27,8 +30,10 @@ from src.backend.common.schemas.work import (
 )
 from src.backend.retrieval import funnel, rerank, trace
 from src.backend.retrieval.config import load_retrieval_policy
+from src.backend.retrieval.labels import attach_passage_context
 from src.backend.student_model import learning
 from src.backend.tutor import answer as tutor_answer
+from src.backend.tutor import critique
 from src.backend.tutor.compose import parse_json_object
 from src.backend.tutor.office import NotAllowedError, _citations, is_graded_request
 
@@ -105,23 +110,78 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
             "Stacks can review your reasoning, find references, and suggest "
             "edits to your draft. It cannot write a whole assignment for submission."
         )
+    if request.action == "critique":
+        if work.purpose != "paper":
+            raise ValueError("Essay critique is for a paper draft.")
+        if critique.refuses_rewrite(request.instruction):
+            raise NotAllowedError(
+                "The critic comments on your draft. It will not write or "
+                "rewrite the essay."
+            )
     previous_question = work.turns[-1].instruction if work.turns else ""
     query = request.instruction or request.selection or previous_question or work.title
-    document, coverage = document_context(work.document.text, query)
-    search = f"{query}\n{request.selection or document[:1200]}"
+    if request.action == "critique":
+        search = f"{query}\n{request.selection or work.document.text[:1200]}"
+    else:
+        document, coverage = document_context(work.document.text, query)
+        search = f"{query}\n{request.selection or document[:1200]}"
     embedding = tutor_answer.embed_search(search)
+    syllabus_in_context = False
     with connection() as conn:
         result = funnel.retrieve(
             conn, course_id, search, load_retrieval_policy(), query_embedding=embedding
         )
         candidates = rerank.select_for_generation(search, result.candidates)
-        kept = []
-        remaining = load_companion_policy().source_context_chars
-        for candidate in candidates:
-            if len(candidate.text) > remaining:
-                continue
-            kept.append(candidate)
-            remaining -= len(candidate.text)
+        if request.action == "critique":
+            pool = attach_passage_context(conn, result.candidates)
+            ranked = attach_passage_context(conn, candidates)
+            settings = load_companion_policy()
+            kept, syllabus_in_context = critique.reserve_course_evidence(
+                ranked,
+                pool,
+                search,
+                source_budget=settings.source_context_chars,
+                syllabus_chars=settings.critique.syllabus_chars,
+                syllabus_chunks=settings.critique.syllabus_chunks,
+            )
+            if not syllabus_in_context:
+                syllabus_ids = [
+                    row["source_id"]
+                    for row in conn.execute(
+                        get("sources", "syllabus_ids"), {"course_id": course_id}
+                    ).fetchall()
+                ]
+                if syllabus_ids:
+                    extra = funnel.retrieve(
+                        conn,
+                        course_id,
+                        work.document.text[:1200],
+                        load_retrieval_policy(),
+                        query_embedding=embedding,
+                        source_ids=syllabus_ids,
+                    )
+                    extra_ranked = attach_passage_context(
+                        conn,
+                        rerank.select_for_generation(
+                            work.document.text[:1200], extra.candidates
+                        ),
+                    )
+                    kept, syllabus_in_context = critique.reserve_course_evidence(
+                        [*ranked, *extra_ranked],
+                        [*pool, *extra_ranked],
+                        search,
+                        source_budget=settings.source_context_chars,
+                        syllabus_chars=settings.critique.syllabus_chars,
+                        syllabus_chunks=settings.critique.syllabus_chunks,
+                    )
+        else:
+            kept = []
+            remaining = load_companion_policy().source_context_chars
+            for candidate in candidates:
+                if len(candidate.text) > remaining:
+                    continue
+                kept.append(candidate)
+                remaining -= len(candidate.text)
         used = dataclasses.replace(result, candidates=tuple(kept))
         citations = [
             WorkCitation(**dataclasses.asdict(c)) for c in _citations(conn, kept)
@@ -129,7 +189,37 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
         _, behavior, _ = learning.adaptation(
             conn, course_id, query, source_ids=[c.source_id for c in kept]
         )
+    if request.action == "critique":
+        score = (
+            request.critic_score
+            if request.critic_score is not None
+            else work.critic_score
+        )
+        genre = request.essay_genre or work.essay_genre
+        syllabus_text = "\n".join(
+            candidate.text for candidate in kept if candidate.source_type == "syllabus"
+        )
+        avoid: set[int] = set()
+        if request.focus == "unread":
+            included = critique.latest_included(work)
+            if included is None:
+                raise ValueError(
+                    "Critique the draft once before reviewing unread sections."
+                )
+            avoid = included
+        document, coverage = critique.critique_context(
+            work.document.text,
+            query=query,
+            score=score,
+            selection=request.selection,
+            syllabus_text=syllabus_text,
+            avoid=avoid,
+        )
+        request = request.model_copy(
+            update={"critic_score": score, "essay_genre": genre}
+        )
     proposed_edit = None
+    critique_result: CritiqueResult | None = None
     if request.action == "find":
         if not citations:
             raise ValueError(
@@ -141,25 +231,34 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
         )
         model = "extractive"
     else:
-        material = json.dumps(
-            {
-                "action": request.action,
-                "request": request.instruction,
-                "purpose": work.purpose,
-                "document_title": work.document.title,
-                "snapshot_revision": work.revision,
-                "capture_coverage": work.document.coverage,
-                "capture_warnings": work.document.warnings,
-                "document_sections": document,
-                "document_context_coverage": coverage.model_dump(),
-                "selected_passage": request.selection,
-                "recent_conversation": _history(work),
-                "course_evidence": [
-                    {**c.model_dump(), "citation": f"[{c.number}]"} for c in citations
-                ],
-            },
-            ensure_ascii=False,
-        )
+        roles = {
+            str(candidate.chunk_id): (
+                "requirement" if candidate.source_type == "syllabus" else "reading"
+            )
+            for candidate in kept
+        }
+        types = {str(candidate.chunk_id): candidate.source_type for candidate in kept}
+        evidence = []
+        for citation in citations:
+            item = {**citation.model_dump(), "citation": f"[{citation.number}]"}
+            if request.action == "critique":
+                item["role"] = roles.get(citation.chunk_id, "reading")
+                item["source_type"] = types.get(citation.chunk_id, "")
+            evidence.append(item)
+        payload: dict[str, object] = {
+            "action": request.action,
+            "request": request.instruction,
+            "purpose": work.purpose,
+            "document_title": work.document.title,
+            "snapshot_revision": work.revision,
+            "capture_coverage": work.document.coverage,
+            "capture_warnings": work.document.warnings,
+            "document_sections": document,
+            "document_context_coverage": coverage.model_dump(),
+            "selected_passage": request.selection,
+            "recent_conversation": _history(work),
+            "course_evidence": evidence,
+        }
         instruction = load_prompt("companion_work") + "\n" + behavior
         response_schema = None
         if request.action == "revise":
@@ -168,6 +267,21 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
         elif request.action == "review":
             instruction += "\n" + load_prompt("companion_review")
             response_schema = DocumentReview.model_json_schema()
+        elif request.action == "critique":
+            assert request.critic_score is not None
+            assert request.essay_genre is not None
+            prior = critique.prior_statuses(work, work.document.text)
+            payload["critic_score"] = request.critic_score
+            payload["essay_genre"] = request.essay_genre
+            payload["finding_cap"] = critique.finding_cap(request.critic_score)
+            payload["band"] = critique.band_name(request.critic_score)
+            payload["syllabus_in_context"] = syllabus_in_context
+            payload["prior_findings"] = [item.model_dump() for item in prior]
+            instruction = critique.critique_instruction(
+                request.critic_score, request.essay_genre, behavior
+            )
+            response_schema = CritiqueModelOutput.model_json_schema()
+        material = json.dumps(payload, ensure_ascii=False)
         generation = provider.generate(
             "tutor_answer",
             grounded_prompt(instruction, material),
@@ -177,6 +291,34 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
         text, model = strip_fence_echo(generation.text), generation.model
         cited_text = text
         scope = request.selection or document
+        if request.action == "critique":
+            assert request.critic_score is not None
+            assert request.essay_genre is not None
+            parsed = parse_json_object(text)
+            if parsed is None:
+                raise ValueError("The model did not return a critique. Try again.")
+            prior = critique.prior_statuses(work, work.document.text)
+            findings, citations = critique.validate_findings(
+                parsed,
+                document_text=work.document.text,
+                scope=scope,
+                genre=request.essay_genre,
+                cap=critique.finding_cap(request.critic_score),
+                citations=citations,
+                open_quotes={
+                    item.original for item in prior if item.status == "still_present"
+                },
+            )
+            critique_result = CritiqueResult(
+                genre=request.essay_genre,
+                critic_score=request.critic_score,
+                syllabus_in_context=syllabus_in_context,
+                coverage=coverage,
+                findings=findings,
+                prior=prior,
+                note="" if findings else critique.empty_note(coverage),
+            )
+            text = critique.render_critique(critique_result)
         if request.action == "review":
             parsed = parse_json_object(text)
             if parsed is None:
@@ -225,20 +367,23 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
                 f"**Proposed replacement**\n\n{proposed_edit.replacement}\n\n"
                 f"**Why this edit**\n\n{proposed_edit.explanation}"
             )
-        numbers = cited_numbers(cited_text)
-        if (
-            not text.strip()
-            or not numbers.issubset({c.number for c in citations})
-            or (
-                citations
-                and request.action in {"review", "revise", "explain"}
-                and not numbers
-            )
-        ):
-            raise ValueError(
-                "The answer contained an unsupported source reference. Try again."
-            )
-        citations = [citation for citation in citations if citation.number in numbers]
+        if request.action != "critique":
+            numbers = cited_numbers(cited_text)
+            if (
+                not text.strip()
+                or not numbers.issubset({c.number for c in citations})
+                or (
+                    citations
+                    and request.action in {"review", "revise", "explain"}
+                    and not numbers
+                )
+            ):
+                raise ValueError(
+                    "The answer contained an unsupported source reference. Try again."
+                )
+            citations = [
+                citation for citation in citations if citation.number in numbers
+            ]
     with connection() as conn:
         cited = tuple(
             (UUID(citation.chunk_id), citation.number) for citation in citations
@@ -252,6 +397,7 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
             coverage=coverage,
             document_revision=work.revision,
             proposed_edit=proposed_edit,
+            critique=critique_result,
         )
         saved = work_repo.save_reply(conn, course_id, session_id, request, reply)
         conn.commit()

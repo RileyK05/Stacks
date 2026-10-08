@@ -213,3 +213,28 @@ button:disabled {
   color: var(--muted);
   font-size: 11px;
 }
+
+input[type='range'] {
+  width: 100%;
+}
+
+#critique-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.finding {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.finding blockquote {
+  margin: 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+}

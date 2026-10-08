@@ -60,7 +60,11 @@ from src.backend.common.schemas.office_live import (
     RefreshStatus,
 )
 from src.backend.common.schemas.work import (
+    CritiqueResult,
     DocumentUpdate,
+    EssayGenre,
+    WorkAsk,
+    WorkCitation,
     WorkCreate,
     WorkPackage,
     WorkPublish,
@@ -71,6 +75,8 @@ from src.backend.office_reader.work_files import read_work_file
 from src.backend.retrieval.config import load_retrieval_policy
 from src.backend.tutor import answer as tutor_answer
 from src.backend.tutor import office as office_tutor
+from src.backend.tutor import work as work_tutor
+from src.backend.tutor.office import NotAllowedError
 
 router = APIRouter(tags=["office"])
 
@@ -151,6 +157,34 @@ class CitationBody(BaseModel):
     filename: str
     label: str
     text: str
+
+
+class OfficeCritiqueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: UUID
+    session_id: UUID
+    host: Literal["word"]
+    request_id: UUID
+    expected_revision: int = Field(ge=1)
+    critic_score: int = Field(ge=10, le=100)
+    essay_genre: EssayGenre
+    instruction: str = Field(default="", max_length=2000)
+    selection: str = Field(default="", max_length=4000)
+    focus: Literal["draft", "unread"] = "draft"
+
+
+class OfficeCritiqueResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["critique"] = "critique"
+    text: str
+    insert_text: str = ""
+    citations: list[WorkCitation]
+    critique: CritiqueResult
+    model: str
+    trace_id: str
+    message: str = ""
 
 
 class AssistResult(BaseModel):
@@ -440,6 +474,54 @@ def publish_work(request: WorkPublish) -> WorkSession:
         raise HTTPException(409, str(err)) from err
     except ValueError as err:
         raise HTTPException(422, str(err)) from err
+
+
+@router.post(
+    "/critique",
+    response_model=OfficeCritiqueResult,
+    dependencies=[Depends(require_office_token)],
+)
+def critique_essay(request: OfficeCritiqueRequest) -> OfficeCritiqueResult:
+    """Comment on a connected Word draft. The pane must not insert the result."""
+    if courses_repo.get_course(request.course_id) is None:
+        raise HTTPException(404, "course not found")
+    try:
+        reply = work_tutor.answer(
+            request.course_id,
+            request.session_id,
+            WorkAsk(
+                request_id=request.request_id,
+                expected_revision=request.expected_revision,
+                action="critique",
+                instruction=request.instruction,
+                selection=request.selection,
+                critic_score=request.critic_score,
+                essay_genre=request.essay_genre,
+                focus=request.focus,
+            ),
+        )
+    except work_repo.WorkNotFoundError as err:
+        raise HTTPException(404, str(err)) from err
+    except work_repo.WorkConflictError as err:
+        raise HTTPException(409, str(err)) from err
+    except NotAllowedError as err:
+        raise HTTPException(422, str(err)) from err
+    except ValueError as err:
+        raise HTTPException(422, str(err)) from err
+    except provider.ProviderUnavailableError as err:
+        raise HTTPException(503, str(err)) from err
+    except usage_repo.BudgetExceededError as err:
+        raise HTTPException(402, str(err)) from err
+    if reply.critique is None:
+        raise HTTPException(422, "The critique did not include a review.")
+    return OfficeCritiqueResult(
+        text=reply.text,
+        insert_text="",
+        citations=reply.citations,
+        critique=reply.critique,
+        model=reply.model,
+        trace_id=reply.trace_id or "",
+    )
 
 
 @router.get(

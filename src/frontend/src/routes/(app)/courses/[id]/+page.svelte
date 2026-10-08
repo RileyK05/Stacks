@@ -20,6 +20,7 @@
   import SourcePicker from '$lib/components/course/SourcePicker.svelte';
   import SourcesPanel from '$lib/components/course/SourcesPanel.svelte';
   import MemoryPanel from '$lib/components/course/MemoryPanel.svelte';
+  import CriticPanel from '$lib/components/course/CriticPanel.svelte';
   import { listArtifacts, saveFromMessage, type ArtifactSummary } from '$lib/stores/artifact.svelte';
   import { CourseChats, type ModelChoice } from '$lib/stores/chat.svelte';
   import { confirmDialog } from '$lib/stores/confirm.svelte';
@@ -70,10 +71,12 @@
   let error = $state<unknown>(null);
   let actionError = $state<unknown>(null);
 
-  type Tab = 'chat' | 'artifacts' | 'sources' | 'memory';
+  type Tab = 'chat' | 'artifacts' | 'sources' | 'memory' | 'critic';
   const requestedTab = page.url.searchParams.get('tab');
   let activeTab = $state<Tab>(
-    requestedTab === 'artifacts' || requestedTab === 'sources' || requestedTab === 'memory' ? requestedTab : 'chat'
+    requestedTab === 'artifacts' || requestedTab === 'sources' || requestedTab === 'memory' || requestedTab === 'critic'
+      ? requestedTab
+      : 'chat'
   );
   let artifacts = $state<ArtifactSummary[]>([]);
   let artifactsLoading = $state(true);
@@ -471,6 +474,7 @@
 
   const tabs: { id: Tab; label: string; icon: IconName }[] = [
     { id: 'chat', label: 'Chat', icon: 'message-square' },
+    { id: 'critic', label: 'Critic', icon: 'list-checks' },
     { id: 'artifacts', label: 'Artifacts', icon: 'package' },
     { id: 'sources', label: 'Sources', icon: 'file-text' },
     { id: 'memory', label: 'Memory', icon: 'bookmark' }
@@ -694,12 +698,12 @@
           void panel.openArtifact(summary);
         }}
       />
+    {:else if activeTab === 'critic'}
+      <CriticPanel {courseId} {sources} onsources={() => (activeTab = 'sources')} />
+    {:else if activeTab === 'memory'}
+      <MemoryPanel {courseId} />
     {:else}
-      {#if activeTab === 'memory'}
-        <MemoryPanel {courseId} />
-      {:else}
-        <SourcesPanel {courseId} {sources} onchanged={sourcesChanged} />
-      {/if}
+      <SourcesPanel {courseId} {sources} onchanged={sourcesChanged} />
     {/if}
   </div>
 {/if}

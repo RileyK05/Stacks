@@ -153,8 +153,8 @@ accompany each estimate. Repeating a revealed question cannot establish
 proficiency. CORE memory holds teaching preferences and observations across
 courses. Chat supplies tentative experiments, never capability scores. Adaptation
 runs quietly; the Memory tab exposes evidence, corrections, and forgetting.
-See `docs/system.md` section 12 for the baseline policy; `docs/docket.md` B-08
-tracks assessment and effectiveness limits.
+See `docs/system.md` section 12 for the baseline policy; assessment and
+effectiveness limits remain future work.
 
 ### 5. Chat history
 
