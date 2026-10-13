@@ -156,6 +156,9 @@ def test_supervisor_survives_a_transient_tick_failure(monkeypatch):
             def stop(self, *, forget: bool = True) -> None:
                 stopped.append(forget)
 
+            def request_shutdown(self) -> None:
+                pass
+
         asyncio_loop = asyncio.get_running_loop()
         monkeypatch.setattr(supervisor, "get_server", lambda: Manager())
         monkeypatch.setattr(supervisor, "cleanup_stale_server", lambda: None)

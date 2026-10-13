@@ -542,7 +542,10 @@ def _run_eval(
     lands behind a dedicated eval adapter that bills an eval account —
     review catch #10, decision 010)."""
     from src.backend.common.prompt_registry import load_prompt_policy
-    from src.backend.retrieval.rerank import select_for_generation
+    from src.backend.retrieval.rerank import (
+        NothingAboveFloorError,
+        select_for_generation,
+    )
     from src.backend.tutor.compose import (
         AnswerMode,
         compose_answer,
@@ -611,13 +614,41 @@ def _run_eval(
             _attempts.append(f"raw output:\n{output}")
             return output
 
-        composed = compose_answer(
-            case.question,
-            candidates,
-            inspected_generate,
-            select=select_for_generation,
-            answer_mode=AnswerMode(answer_mode),
-        )
+        try:
+            composed = compose_answer(
+                case.question,
+                candidates,
+                inspected_generate,
+                select=select_for_generation,
+                answer_mode=AnswerMode(answer_mode),
+            )
+        except NothingAboveFloorError:
+            # Score mode dropped every candidate: a scored miss, not a
+            # harness abort (plan Phase 3, evals/answer.py caller).
+            detail = "score-mode floor dropped every candidate"
+            records.append(
+                CaseRecord(
+                    case_id=case.id,
+                    kind=case.kind,
+                    question=case.question,
+                    prompt="\n\n".join(attempts),
+                    answer="",
+                    chunk_ids=[],
+                    passed=False,
+                    detail=detail,
+                )
+            )
+            results.append(
+                AnswerResult(
+                    case_id=case.id,
+                    kind=case.kind,
+                    question=case.question,
+                    resolved=True,
+                    passed=False,
+                    detail=detail,
+                )
+            )
+            continue
         candidates = composed.candidates
         answer_text = composed.text
         prompt = "\n\n".join(attempts)

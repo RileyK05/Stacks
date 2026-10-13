@@ -354,7 +354,7 @@ def test_mixed_pdf_indexes_when_page_ocr_is_unavailable(course_id: UUID) -> None
     ocr_row = next(row for row in _stage_rows(run_id) if row["stage"] == "ocr")
     assert ocr_row["status"] == "succeeded"
     assert "warning:" in ocr_row["error_message"]
-    assert "unresolved pages 2" in ocr_row["error_message"]
+    assert "pages 2 could not be read" in ocr_row["error_message"]
     assert "provider" in ocr_row["error_message"].lower()
     coverage = _one(
         "SELECT pages_total, pages_empty, pages_ocr, extraction_version"

@@ -91,6 +91,38 @@ FROM chunk_locators AS span
 JOIN locators AS locator ON locator.locator_id = span.locator_id
 WHERE span.chunk_id IN (SELECT value FROM json_each(:chunk_ids));
 
+-- name: label_candidates
+-- Explicit-address pin (plan-score-retrieval.md Phase 1): the keyword seam's
+-- own tokenizer drops single characters, so "Table 2.2" becomes `"reproduce"
+-- OR "table"`. This seam takes a route.label_phrase phrase ('"table 2 2"')
+-- instead, so the exact table passage is pinned.
+SELECT chunk.chunk_id,
+       chunk.source_id,
+       chunk.locator_id,
+       chunk.chunk_index,
+       chunk.text,
+       -bm25(chunks_fts) AS rank
+FROM chunks_fts
+JOIN chunks AS chunk ON chunk.chunk_rowid = chunks_fts.rowid
+JOIN sources AS source ON source.source_id = chunk.source_id
+WHERE chunks_fts MATCH :match
+  AND source.course_id = :course_id
+  AND (source.status = 'indexed' OR EXISTS (SELECT 1 FROM source_indexes WHERE source_id = source.source_id))
+  AND EXISTS (SELECT 1 FROM courses WHERE course_id = source.course_id AND deleted_at IS NULL)
+  AND (:source_ids IS NULL OR source.source_id IN (SELECT value FROM json_each(:source_ids)))
+ORDER BY rank DESC, chunk.chunk_index
+LIMIT :limit;
+
+-- name: course_source_filenames
+-- Source id + filename for a course's live sources, so address routing can
+-- infer a source's week from its filename (plan-score-retrieval.md Phase 1).
+SELECT source.source_id, source.filename
+FROM sources AS source
+JOIN courses AS course ON course.course_id = source.course_id
+WHERE source.course_id = :course_id
+  AND course.deleted_at IS NULL
+  AND (source.status = 'indexed' OR EXISTS (SELECT 1 FROM source_indexes WHERE source_id = source.source_id));
+
 -- name: chunk_id_locator_labels
 -- Per-chunk labels (no DISTINCT across chunks) so the retrieval eval can
 -- score reciprocal rank at a candidate's own position (B-07).

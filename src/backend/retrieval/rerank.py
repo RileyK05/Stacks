@@ -17,27 +17,46 @@ from src.backend.common import provider
 from src.backend.rag.config import load_policy as load_passage_policy
 from src.backend.rag.segment import windows
 from src.backend.retrieval.config import RerankPolicy, load_rerank_policy
-from src.backend.retrieval.funnel import Candidate
+from src.backend.retrieval.funnel import LABEL, Candidate
 
 logger = logging.getLogger(__name__)
+
+
+class NothingAboveFloorError(RuntimeError):
+    """Score mode dropped every candidate below the relevance floor. The
+    callers map this to their existing "nothing relevant" path instead of
+    answering from material that did not match (plan Phase 3)."""
 
 
 def select_for_generation(
     question: str,
     candidates: tuple[Candidate, ...],
     policy: RerankPolicy | None = None,
+    *,
+    meta: dict[str, object] | None = None,
 ) -> tuple[Candidate, ...]:
     policy = policy or load_rerank_policy()
     candidates = bound_passages(candidates)
     anchors = tuple(c for c in candidates if not c.context_for)
     context = tuple(c for c in candidates if c.context_for)
-    if not policy.enabled or len(anchors) <= 1:
-        return _with_context(anchors[: policy.generation_k], context)
+    if not anchors:
+        return ()
+    # A pinned label passage is never dropped by a cut or the floor; it is
+    # only subject to the token budget in _with_context (plan Phase 1).
+    pinned = tuple(c for c in anchors if LABEL in c.layers)
+    rest = tuple(c for c in anchors if LABEL not in c.layers)
+    if policy.mode == "score":
+        return _select_scored(question, pinned, rest, context, policy, meta)
+    slots = max(0, policy.generation_k - len(pinned))
+    if not policy.enabled or len(rest) <= 1:
+        chosen = pinned + rest[:slots]
+        _record_meta(meta, policy, "top_k", kept=len(chosen), dropped=0)
+        return _with_context(chosen, context)
     try:
         scores = provider.rerank_scores(
-            policy.model, question, [candidate.text for candidate in anchors]
+            policy.model, question, [candidate.text for candidate in rest]
         )
-        if len(scores) != len(anchors) or not all(
+        if len(scores) != len(rest) or not all(
             math.isfinite(float(score)) for score in scores
         ):
             raise ValueError("reranker returned invalid scores")
@@ -45,13 +64,93 @@ def select_for_generation(
         logger.exception(
             "reranker unavailable or returned invalid scores; keeping fused order"
         )
-        return _with_context(anchors[: policy.generation_k], context)
+        chosen = pinned + rest[:slots]
+        _record_meta(meta, policy, "top_k", kept=len(chosen), dropped=0)
+        return _with_context(chosen, context)
     ranked = sorted(
-        zip(scores, range(len(anchors)), anchors, strict=True),
+        zip(scores, range(len(rest)), rest, strict=True),
         key=lambda item: (-item[0], item[1]),
     )
-    chosen = tuple(candidate for _score, _i, candidate in ranked[: policy.generation_k])
+    chosen = pinned + tuple(candidate for _score, _i, candidate in ranked[:slots])
+    _record_meta(
+        meta, policy, "top_k", kept=len(chosen), dropped=max(0, len(rest) - slots)
+    )
     return _with_context(chosen, context)
+
+
+def _select_scored(
+    question: str,
+    pinned: tuple[Candidate, ...],
+    rest: tuple[Candidate, ...],
+    context: tuple[Candidate, ...],
+    policy: RerankPolicy,
+    meta: dict[str, object] | None,
+) -> tuple[Candidate, ...]:
+    """Score mode: score the whole pool and keep what clears the floor
+    (absolute `min_score` and within `max_drop` of the best). Pins are always
+    kept. Falls back to the top-k cut if the reranker is unavailable
+    (plan-score-retrieval.md Phase 3)."""
+    if not policy.enabled:
+        slots = max(0, policy.generation_k - len(pinned))
+        chosen = pinned + rest[:slots]
+        _record_meta(
+            meta, policy, "top_k", kept=len(chosen), dropped=max(0, len(rest) - slots)
+        )
+        return _with_context(chosen, context)
+    if not rest:
+        if not pinned:
+            raise NothingAboveFloorError("no passage was retrieved to score")
+        _record_meta(meta, policy, "score", kept=len(pinned), dropped=0)
+        return _with_context(pinned, context)
+    try:
+        scores = provider.rerank_scores(
+            policy.model, question, [candidate.text for candidate in rest]
+        )
+        if len(scores) != len(rest) or not all(
+            math.isfinite(float(score)) for score in scores
+        ):
+            raise ValueError("reranker returned invalid scores")
+    except Exception:
+        logger.exception(
+            "reranker unavailable in score mode; falling back to the top-k cut"
+        )
+        slots = max(0, policy.generation_k - len(pinned))
+        chosen = pinned + rest[:slots]
+        _record_meta(
+            meta, policy, "top_k", kept=len(chosen), dropped=max(0, len(rest) - slots)
+        )
+        return _with_context(chosen, context)
+    best = max(float(score) for score in scores)
+    floor = max(policy.min_score, best - policy.max_drop)
+    ranked = sorted(
+        zip(scores, range(len(rest)), rest, strict=True),
+        key=lambda item: (-item[0], item[1]),
+    )
+    kept = [candidate for score, _i, candidate in ranked if float(score) >= floor]
+    chosen = pinned + tuple(kept)
+    _record_meta(meta, policy, "score", kept=len(chosen), dropped=len(rest) - len(kept))
+    if not chosen:
+        raise NothingAboveFloorError("no passage scored above the relevance floor")
+    return _with_context(chosen, context)
+
+
+def _record_meta(
+    meta: dict[str, object] | None,
+    policy: RerankPolicy,
+    mode: str,
+    *,
+    kept: int,
+    dropped: int,
+) -> None:
+    if meta is None:
+        return
+    meta.update(
+        mode=mode,
+        kept=kept,
+        dropped=dropped,
+        min_score=policy.min_score,
+        max_drop=policy.max_drop,
+    )
 
 
 def _with_context(

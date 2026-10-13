@@ -422,11 +422,15 @@ def _material(
         query_embedding=query_embedding,
         embedding_model=embedding_model,
     )
-    chosen = (
-        rerank.select_for_generation(query, result.candidates)
-        if result.candidates
-        else ()
-    )
+    if result.candidates:
+        try:
+            chosen = rerank.select_for_generation(query, result.candidates)
+        except rerank.NothingAboveFloorError:
+            # The artifact's own cited passages still supply material; the
+            # model edit does not need new course hits.
+            chosen = ()
+    else:
+        chosen = ()
     chunk_ids = list(dict.fromkeys([*cited, *(c.chunk_id for c in chosen)]))[
         : max(MAX_MATERIAL, len(set(cited)))
     ]

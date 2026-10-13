@@ -18,6 +18,7 @@ import io
 import logging
 import math
 import re
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import PurePath
@@ -27,6 +28,13 @@ from src.backend.common import storage
 from src.backend.common.lifecycle_config import load_lifecycle_policy
 
 logger = logging.getLogger(__name__)
+
+# PDFium, the C library beneath pypdfium2, is not thread-safe: calling it
+# from two threads at the same time — even for different documents — can
+# crash or corrupt the process. The ingestion worker renders and extracts
+# on its own thread while the API renders cited pages on request threads,
+# so every pypdfium2 call site serializes on this lock.
+PDFIUM_LOCK = threading.Lock()
 
 PAGE_SEPARATOR = "\n"
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
@@ -670,28 +678,29 @@ def _pdfium_texts(raw: bytes) -> list[str] | None:
     import pypdfium2 as pdfium
 
     try:
-        pdf = pdfium.PdfDocument(io.BytesIO(raw))
+        with PDFIUM_LOCK:
+            pdf = pdfium.PdfDocument(io.BytesIO(raw))
+            try:
+                texts: list[str] = []
+                for index in range(len(pdf)):
+                    page = pdf[index]
+                    textpage = None
+                    try:
+                        textpage = page.get_textpage()
+                        texts.append(clean_text(textpage.get_text_range() or ""))
+                    finally:
+                        if textpage is not None:
+                            textpage.close()
+                        page.close()
+                return texts
+            except Exception:
+                logger.exception("pypdfium2 text extraction failed; using pypdf text")
+                return None
+            finally:
+                pdf.close()
     except Exception:
         logger.exception("pypdfium2 could not open the PDF; using pypdf text")
         return None
-    try:
-        texts: list[str] = []
-        for index in range(len(pdf)):
-            page = pdf[index]
-            textpage = None
-            try:
-                textpage = page.get_textpage()
-                texts.append(clean_text(textpage.get_text_range() or ""))
-            finally:
-                if textpage is not None:
-                    textpage.close()
-                page.close()
-        return texts
-    except Exception:
-        logger.exception("pypdfium2 text extraction failed; using pypdf text")
-        return None
-    finally:
-        pdf.close()
 
 
 def _source_from_pages(
@@ -781,30 +790,35 @@ def rasterize_pages_with_ids(
         stored_encoding,
         max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
     )
-    pdf = pdfium.PdfDocument(io.BytesIO(raw))
-    try:
-        if pages is None:
-            indexes: Sequence[int] = range(min(len(pdf), max_pages))
-        else:
-            indexes = [index for index in pages if 0 <= index < len(pdf)][:max_pages]
-        renders: list[RasterizedPage] = []
-        for index in indexes:
-            page = pdf[index]
-            try:
-                width, height = page.get_size()
-                render_scale = _bounded_render_scale(width, height, scale, max_pixels)
-                bitmap = page.render(scale=render_scale)
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(io.BytesIO(raw))
+        try:
+            if pages is None:
+                indexes: Sequence[int] = range(min(len(pdf), max_pages))
+            else:
+                indexes = [index for index in pages if 0 <= index < len(pdf)][
+                    :max_pages
+                ]
+            renders: list[RasterizedPage] = []
+            for index in indexes:
+                page = pdf[index]
                 try:
-                    with bitmap.to_pil() as image, io.BytesIO() as buffer:
-                        image.save(buffer, format="PNG")
-                        renders.append(RasterizedPage(index, buffer.getvalue()))
+                    width, height = page.get_size()
+                    render_scale = _bounded_render_scale(
+                        width, height, scale, max_pixels
+                    )
+                    bitmap = page.render(scale=render_scale)
+                    try:
+                        with bitmap.to_pil() as image, io.BytesIO() as buffer:
+                            image.save(buffer, format="PNG")
+                            renders.append(RasterizedPage(index, buffer.getvalue()))
+                    finally:
+                        bitmap.close()
                 finally:
-                    bitmap.close()
-            finally:
-                page.close()
-        return renders
-    finally:
-        pdf.close()
+                    page.close()
+            return renders
+        finally:
+            pdf.close()
 
 
 def _bounded_render_scale(
@@ -832,11 +846,12 @@ def pdf_page_count(
         stored_encoding,
         max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
     )
-    pdf = pdfium.PdfDocument(io.BytesIO(raw))
-    try:
-        return len(pdf)
-    finally:
-        pdf.close()
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(io.BytesIO(raw))
+        try:
+            return len(pdf)
+        finally:
+            pdf.close()
 
 
 def pdf_page_plain_text(raw: bytes) -> list[str]:
@@ -858,30 +873,35 @@ def rasterize_pdf_bytes(
     """
     import pypdfium2 as pdfium
 
-    pdf = pdfium.PdfDocument(io.BytesIO(raw))
-    try:
-        if pages is None:
-            indexes: Sequence[int] = range(min(len(pdf), max_pages))
-        else:
-            indexes = [index for index in pages if 0 <= index < len(pdf)][:max_pages]
-        renders: list[RasterizedPage] = []
-        for index in indexes:
-            page = pdf[index]
-            try:
-                width, height = page.get_size()
-                render_scale = _bounded_render_scale(width, height, scale, max_pixels)
-                bitmap = page.render(scale=render_scale)
+    with PDFIUM_LOCK:
+        pdf = pdfium.PdfDocument(io.BytesIO(raw))
+        try:
+            if pages is None:
+                indexes: Sequence[int] = range(min(len(pdf), max_pages))
+            else:
+                indexes = [index for index in pages if 0 <= index < len(pdf)][
+                    :max_pages
+                ]
+            renders: list[RasterizedPage] = []
+            for index in indexes:
+                page = pdf[index]
                 try:
-                    with bitmap.to_pil() as image, io.BytesIO() as buffer:
-                        image.save(buffer, format="PNG")
-                        renders.append(RasterizedPage(index, buffer.getvalue()))
+                    width, height = page.get_size()
+                    render_scale = _bounded_render_scale(
+                        width, height, scale, max_pixels
+                    )
+                    bitmap = page.render(scale=render_scale)
+                    try:
+                        with bitmap.to_pil() as image, io.BytesIO() as buffer:
+                            image.save(buffer, format="PNG")
+                            renders.append(RasterizedPage(index, buffer.getvalue()))
+                    finally:
+                        bitmap.close()
                 finally:
-                    bitmap.close()
-            finally:
-                page.close()
-        return renders
-    finally:
-        pdf.close()
+                    page.close()
+            return renders
+        finally:
+            pdf.close()
 
 
 def rasterize_pages(

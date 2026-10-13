@@ -101,6 +101,7 @@
             connections={overview.connections}
             choice={choiceOf(row.id)}
             nullOption={nullOption(row.id)}
+            unsetLabel={row.id === 'interactive' ? labelFor(overview.resolved.interactive?.model) || null : null}
             block
             onchange={(choice) => change(row.id, choice)}
           />

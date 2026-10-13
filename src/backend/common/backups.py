@@ -35,6 +35,7 @@ _SETTING = "backups.preferences"
 _STATUS_SETTING = "backups.status"
 _CREATE_LOCK = threading.Lock()
 _COMPRESSION_LEVELS = {"fast": 1, "balanced": 6, "maximum": 9}
+MAX_MANIFEST_BYTES = 1024 * 1024
 
 
 class BackupPreferences(BaseModel):
@@ -505,8 +506,19 @@ def _read_manifest(
         raise InvalidBackupError("archive is missing required members")
     if sum(info.file_size for info in infos) > policy.max_archive_bytes:
         raise InvalidBackupError("archive expands beyond the safety limit")
+    manifest_info = archive.getinfo("manifest.json")
+    # A crafted member can declare a huge size while compressing small;
+    # archive.read() would materialize all of it in memory (list_backups
+    # reads every manifest just to enumerate backups). Cap it like
+    # course_archive._read_manifest does for untrusted .course files.
+    if manifest_info.file_size > MAX_MANIFEST_BYTES:
+        raise InvalidBackupError("archive manifest is too large")
     try:
-        manifest = json.loads(archive.read("manifest.json"))
+        with archive.open(manifest_info) as stream:
+            data = stream.read(MAX_MANIFEST_BYTES + 1)
+        if len(data) > MAX_MANIFEST_BYTES:
+            raise InvalidBackupError("archive manifest is too large")
+        manifest = json.loads(data)
     except (UnicodeDecodeError, json.JSONDecodeError, KeyError) as error:
         raise InvalidBackupError("archive manifest is invalid") from error
     if (

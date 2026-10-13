@@ -93,9 +93,13 @@ def strip_fence_echo(text: str) -> str:
     question and material after its answer)."""
     begin, end = re.escape(UNTRUSTED_BEGIN), re.escape(UNTRUSTED_END)
     text = re.sub(rf"{begin}.*?{end}", "", text, flags=re.DOTALL)
+    # Split only on real line breaks: str.splitlines() also breaks on
+    # U+2028/U+2029/U+0085, which some models put inside a JSON string. Turning
+    # one into a raw newline makes the JSON invalid and loses the whole
+    # document (R5-NEW-l).
     lines = [
         line
-        for line in text.splitlines()
+        for line in re.split(r"\r\n|\r|\n", text)
         if UNTRUSTED_BEGIN not in line and UNTRUSTED_END not in line
     ]
     return "\n".join(lines).strip()

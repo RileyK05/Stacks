@@ -294,6 +294,36 @@ def test_run_answer_eval_end_to_end(tmp_path) -> None:
     assert "[quiz workspace prompt + schema]" not in log_text
 
 
+def test_score_mode_floor_drop_is_a_scored_miss(tmp_path, monkeypatch) -> None:
+    """A score-mode floor drop is a resolved-but-failed case, not a harness
+    abort (plan Phase 3, evals/answer.py caller)."""
+    from src.backend.common import provider
+    from src.backend.common.db import connection
+    from src.backend.retrieval import rerank
+    from src.backend.retrieval.config import load_rerank_policy
+
+    _harness_course()
+    monkeypatch.setattr(
+        rerank,
+        "load_rerank_policy",
+        lambda: load_rerank_policy().model_copy(
+            update={"mode": "score", "min_score": 0.0, "max_drop": 0.0}
+        ),
+    )
+    monkeypatch.setattr(
+        provider, "rerank_scores", lambda _model, _q, texts: [-9.0] * len(texts)
+    )
+    with connection() as conn:
+        summary = run_answer_eval(
+            conn,
+            generate=ScriptedGenerate(),
+            log_dir=tmp_path,
+        )
+    assert summary.unresolved == ()
+    assert not summary.all_passed
+    assert all(result.resolved for result in summary.cases)
+
+
 def test_seed_label_typo_is_unresolved_not_a_model_failure(tmp_path) -> None:
     """Review catch #5: labels matching nothing must surface as
     UNRESOLVED, never as a citation regression. And review catch #4:

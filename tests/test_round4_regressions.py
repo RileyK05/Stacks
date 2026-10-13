@@ -463,7 +463,7 @@ def test_ocr_warning_lists_pages_in_order_and_without_developer_text() -> None:
     with pytest.raises(StageWarning) as raised:
         handlers._warn_if_incomplete(
             [1, 0],
-            ["pages 5, 2 were declined by the reading model"],
+            ["pages 5 were declined by the reading model"],
             cap_exceeded=False,
         )
     message = str(raised.value)

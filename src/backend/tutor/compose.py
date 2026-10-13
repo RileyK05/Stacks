@@ -450,8 +450,17 @@ def retrieval_topic(question: str) -> str:
         previous = tokens[index - 1] if index > 0 else ""
         following = tokens[index + 1] if index + 1 < len(tokens) else ""
         if _is_count_token(token):
-            head = token.split("-", 1)[0]
-            if "-" in token or following.casefold() in _SIZE_UNITS:
+            head, separator, tail = token.partition("-")
+            # "10-question", "8-slide": a hyphenated count whose tail is a
+            # size unit, not a subject.
+            if following.casefold() in _SIZE_UNITS or (
+                tail and tail.casefold() in _SIZE_UNITS
+            ):
+                continue
+            if separator:
+                # A numeric range ("Weeks 1-5", "pages 40-45", "1846-1848")
+                # names the material, so keep it (R5-NEW-c).
+                words.append(token)
                 continue
             numbered = previous[:1].isupper() or previous.casefold() in _NUMBERING_HEADS
             if numbered or (head.replace(".", "").isdigit() and len(head) >= 3):
@@ -798,7 +807,9 @@ _PLACEHOLDER_OPTION = re.compile(
     re.IGNORECASE,
 )
 _LETTER_REF = re.compile(
-    r"\b((?:option|choice|answer|alternative)\s+)([a-d])\b", re.IGNORECASE
+    r"\b((?:option|choice|answer|alternative)\s+)([a-d])\b"
+    r"|\(([a-d])\)",
+    re.IGNORECASE,
 )
 _BOTH_OPTIONS = re.compile(
     r"^\s*both\s+([a-d])\s+and\s+([a-d])\s*[.:;]?\s*$", re.IGNORECASE
@@ -808,8 +819,9 @@ _ALL_NONE_OPTIONS = re.compile(
     re.IGNORECASE,
 )
 _POSITIONAL_OPTION = re.compile(
-    r"\b(?:both|neither|either)\s+[a-d]\s+(?:and|or)\s+[a-d]\b"
-    r"|\b(?:all|none)\s+of\s+the\s+(?:above|below|choices?|options?|list)\b"
+    r"\b(?:both|neither|either)\s+[a-d]\s+(?:and|or|nor)\s+[a-d]\b"
+    r"|\b(?:all|none|both|neither)\s+of\s+the\s+(?:above|below|choices?|options?|list)\b"
+    r"|\b(?:[a-d]\s+and\s+[a-d])\b"
     r"|\b(?:option|choice|answer|alternative)\s+[a-d]\b",
     re.IGNORECASE,
 )
@@ -1044,12 +1056,15 @@ def _relettered(explanation: object, order: list[int]) -> object:
         return explanation
 
     def replace(match: re.Match[str]) -> str:
-        letter = match.group(2)
+        letter = match.group(2) or match.group(3)
         index = ord(letter.casefold()) - ord("a")
         if not 0 <= index < len(order):
             return match.group(0)
         moved = chr(ord("a") + order.index(index))
-        return match.group(1) + (moved.upper() if letter.isupper() else moved)
+        moved = moved.upper() if letter.isupper() else moved
+        if match.group(3):
+            return f"({moved})"
+        return (match.group(1) or "") + moved
 
     return _LETTER_REF.sub(replace, explanation)
 

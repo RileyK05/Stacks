@@ -82,6 +82,7 @@
   let artifactsLoading = $state(true);
   let renaming = $state(false);
   let renameValue = $state('');
+  let renameInput = $state<HTMLInputElement | null>(null);
 
   const chats = new CourseChats(courseId);
   const canvas = new WorkspaceCanvas();
@@ -389,10 +390,13 @@
     }
   }
 
-  function startRename() {
+  async function startRename() {
     if (!course) return;
     renameValue = course.name;
     renaming = true;
+    await tick();
+    renameInput?.focus();
+    renameInput?.select();
   }
 
   let savingRename = false;
@@ -511,6 +515,7 @@
           {#if renaming}
             <form onsubmit={saveRename} class="flex items-center gap-2">
               <input
+                bind:this={renameInput}
                 bind:value={renameValue}
                 required
                 maxlength={200}

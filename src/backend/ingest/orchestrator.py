@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -271,7 +272,10 @@ class IngestionHandlers:
                     if delay > 0:
                         self.sleeper(delay)
                     continue
-                if len(rendered) > 1 and isinstance(err, provider.ModelRefusalError):
+                if len(rendered) > 1 and retryable:
+                    # A refused or transient batch failure drops all its pages
+                    # at once; read them one at a time so a dropped connection
+                    # costs one page, not the whole batch (R5-NEW-o).
                     for page in rendered:
                         self._recognize_single_page(page, recognized, failures)
                     return
@@ -287,9 +291,14 @@ class IngestionHandlers:
                         "the reading model"
                     )
                 else:
+                    # A transient dropped connection carries raw endpoint/httpx
+                    # text; that is developer detail, not student-facing
+                    # (R5-NEW-o). A configuration error keeps its short,
+                    # actionable reason.
+                    reason = "" if is_transient_error(err) else f": {err}"
                     failures.append(
                         f"pages {self._page_labels(indexes)} could not be read "
-                        f"after {attempt} attempt(s): {err}"
+                        f"after {attempt} attempt(s){reason}"
                     )
                 return
             break
@@ -326,10 +335,16 @@ class IngestionHandlers:
     ) -> None:
         if not unresolved and not failures and not cap_exceeded:
             return
+        # Pages already named in a failure sentence must not appear twice: the
+        # "unresolved" list and the "could not be read" sentence described the
+        # same pages (R5-NEW-r).
+        failed = self._failed_indexes(failures)
         texts = self.extracted.page_texts if self.extracted is not None else []
         blank: list[int] = []
         thin: list[int] = []
         for index in sorted(unresolved):
+            if index in failed:
+                continue
             if index < len(texts) and texts[index].strip():
                 thin.append(index)
             else:
@@ -351,6 +366,22 @@ class IngestionHandlers:
             "OCR incomplete for source %s: %s", self.source.source_id, message
         )
         raise StageWarning(message)
+
+    _PAGE_LIST = re.compile(
+        r"\bpages?\s+([\d,\s]+?)\s+(?:could not be read|were declined by)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _failed_indexes(cls, failures: list[str]) -> set[int]:
+        indexes: set[int] = set()
+        for failure in failures:
+            match = cls._PAGE_LIST.search(failure)
+            if match:
+                indexes.update(
+                    int(number) - 1 for number in re.findall(r"\d+", match.group(1))
+                )
+        return indexes
 
     @staticmethod
     def _page_labels(indexes: list[int]) -> str:

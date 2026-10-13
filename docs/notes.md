@@ -4083,3 +4083,89 @@ chunk text), `sha1(..., usedforsecurity=False)` on Python 3.8 (CR-26 — the
 project requires 3.12), and the package read bound (CR-27 — the `+1` read
 already trips the overshoot check). A finding that disagrees with a passing
 regression test is a question for the test's author, not a change.
+
+## 2026-10-12 — Round-5 retest fixes
+
+The round-5 report's new bugs are fixed in code with tests in
+`tests/test_round5_regressions.py`; the item map is `docs/ROUND5-OVERLAY.md`.
+Lessons worth keeping:
+
+A model may use U+2028/U+2029 as a line break inside a JSON string.
+`str.splitlines()` treats those as breaks, so `strip_fence_echo` turned one
+into a raw newline and invalidated the whole workspace block. Split prompt
+plumbing on `\r\n|\r|\n` only; normalize the exotic breaks in the renderer.
+
+An OCR batch failure is not always a refusal. A transient dropped connection
+must reach the same per-page fallback a refusal does, or one bad batch loses
+its pages; and raw endpoint/httpx text belongs in the log, not the student's
+Sources line. "unresolved pages" and "could not be read" must not name the
+same page twice.
+
+A shared 4-character substring is not a word relation ("determine" shares
+"mine" with "ad hominem"). Fallacy feedback matches whole words or a
+5-character stem. An order-sensitive short-answer check fails correct passive
+restatements; accept a passive permutation only when the point's subject
+follows "by", and treat "not … until" as affirmative. A synonym verb
+("received" for "paid") still needs a model — recorded as tricky, not faked.
+
+A numeric range ("Weeks 1-5", "1846-1848") names the material; only drop a
+hyphenated count when its tail is a size unit ("10-question").
+
+Retrieval ranking is the still-open, never-attempted class (STK-025/044,
+STK-039, R5-NEW-p): exact FTS finds Table 2.2, but the fused ranking does not
+surface it, and a conversation can pull a follow-up off-topic. It needs a
+relevance/boosting design, not another patch; no corpus is available here to
+reproduce against, so it stays recorded rather than half-changed.
+
+The companion's citation guard required a source on every review, revise and
+explain, so a pure style edit of the student's own paragraph failed with
+"unsupported source reference". Only `review` must cite; a style edit or
+explain of the student's text may cite nothing.
+
+## 2026-10-12 — Address routing and score-mode retrieval
+
+The retrieval bugs that survived rounds of weight tuning were not weights:
+they were the query and the cutoff. Keyword tokenization dropped single
+characters, so "Table 2.2" searched as "reproduce OR table" and every table in
+the course matched equally; "Week 3" searched as "week" and matched every
+lecture. The fix is explicit-address routing — parse the reference, pin a
+label as one FTS5 phrase, and filter a named week to the source whose filename
+carries it (failing open) — then let a score floor, not a fixed count, decide
+whether anything is relevant. A fixed `final_k` can never say "nothing here
+answers this", which is what the false refusals actually needed.
+
+Two smaller traps. A table caption ("Table 2.2 …") and its Source/Note line
+are separate paragraph blocks unless the segmenter merges them; when a merge
+is meant to exceed the token target, say by how much (the caption/note), the
+way `_absorb_thin` already does. And one merge step shared by both rerank
+modes keeps them from drifting: `score` reuses exactly the fusion the default
+`top_k` path uses, differing only in the cut.
+
+A five-phase plan only works if each phase leaves the tree green and stops for
+review. Phase 0 (an eval that shows the failures as numbers) is what made the
+later phases checkable; without it the floor values would be guesses.
+
+
+## 2026-10-12 — Sweep pass: process-crash and hardening fixes
+
+A review pass round-5 didn't cover found six defects, all now fixed with
+regression tests: pypdfium2 is not thread-safe across threads — not even for
+different documents — so every call site (extraction, OCR rasterization,
+page-count, the cited-page render in the API) now shares `extract.PDFIUM_LOCK`;
+model deletion stopped the serving model before unlinking the GGUF it had
+mapped (Windows PermissionError 500); app shutdown waited on a still-loading
+model for minutes (`LlamaServer.request_shutdown` aborts a starting model in
+seconds); duplicate Reindex raced `pending_ingestion`'s PK (ON CONFLICT
+added); the backup reader accepted a manifest member of unbounded declared
+size (now capped at 1 MiB like `course_archive`); and dev builds served
+`/openapi.json` past the app token (Starlette's auto route bypasses router
+dependencies — serve it behind `require_app_token` or not at all).
+
+## 2026-10-13 — The pdfium lock includes construction
+
+Holding `PDFIUM_LOCK` around `page.render` is not enough. `PdfDocument()`
+is itself a pdfium call, and the cited-page route opened the file before
+taking the lock, so a viewer request could still race ingestion. Every
+pdfium call on that route, including open and close, stays inside the lock.
+A workbook that stores cell text inline has no `xl/sharedStrings.xml`; that
+absence is not a missing-data warning.

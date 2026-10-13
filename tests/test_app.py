@@ -99,6 +99,18 @@ def test_production_api_does_not_publish_schema_or_docs(
     assert client.get("/api/docs").status_code == 404
 
 
+def test_the_development_schema_route_requires_the_app_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.backend.main import create_api
+
+    monkeypatch.setenv("APP_API_TOKEN", "launch-secret")
+    client = TestClient(create_api())
+    assert client.get("/openapi.json").status_code == 401
+    ok = client.get("/openapi.json", headers={"X-App-Token": "launch-secret"})
+    assert ok.status_code == 200
+
+
 def test_serve_announces_its_port_and_stops_when_stdin_closes() -> None:
     process = subprocess.Popen(
         [sys.executable, "-m", "src.backend.serve", "--watch-stdin"],

@@ -197,7 +197,7 @@ def test_ocr_batches_continue_after_failure_and_keep_rendered_page_ids(
 
     monkeypatch.setattr(extract, "rasterize_pages_with_ids", render)
     monkeypatch.setattr(orchestrator.provider, "generate", generate)
-    with pytest.raises(StageWarning, match="unresolved pages 1, 2"):
+    with pytest.raises(StageWarning, match="pages 1, 2 could not be read"):
         handlers.ocr()
     assert calls == [1, 1]
     assert handlers.extracted.page_texts == (

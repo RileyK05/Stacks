@@ -1,5 +1,5 @@
 [version]
-retrieval_config_version = "3"
+retrieval_config_version = "4"
 
 [funnel]
 # Per-seam candidate limits before fusion.
@@ -23,4 +23,30 @@ embedding_only_quota = 3
 enabled = true
 model = "cross-encoder/ms-marco-MiniLM-L6-v2"
 generation_k = 6
+# Score mode (plan-score-retrieval.md Phase 3): wide pool, cross-encoder
+# score every anchor, keep what clears the floor. Ships "top_k" until the
+# floor is calibrated with scripts/calibrate_rerank.py. The sentinel floor
+# values keep everything.
+mode = "top_k"
+pool_limit = 60
+min_score = -1000.0
+max_drop = 1000.0
+
+[score]
+# Wide per-seam limits used only in score mode.
+keyword_limit = 50
+embedding_limit = 50
+graph_limit = 20
+
+[route]
+# Explicit-address routing (plan-score-retrieval.md Phase 1). A question that
+# names "Table 2.2" or "Week 3" is filtered to that passage or that week's
+# sources; a label that is not found fails open.
+enabled = true
+label_kinds = [
+  "table", "figure", "fig", "chart", "exhibit", "equation", "eq",
+  "theorem", "lemma", "definition", "example", "exercise", "problem",
+  "section", "chapter",
+]
+label_limit = 5
 

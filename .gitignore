@@ -8,6 +8,7 @@ venv/
 .pytest_*/
 .mypy_cache/
 .ruff_cache/
+.opencode/
 
 # The dev checkout's data folder (the desktop app uses the OS per-user data
 # directory instead): database, uploads, models, runtime, logs, and the Office

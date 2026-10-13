@@ -114,11 +114,12 @@ def stream_to_temp(
     caller owns it and must discard it via discard_temp()."""
     digest = hashlib.sha256()
     received = 0
-    with tempfile.NamedTemporaryFile(
-        prefix="upload-", suffix=".tmp", delete=False
-    ) as handle:
-        temp_path = Path(handle.name)
-        try:
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="upload-", suffix=".tmp", delete=False
+        ) as handle:
+            temp_path = Path(handle.name)
             while True:
                 chunk = stream.read(chunk_size)
                 if not chunk:
@@ -130,10 +131,14 @@ def stream_to_temp(
                 handle.write(chunk)
             if received == 0:
                 raise EmptyUploadError()
-            return temp_path, digest.hexdigest(), received
-        except BaseException:
+        return temp_path, digest.hexdigest(), received
+    except BaseException:
+        # Discard after the handle is closed: on Windows an open file cannot
+        # be unlinked, so an over-limit upload would leak its temp file
+        # (R5-NEW-q).
+        if temp_path is not None:
             discard_temp(temp_path)
-            raise
+        raise
 
 
 def discard_temp(temp_path: Path) -> None:

@@ -24,6 +24,7 @@ from src.backend.common.embeddings_config import load_embedding_policy
 from src.backend.common.prompt_registry import grounded_prompt, load_prompt
 from src.backend.ingest import extract
 from src.backend.ingest.ocr_pages import split_ocr_pages
+from src.backend.ingest.pipeline import is_transient_error
 from src.backend.retrieval import funnel
 from src.backend.retrieval.config import load_retrieval_policy
 from src.backend.retrieval.funnel import Candidate
@@ -150,9 +151,19 @@ def _transcribe(
             course_id=course_id,
             images=images,
         )
+    except provider.ProviderUnavailableError as err:
+        if not is_transient_error(err):
+            raise
+        # A dropped connection during the quiz-image OCR is transient; retry
+        # once instead of failing the whole request (R5-NEW-s).
+        result = provider.generate(
+            "ocr",
+            load_prompt("ocr"),
+            course_id=course_id,
+            images=images,
+        )
+    try:
         return split_ocr_pages(result.text, len(images))
-    except provider.ProviderUnavailableError:
-        raise
     except ValueError:
         if len(images) == 1:
             if skip_unreadable:
@@ -327,6 +338,7 @@ def _passages(course_id: UUID, topics: list[str]) -> tuple[Candidate, ...]:
             policy,
             query_embedding=embed_search(query),
             embedding_model=load_embedding_policy().model,
+            mode="top_k",
         )
     return found.candidates
 

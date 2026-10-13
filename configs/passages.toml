@@ -1,4 +1,4 @@
-version = "3"
+version = "4"
 semantic_enabled = true
 target_tokens = 512
 # A block shorter than this, and not already a sentence, is merged into a

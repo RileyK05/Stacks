@@ -58,6 +58,33 @@ def test_ask_refuses_when_nothing_found(client: TestClient) -> None:
     assert "nothing" in response.json()["detail"].lower()
 
 
+def test_ask_refuses_when_score_mode_drops_every_passage(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Score mode: a non-empty pool where nothing clears the floor is the
+    same refusal as empty retrieval, not an ungrounded answer (Phase 3)."""
+    from src.backend.common import provider
+    from src.backend.retrieval import rerank
+    from src.backend.retrieval.config import load_rerank_policy
+
+    course_id = _seeded_course(client)
+    configure_test_provider(monkeypatch, GROUNDED_ANSWER)
+    monkeypatch.setattr(
+        rerank,
+        "load_rerank_policy",
+        lambda: load_rerank_policy().model_copy(
+            update={"mode": "score", "min_score": 0.0, "max_drop": 0.0}
+        ),
+    )
+    monkeypatch.setattr(
+        provider, "rerank_scores", lambda _model, _question, texts: [-9.0] * len(texts)
+    )
+    response = _ask(client, course_id)
+    assert response.status_code == 404
+    assert "nothing" in response.json()["detail"].lower()
+
+
 def test_ask_is_honest_about_missing_provider(client: TestClient) -> None:
     """No model configured: 503 with the real reason, and no trace for an
     answer that never happened."""

@@ -131,19 +131,21 @@ class ModelRefusalError(ProviderUnavailableError):
 
 
 # A moderation refusal is a short canned message about the request itself, so
-# it is matched as the whole reply. An unanchored phrase search turns ordinary
-# prose ("The 1836 request was rejected by the Mexican Congress.") into a
-# refusal that loses the answer or the OCR page (R4-NEW-a).
+# it is matched as the whole reply, allowing a short reason clause. An
+# unanchored phrase search turns ordinary prose ("The 1836 request was rejected
+# by the Mexican Congress.") into a refusal that loses the answer or the OCR
+# page (R4-NEW-a). Common short variants are covered (R5-NEW-h).
 _REFUSAL_RE = re.compile(
     r"^\W{0,4}(?:i (?:am|'m) sorry[,:]?\s+|sorry[,:]?\s+)?"
-    r"(?:(?:the|this|your|a) )?(?:request|query|prompt) "
-    r"(?:was|has been) (?:rejected|blocked|declined|flagged)"
-    r"(?:[,:]?\s*(?:because\s+)?(?:it\s+)?(?:was|has been)\s+)?"
-    r"(?:(?:considered|flagged|deemed|classified)\s+(?:as\s+)?"
-    r"(?:high[- ]risk|unsafe|harmful|inappropriate))?"
-    r"[.!]?\s*$",
+    r"(?:(?:the|this|your|a|my) )?(?:request|query|prompt|message|input)"
+    r"(?: (?:was|has been|is|had been|got))?"
+    r" (?:rejected|blocked|declined|flagged|refused|cannot be (?:answered|processed))"
+    r"(?:[.]?\s*(?:as|because|due to|for)\b[^.!?\n]{0,80})?"
+    r"[.!]?\s*$"
+    r"|^\W{0,4}(?:请求被拒绝|无法处理|无法回答|拒绝回答)[。！!.\s]*$",
     re.IGNORECASE,
 )
+_REFUSAL_MAX_CHARS = 280
 
 
 def generate(
@@ -591,7 +593,9 @@ def _call_provider(
         if not isinstance(message, dict):
             raise TypeError("completion message is not an object")
         text = _visible_message_text(message.get("content"))
-        if choice.get("finish_reason") == "content_filter" or _REFUSAL_RE.match(text):
+        if choice.get("finish_reason") == "content_filter" or (
+            len(text) <= _REFUSAL_MAX_CHARS and _REFUSAL_RE.match(text)
+        ):
             raise ModelRefusalError(
                 f"{who} ({endpoint.model}) refused to answer this request. "
                 "Try rephrasing or pick another model."

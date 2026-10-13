@@ -266,30 +266,44 @@ def answer_question(
         result, candidates=attach_passage_context(conn, result.candidates)
     )
 
-    composed = compose_answer(
-        question,
-        result.candidates,
-        generate,
-        on_schema_rejected=lambda err: isinstance(
-            err, provider.ProviderRequestRejectedError
-        ),
-        # A spread of the course is already chosen and ordered: re-ranking it
-        # against "make me a study guide" would only shuffle it.
-        select=(
-            (
-                lambda _question, candidates: rerank.material_budget(
-                    rerank.bound_passages(candidates[:generation_k])
+    rerank_meta: dict[str, object] = {}
+
+    def _select(
+        question_text: str, candidates: tuple[funnel.Candidate, ...]
+    ) -> tuple[funnel.Candidate, ...]:
+        return rerank.select_for_generation(question_text, candidates, meta=rerank_meta)
+
+    try:
+        composed = compose_answer(
+            question,
+            result.candidates,
+            generate,
+            on_schema_rejected=lambda err: isinstance(
+                err, provider.ProviderRequestRejectedError
+            ),
+            # A spread of the course is already chosen and ordered: re-ranking
+            # it against "make me a study guide" would only shuffle it.
+            select=(
+                (
+                    lambda _question, candidates: rerank.material_budget(
+                        rerank.bound_passages(candidates[:generation_k])
+                    )
                 )
-            )
-            if overview
-            else rerank.select_for_generation
-        ),
-        answer_mode=answer_mode,
-        conversation=conversation,
-        teaching=teaching,
-        scope_note=scope_note,
+                if overview
+                else _select
+            ),
+            answer_mode=answer_mode,
+            conversation=conversation,
+            teaching=teaching,
+            scope_note=scope_note,
+        )
+    except rerank.NothingAboveFloorError as err:
+        raise NothingRelevantFoundError(
+            "nothing in the course materials is relevant enough to answer"
+        ) from err
+    used = dataclasses.replace(
+        result, candidates=composed.candidates, rerank=rerank_meta
     )
-    used = dataclasses.replace(result, candidates=composed.candidates)
     extracted = extract_workspace_items(composed.text, len(composed.candidates))
     workspace_numbers: list[int] = []
     for item in extracted.items:

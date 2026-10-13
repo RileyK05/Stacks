@@ -235,3 +235,15 @@ def delete_model(model: CatalogModel) -> bool:
                 path.unlink()
                 removed = True
     return removed
+
+
+def ensure_deletable(model: CatalogModel) -> None:
+    """Raise ValueError while a download for this model is in flight, with
+    no side effects, so callers can reject a delete BEFORE they stop the
+    server (a rejected delete that stopped it first would forget the
+    active model). Callers then stop a server serving this model before
+    delete_model unlinks the file it has mapped."""
+    with _lock:
+        state = _downloads.get(model.id)
+        if state is not None and state.status in ("downloading", "verifying"):
+            raise ValueError("Cancel the download before removing this model.")

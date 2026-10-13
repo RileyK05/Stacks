@@ -152,10 +152,25 @@ development-only parity tool.
 Keyword, vector and one-hop similarity retrieval resolve to the same eligible
 original passage IDs. Course/source filters apply before candidate limits;
 an explicit empty source selection stays empty. Multiple window hits deduplicate
-to their owning passage. Nearby context stays within the same source parent,
-uses encoder continuity when available, and preserves explicit qualifications.
+to their owning passage, and candidates whose normalized text is identical
+collapse to one (their layers merge). Nearby context stays within the same
+source parent, uses encoder continuity when available, and preserves explicit
+qualifications.
+
+Explicit references in a question are routed before searching: a named label
+("Table 2.2") is pinned as an FTS5 phrase ahead of the fused result, and a
+named week ("Week 3", "Weeks 1-5") narrows the search to sources whose
+filenames carry that week, failing open when none match. A follow-up that names
+such an address is searched on its own, not with the earlier questions. These
+filters are tunable under `[route]` in `configs/retrieval.toml`.
+
 Reranking chooses anchors; their related context travels with them rather than
-competing independently against the question.
+competing independently against the question. Two modes share one merge step
+(`[rerank] mode`): `top_k` (the default) keeps the fused order trimmed to
+`generation_k`; `score` scores the whole wide pool and keeps what clears a
+relevance floor (`min_score`, `max_drop`), falling back to `top_k` if the
+reranker is unavailable. Pinned label passages survive both. `score` ships off
+until its floor is calibrated with `scripts/calibrate_rerank.py`.
 
 The generation material budget and per-passage limit are separate from logical
 passage size. A long unit is read from its best matching window and labeled
@@ -178,8 +193,12 @@ Student-memory panels and work-document captures are not indexed as course facts
 Two eval harnesses record whether behavior regressed. The retrieval eval
 (`retrieval/evals.py`) scores each seam (`keyword`, `embedding`, `graph`) and
 the fusion for recall@k, precision@k, and reciprocal rank against committed
-label cases, plus `fusion_beats_best_single`; a case with no expected labels is
-rejected at load. The answer eval (`evals/answer.py`) is the generation-side
+label cases, plus `fusion_beats_best_single`; a case may also assert a
+`min_source_share` over `expected_source` filename substrings, or mark
+`expect_empty` (reported as `empty_correct`) for material the course cannot
+answer. A case with no expected labels is rejected at load unless it is one of
+those two kinds. `scripts/eval_retrieval.py` runs the same cases read-only
+against a real course database. The answer eval (`evals/answer.py`) is the generation-side
 twin: mechanical kinds (green/cold/yellow/red/workspace) check citations,
 refusal, steering and structure with regex/parse/DB-join only. Its expectation
 keys are now enforced, not decorative. Independently reviewed correctness cases

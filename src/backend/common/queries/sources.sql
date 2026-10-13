@@ -213,5 +213,8 @@ UPDATE sources SET status = 'uploaded', error_message = NULL
 WHERE course_id = :course_id AND source_id = :source_id AND status = 'indexed';
 
 -- name: enqueue_reindex
+-- ON CONFLICT like enqueue_pending: a duplicate Reindex call racing the
+-- worker's first claim would otherwise hit pending_ingestion's PK and 500.
 INSERT INTO pending_ingestion (source_id, course_id, reason)
-VALUES (:source_id, :course_id, 'reindex_updated_extraction');
+VALUES (:source_id, :course_id, 'reindex_updated_extraction')
+ON CONFLICT (source_id) DO NOTHING;

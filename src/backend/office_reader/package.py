@@ -166,12 +166,13 @@ def _read_docx(archive: zipfile.ZipFile) -> tuple[list[TextUnit], list[str]]:
 def _read_xlsx(archive: zipfile.ZipFile) -> tuple[list[TextUnit], list[str]]:
     warnings: list[str] = []
     shared: list[str] = []
+    # Inline strings are a complete cell store. Missing sharedStrings.xml is
+    # normal for that workbook, not a gap; a cell that still points at the
+    # missing part is reported when that cell is read.
     if "xl/sharedStrings.xml" in archive.namelist():
         root = _xml(archive.read("xl/sharedStrings.xml"))
         for item in root.iter(_tag(_S, "si")):
             shared.append("".join(t.text or "" for t in item.iter(_tag(_S, "t"))))
-    else:
-        warnings.append("no shared strings part; only inline cell values are read")
     sheets = [
         name
         for name in archive.namelist()

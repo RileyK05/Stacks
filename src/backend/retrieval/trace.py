@@ -64,6 +64,14 @@ def record_trace(
         # does not renumber them.
         chunk_payload["cited_chunk_ids"] = [str(chunk_id) for chunk_id, _ in cited]
         chunk_payload["citation_markers"] = [marker for _, marker in cited]
+    if result.route:
+        # Address routing evidence (labels/weeks/week-filter status) lives
+        # beside the chunk attribution in the same JSON; no schema change.
+        chunk_payload["route"] = result.route
+    if result.rerank:
+        # Rerank evidence (mode, kept, dropped, floor values) from the caller
+        # that ran select_for_generation.
+        chunk_payload["rerank"] = result.rerank
     row = conn.execute(
         get(_FILE, "insert_trace"),
         {

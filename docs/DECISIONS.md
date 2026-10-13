@@ -47,3 +47,26 @@ rows cannot be retrospectively verified without independent provider evidence.
 **Open:** whether a hard ceiling is required. A hard cap needs token reservations
 and rules for missing/late provider usage (added cost/queuing). Do not describe the
 present soft stop as a strict spending cap.
+
+## B-15 — Retrieval cutoff: top-k vs score floor
+
+Retrieval now merges every seam through one step and can rerank in two modes
+(`[rerank] mode` in `configs/retrieval.toml`). `top_k` (the shipped default)
+keeps the fused order trimmed to `generation_k`, with a minimum of one slot per
+contributing source. `score` scores the whole wide pool with the cross-encoder
+and keeps what clears an absolute floor `min_score` and a relative floor
+`max_drop` below the best, so a query the material cannot answer can return
+nothing instead of the least-bad passages. Explicit-address routing pins a named
+label ("Table 2.2") and filters a named week to its source regardless of mode.
+
+**Open:** which mode ships by default, and the floor values. A fixed-count cut
+cannot express "nothing here is relevant", which is what the round-5 false
+refusals (STK-025/044, STK-039) need; but a floor that is too high turns real
+answers into refusals. The plan (`docs/plan-score-retrieval.md`) requires the
+floor to be calibrated on the user's own course with
+`scripts/calibrate_rerank.py` and the answer-level tester before the default
+changes. Until then `score` is opt-in and `top_k` stays the fallback.
+
+**Recommendation:** adopt `score` after calibration if it beats `top_k` on
+precision and `empty_correct` without losing recall on the label cases; record
+the two runs' numbers here when the default flips.

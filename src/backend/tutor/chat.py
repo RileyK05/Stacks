@@ -28,6 +28,8 @@ from src.backend.common.prompt_registry import (
     strip_fence_echo,
 )
 from src.backend.common.providers import ProviderChoice
+from src.backend.retrieval import route
+from src.backend.retrieval.config import load_route_policy
 from src.backend.tutor.compose import (
     Intent,
     asks_for_overview,
@@ -173,6 +175,14 @@ def retrieval_query(question: str, context: ChatContext | None) -> str:
     topic = retrieval_topic(question)
     if not topic.strip():
         return "\n".join(previous) if previous else question
+    route_policy = load_route_policy()
+    if (
+        route_policy.enabled
+        and not route.parse_addresses(question, route_policy).empty()
+    ):
+        # An explicit address ("Table 2.2", "Week 3") is self-contained: do
+        # not dilute it with earlier questions (R5-NEW-p).
+        return topic
     if not previous or len(topic.split()) > FOLLOW_UP_MAX_WORDS:
         return topic
     return "\n".join((topic, *previous))

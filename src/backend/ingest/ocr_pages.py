@@ -28,9 +28,12 @@ def split_ocr_pages(text: str, page_count: int) -> list[str]:
         # rule inside the page must not fail the page (R4-NEW-d).
         return [clean(text)]
     parts = _PAGE_BOUNDARY.split(text)
-    if len(parts) == page_count + 1 and not parts[-1].strip():
+    # A leading or trailing separator adds an empty part; strip as many empty
+    # ends as it takes to reach the page count, including both at once
+    # (R5-NEW-g).
+    while len(parts) > page_count and not parts[-1].strip():
         parts.pop()
-    if len(parts) == page_count + 1 and not parts[0].strip():
+    while len(parts) > page_count and not parts[0].strip():
         parts.pop(0)
     if len(parts) == page_count:
         return [clean(part) for part in parts]

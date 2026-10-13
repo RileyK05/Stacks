@@ -501,6 +501,33 @@ def test_non_object_manifest_is_rejected(tmp_path: Path) -> None:
         backups._restore_into(malformed, tmp_path / "bad-manifest")
 
 
+def test_oversized_manifest_member_is_rejected_before_it_is_parsed(
+    tmp_path: Path,
+) -> None:
+    """A crafted archive can declare a small member that expands huge; the
+    manifest is the one thing every reader parses, list_backups included,
+    so it must be size-capped (like course_archive) instead of being read
+    in full."""
+    _seed_data()
+    info = backups.create_backup()
+    archive_path = Path(get_settings().data_dir) / "backups" / info.filename
+    oversized = tmp_path / "oversized-manifest.zip"
+    with (
+        zipfile.ZipFile(archive_path) as source,
+        zipfile.ZipFile(oversized, "w") as target,
+    ):
+        for item in source.infolist():
+            data = source.read(item)
+            if item.filename == "manifest.json":
+                data = b"0" * (backups.MAX_MANIFEST_BYTES + 1)
+            target.writestr(item, data)
+    with (
+        zipfile.ZipFile(oversized) as archive,
+        pytest.raises(backups.InvalidBackupError, match="too large"),
+    ):
+        backups._read_manifest(archive)
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [

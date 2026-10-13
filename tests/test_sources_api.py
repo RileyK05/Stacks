@@ -193,9 +193,18 @@ def test_trace_citations_preserve_chunk_order_past_ten(client: TestClient) -> No
     ]
 
 
-def test_pdf_viewer_renders_a_scoped_page(client: TestClient) -> None:
+def test_pdf_viewer_renders_a_scoped_page(client: TestClient, monkeypatch) -> None:
+    import pypdfium2 as pdfium
     from pypdf import PdfWriter
+    from src.backend.ingest.extract import PDFIUM_LOCK
 
+    original = pdfium.PdfDocument
+
+    def opened_under_the_lock(*args, **kwargs):
+        assert PDFIUM_LOCK.locked(), "PdfDocument opened outside PDFIUM_LOCK"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(pdfium, "PdfDocument", opened_under_the_lock)
     writer = PdfWriter()
     writer.add_blank_page(width=300, height=400)
     buffer = io.BytesIO()

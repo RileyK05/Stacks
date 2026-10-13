@@ -70,8 +70,18 @@ def create_api() -> FastAPI:
         dependencies=[Depends(require_app_token)],
         docs_url=None,
         redoc_url=None,
-        openapi_url=None if production else "/openapi.json",
+        openapi_url=None,
     )
+    # The auto-generated /openapi.json route would bypass the app-level
+    # token dependency (Starlette adds it outside the router), so the dev
+    # build serves the same schema behind require_app_token instead; the
+    # production build publishes no schema (tests/test_app.py).
+    if not production:
+
+        @api.get("/openapi.json", include_in_schema=False)
+        def openapi_schema() -> JSONResponse:
+            return JSONResponse(api.openapi())
+
     install_body_limits(api)
 
     @api.exception_handler(CredentialStoreUnavailableError)

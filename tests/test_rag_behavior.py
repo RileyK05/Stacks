@@ -44,6 +44,40 @@ def test_table_list_and_equation_keep_their_explanatory_text():
         assert text[result.passages[0].start : result.passages[0].end] == text
 
 
+def test_table_caption_and_source_note_join_the_table():
+    text = (
+        "TABLE 2.2 Race of Major Hispanic Ancestries\n\n"
+        "| Group | Count |\n|---|---|\n| Salvadoran | 4737 |\n"
+        "| Mexican | 150000 |\n\n"
+        "Source: author's calculations from the census."
+    )
+    result = segment(text, load_policy(), token_count=len)
+    assert len(result.passages) == 1
+    assert result.passages[0].kind == "table"
+    assert text[result.passages[0].start : result.passages[0].end] == text
+
+
+def test_a_caption_before_prose_does_not_become_a_table():
+    text = "Figure 3 Summary of results\n\nThe war began over the border dispute."
+    result = segment(text, load_policy(), token_count=len)
+    assert all(span.kind != "table" for span in result.passages)
+    assert "".join(text[span.start : span.end] for span in result.passages) == text
+
+
+def test_a_long_note_after_a_table_does_not_merge():
+    note = "Note: " + ("the data was collected from many different sources. " * 20)
+    assert len(note) > 600
+    table = (
+        "| Group | Count | Percent |\n|---|---|---|\n"
+        "| Salvadoran | 4737 | 0.3 |\n| Mexican | 150000 | 40.1 |"
+    )
+    result = segment(table + "\n\n" + note, load_policy(), token_count=len)
+    first = result.passages[0]
+    assert first.kind == "table"
+    assert (table + "\n\n" + note)[first.start : first.end].strip() == table
+    assert all(span.kind != "table" for span in result.passages[1:])
+
+
 def test_single_newline_text_is_split_to_the_token_target():
     """A PDF page break is one newline, so blank-line cuts never fire."""
     line = "The Hart-Celler Act capped immigration at two hundred ninety thousand. "

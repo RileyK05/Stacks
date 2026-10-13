@@ -93,12 +93,18 @@ _ADVICE = re.compile(
     r")",
     re.IGNORECASE,
 )
+# A direct demand to produce the text, even phrased as a question ("Can you help
+# me rewrite this paragraph?"). Asking *how* is advice (R4-NEW-h); asking for the
+# rewrite is not (R5-NEW-i).
+_DEMAND = re.compile(r"\b(?:rewrite|redraft|finish|complete)\b", re.IGNORECASE)
 
 
 def refuses_rewrite(instruction: str) -> bool:
     """A demand for the text itself is refused; asking how to write is advice
     the critic may answer (R4-NEW-h)."""
-    return bool(_REWRITE.search(instruction)) and not _ADVICE.match(instruction)
+    if not _REWRITE.search(instruction):
+        return False
+    return not (_ADVICE.match(instruction) and not _DEMAND.search(instruction))
 
 
 def _words(text: str) -> set[str]:
@@ -250,15 +256,15 @@ def latest_included(work: WorkSession) -> set[int] | None:
 
 def _related(word: str, other: str) -> bool:
     """Morphological near-match: "unsupported" vs "supported", "hasty" vs
-    "hastily", "generalization" vs "generalize"."""
+    "hastily", "generalization" vs "generalize". A shared 4-character
+    substring is too loose ("determine" ≈ "ad hominem"), so words must match
+    whole, contain one another, or share a 5-character stem (R5-NEW-a)."""
     if word == other:
         return True
-    if len(word) >= 4 and (word in other or other in word):
+    if len(word) >= 5 and len(other) >= 5 and (word in other or other in word):
         return True
     shorter, longer = sorted((word, other), key=len)
-    return len(shorter) >= 4 and any(
-        shorter[index : index + 4] in longer for index in range(len(shorter) - 3)
-    )
+    return len(shorter) >= 5 and shorter[:5] == longer[:5]
 
 
 def _names_fallacy(feedback: str, fallacy: str) -> bool:
@@ -337,7 +343,12 @@ def validate_findings(
                 "A course-based comment needs a citation from the supplied passages."
             )
             continue
-        checked.append(finding.model_copy(update={"grounding": grounding}))
+        # A leading snake_case label ("unsupported_claim: …") is internal
+        # vocabulary, not student-facing prose (R5-NEW-n).
+        feedback = re.sub(r"^\s*[a-z]+(?:_[a-z]+)+:\s*", "", finding.feedback)
+        checked.append(
+            finding.model_copy(update={"grounding": grounding, "feedback": feedback})
+        )
     if output.findings and not checked:
         raise ValueError(dropped[0] if dropped else outside)
     kept = checked[:cap]

@@ -160,7 +160,16 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
         result = funnel.retrieve(
             conn, course_id, search, load_retrieval_policy(), query_embedding=embedding
         )
-        candidates = rerank.select_for_generation(search, result.candidates)
+        rerank_meta: dict[str, object] = {}
+        try:
+            candidates = rerank.select_for_generation(
+                search, result.candidates, meta=rerank_meta
+            )
+        except rerank.NothingAboveFloorError as err:
+            raise ValueError(
+                "Nothing in the course material is relevant enough to review this. "
+                "Try again or connect a richer source."
+            ) from err
         if request.action == "critique":
             pool = attach_passage_context(conn, result.candidates)
             ranked = attach_passage_context(conn, candidates)
@@ -189,12 +198,17 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
                         query_embedding=embedding,
                         source_ids=syllabus_ids,
                     )
-                    extra_ranked = attach_passage_context(
-                        conn,
-                        rerank.select_for_generation(
-                            work.document.text[:1200], extra.candidates
-                        ),
-                    )
+                    try:
+                        extra_ranked = attach_passage_context(
+                            conn,
+                            rerank.select_for_generation(
+                                work.document.text[:1200], extra.candidates
+                            ),
+                        )
+                    except rerank.NothingAboveFloorError:
+                        # Best-effort syllabus evidence; skip it rather than
+                        # failing the whole critique.
+                        extra_ranked = ()
                     kept, syllabus_in_context = critique.reserve_course_evidence(
                         [*ranked, *extra_ranked],
                         [*pool, *extra_ranked],
@@ -211,7 +225,7 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
                     continue
                 kept.append(candidate)
                 remaining -= len(candidate.text)
-        used = dataclasses.replace(result, candidates=tuple(kept))
+        used = dataclasses.replace(result, candidates=tuple(kept), rerank=rerank_meta)
         citations = [
             WorkCitation(**dataclasses.asdict(c)) for c in _citations(conn, kept)
         ]
@@ -401,11 +415,7 @@ def answer(course_id: UUID, session_id: UUID, request: WorkAsk) -> WorkReply:
             if (
                 not text.strip()
                 or not numbers.issubset({c.number for c in citations})
-                or (
-                    citations
-                    and request.action in {"review", "revise", "explain"}
-                    and not numbers
-                )
+                or (citations and request.action == "review" and not numbers)
             ):
                 raise ValueError(
                     "The answer contained an unsupported source reference. Try again."

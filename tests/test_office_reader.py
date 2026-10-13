@@ -89,6 +89,7 @@ def test_excel_package_reads_cells_with_references() -> None:
     assert read.method == PACKAGE
     assert read.units[0].text == "A1=term; B1=definition"
     assert read.units[1].text == "A2=linearity; B2=preserves"
+    assert not any("shared string" in warning.casefold() for warning in read.warnings)
 
 
 def test_excel_chart_sheet_is_skipped_and_worksheet_order_is_kept() -> None:

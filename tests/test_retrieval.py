@@ -5,6 +5,7 @@ Checks cover selected sources, fusion caps/quotas, attribution and saved traces;
 ingestion tests cover publication of these rows.
 """
 
+import json
 from uuid import uuid4
 
 import pytest
@@ -15,6 +16,7 @@ from src.backend.retrieval.funnel import RetrievalPolicy
 from tests.factories import (
     add_chunk,
     chunk_source_locator,
+    insert_chunk,
     insert_chunks,
     insert_source,
     make_course,
@@ -476,6 +478,137 @@ def test_eval_counts_a_chunks_full_locator_span(course, tmp_path) -> None:
     assert summary.cases[0].retrieved_labels == ("page 1", "page 2")
 
 
+def test_eval_case_loader_supports_new_fields(tmp_path) -> None:
+    """The Phase 0 fields load, empty labels are allowed for empty probes and
+    source-share cases, and the committed cases.json still loads."""
+    from src.backend.retrieval import evals as evals_module
+
+    path = tmp_path / "cases.json"
+    path.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "question": "quiz on Week 3",
+                        "course_tag": "T",
+                        "expected_source": "Week3|Week 3",
+                        "min_source_share": 0.8,
+                        "expected_labels": [],
+                    },
+                    {
+                        "question": "uncovered topic",
+                        "course_tag": "T",
+                        "expect_empty": True,
+                        "expected_labels": [],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    cases = evals_module.load_cases(path)
+    assert cases[0].expected_source == "Week3|Week 3"
+    assert cases[0].min_source_share == 0.8
+    assert cases[0].expected_labels == ()
+    assert cases[1].expect_empty and cases[1].expected_labels == ()
+    assert evals_module.load_cases()
+
+
+def test_eval_case_loader_rejects_empty_labels_without_a_probe(tmp_path) -> None:
+    from src.backend.retrieval import evals as evals_module
+
+    path = tmp_path / "cases.json"
+    path.write_text(
+        json.dumps(
+            {"cases": [{"question": "q", "course_tag": "T", "expected_labels": []}]}
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="no expected_labels"):
+        evals_module.load_cases(path)
+
+
+def test_eval_source_share_gates_and_reports(course, tmp_path) -> None:
+    """A Week 3 question retrieves only Week3 passages; a share below the
+    minimum is a miss, and mean_source_share reports the average."""
+    from src.backend.retrieval import evals as evals_module
+
+    week1 = insert_source(course.course_id, filename="Week1 notes.pdf")
+    week3 = insert_source(course.course_id, filename="Week3 notes.pdf")
+    insert_chunk(
+        week1, "The war began over the Rio Grande border dispute.", label="page 1"
+    )
+    insert_chunk(
+        week3, "Office hours are Tuesday; the exam schedule is posted.", label="page 1"
+    )
+    rename_course(course.course_id, "EVAL-SHARE")
+
+    cases_file = tmp_path / "cases.json"
+    cases_file.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "question": "office hours Tuesday exam schedule",
+                        "course_tag": "EVAL-SHARE",
+                        "expected_source": "Week3",
+                        "min_source_share": 0.8,
+                        "expected_labels": [],
+                    },
+                    {
+                        "question": "Rio Grande border dispute",
+                        "course_tag": "EVAL-SHARE",
+                        "expected_source": "Week3",
+                        "min_source_share": 1.0,
+                        "expected_labels": [],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with connection() as conn:
+        summary = evals_module.run_eval(conn, _policy(), cases_path=cases_file)
+    hits, share = summary.cases[0], summary.cases[1]
+    assert hits.source_share == 1.0 and hits.hit
+    assert share.source_share == 0.0 and not share.hit
+    assert summary.mean_source_share == 0.5
+
+
+def test_eval_expect_empty_hits_on_no_retrieval(course, tmp_path) -> None:
+    from src.backend.retrieval import evals as evals_module
+
+    add_chunk(
+        course.course_id, "Covalent bonds and molecular geometry.", label="page 1"
+    )
+    rename_course(course.course_id, "EVAL-EMPTY")
+
+    cases_file = tmp_path / "cases.json"
+    cases_file.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "question": (
+                            "What did the syllabus say about the 1972 Munich "
+                            "Olympics security arrangements?"
+                        ),
+                        "course_tag": "EVAL-EMPTY",
+                        "expect_empty": True,
+                        "expected_labels": [],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with connection() as conn:
+        summary = evals_module.run_eval(conn, _policy(), cases_path=cases_file)
+    assert summary.cases[0].hit
+    assert summary.empty_correct == 1.0
+    assert summary.fused_recall == 0.0
+
+
 def test_fuse_allocates_slots_by_relevance(course) -> None:
     """The ratified allocation: per-source relevance = best normalized
     chunk score; slots split proportionally with largest remainder.
@@ -624,3 +757,148 @@ def test_pending_sources_are_never_citable(course) -> None:
     with connection() as conn:
         keyword = funnel.keyword_seam(conn, course.course_id, QUERY, 20)
     assert keyword == {}
+
+
+def test_retrieve_dedupes_identical_text(course) -> None:
+    """Two sources holding the same normalized text collapse to one
+    candidate (STK-032); whitespace and case do not hide the duplicate."""
+    first = insert_source(course.course_id, filename="a.txt")
+    second = insert_source(course.course_id, filename="b.txt")
+    text = "The same passage about linearity and the basis of vector spaces."
+    insert_chunk(first, text, chunk_index=0)
+    insert_chunk(
+        second,
+        "The same   passage about linearity and the basis of vector spaces.",
+        chunk_index=0,
+    )
+    with connection() as conn:
+        result = funnel.retrieve(
+            conn, course.course_id, "linearity basis vector spaces", _policy()
+        )
+    matching = [c for c in result.candidates if "basis of vector spaces" in c.text]
+    assert len(matching) == 1
+
+
+def test_score_mode_funnel_uses_the_wide_pool(course, monkeypatch) -> None:
+    """Score mode widens the seam limits and keeps a pool larger than the
+    top-k final_k, before the reranker applies the floor (Phase 3)."""
+    from src.backend.retrieval.config import load_rerank_policy
+
+    source = insert_source(course.course_id, filename="Week1.txt")
+    for index in range(15):
+        insert_chunk(
+            source,
+            f"linearity passage number {index} about vector spaces and basis",
+            chunk_index=index,
+            label=f"page {index + 1}",
+        )
+    monkeypatch.setattr(
+        funnel,
+        "load_rerank_policy",
+        lambda: load_rerank_policy().model_copy(
+            update={"mode": "score", "pool_limit": 12}
+        ),
+    )
+    with connection() as conn:
+        result = funnel.retrieve(
+            conn, course.course_id, "linearity vector spaces", _policy()
+        )
+    anchors = [c for c in result.candidates if not c.context_for]
+    assert len(anchors) == 12
+    assert len(anchors) > _policy().final_k
+
+
+def test_run_eval_end_to_end_hits_a_routed_week(tmp_path) -> None:
+    """end_to_end scores the real retrieve path, so a Week address routes to
+    the right source (plan-score-retrieval.md review)."""
+    from src.backend.retrieval import evals as evals_module
+
+    course = make_course("EVAL-E2E")
+    week1 = insert_source(course.course_id, filename="Week1 notes.pdf")
+    week3 = insert_source(course.course_id, filename="Week3 notes.pdf")
+    insert_chunk(
+        week1,
+        "quiz week one covers the assigned readings and the first lecture",
+        chunk_index=0,
+        label="page 1",
+    )
+    insert_chunk(
+        week3,
+        "quiz week three covers the assigned readings and the third lecture",
+        chunk_index=0,
+        label="page 1",
+    )
+    cases_file = tmp_path / "cases.json"
+    cases_file.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "question": "Make a quiz on Week 3",
+                        "course_tag": "EVAL-E2E",
+                        "expected_source": "Week3",
+                        "min_source_share": 0.8,
+                        "expected_labels": [],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with connection() as conn:
+        summary = evals_module.run_eval(
+            conn, _policy(), cases_path=cases_file, end_to_end=True
+        )
+    assert summary.cases[0].hit
+    assert summary.cases[0].source_share == 1.0
+
+
+def test_run_eval_end_to_end_empty_hits_when_score_floor_drops_all(
+    tmp_path, monkeypatch
+) -> None:
+    """In score mode end_to_end, an expect_empty case hits when the floor
+    drops the whole pool."""
+    from src.backend.common import provider
+    from src.backend.retrieval import evals as evals_module
+    from src.backend.retrieval.config import load_rerank_policy
+
+    monkeypatch.setattr(
+        evals_module,
+        "load_rerank_policy",
+        lambda: load_rerank_policy().model_copy(
+            update={"mode": "score", "min_score": 0.0, "max_drop": 0.0}
+        ),
+    )
+    monkeypatch.setattr(
+        provider, "rerank_scores", lambda _m, _q, texts: [-9.0] * len(texts)
+    )
+    course = make_course("EVAL-EMPTY-SCORE")
+    source = insert_source(course.course_id, filename="Week1 notes.pdf")
+    insert_chunk(
+        source,
+        "linearity preserves addition and scalar multiplication in vector spaces",
+        chunk_index=0,
+        label="page 1",
+    )
+    cases_file = tmp_path / "cases.json"
+    cases_file.write_text(
+        json.dumps(
+            {
+                "cases": [
+                    {
+                        "question": "linearity preserves addition",
+                        "course_tag": "EVAL-EMPTY-SCORE",
+                        "expect_empty": True,
+                        "expected_labels": [],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with connection() as conn:
+        summary = evals_module.run_eval(
+            conn, _policy(), cases_path=cases_file, end_to_end=True, mode="score"
+        )
+    assert summary.cases[0].hit
+    assert summary.empty_correct == 1.0

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import numpy as np
@@ -16,7 +17,13 @@ from src.backend.common.queries import get
 from src.backend.rag import generated
 from src.backend.rag.config import load_policy as load_passage_policy
 from src.backend.rag.segment import is_thin
-from src.backend.retrieval.config import RetrievalPolicy
+from src.backend.retrieval import route
+from src.backend.retrieval.config import (
+    RetrievalPolicy,
+    load_rerank_policy,
+    load_route_policy,
+    load_score_policy,
+)
 
 _FILE = "retrieval"
 
@@ -25,6 +32,7 @@ GRAPH = "graph"
 CONTEXT = "context"
 GENERATED = "generated_lookup"
 EMBEDDING = "embedding"
+LABEL = "label"
 
 # Only letters and digits (of any script) survive keyword tokenization.
 # Everything else — including every FTS5 operator ( ) " * ^ : + - and the
@@ -228,6 +236,13 @@ class Candidate:
 class RetrievalResult:
     candidates: tuple[Candidate, ...]
     layer_contribution: dict[str, int] = field(default_factory=dict)
+    # Address routing evidence: labels/weeks parsed from the question, the
+    # week-filter status ("off"/"matched"/"no_match"), and the source count
+    # after the filter. Stored in the retrieval trace.
+    route: dict[str, object] = field(default_factory=dict)
+    # Rerank evidence (mode, kept, dropped, floor values), filled by the
+    # caller that runs select_for_generation; stored in the trace.
+    rerank: dict[str, object] = field(default_factory=dict)
 
 
 def _rows_to_candidates(
@@ -276,6 +291,56 @@ def keyword_seam(
         },
     ).fetchall()
     return _rows_to_candidates(rows, KEYWORD)
+
+
+def label_seam(
+    conn: Connection,
+    course_id: UUID,
+    label: str,
+    limit: int,
+    source_ids: Collection[UUID] | None = None,
+) -> dict[UUID, Candidate]:
+    """Pin a label's exact passage. `route.label_phrase` builds one FTS5
+    phrase with single characters kept, unlike the keyword seam's tokenizer
+    which drops them (plan-score-retrieval.md Phase 1)."""
+    phrase = route.label_phrase(label)
+    if not phrase:
+        return {}
+    rows = conn.execute(
+        get(_FILE, "label_candidates"),
+        {
+            "course_id": course_id,
+            "match": phrase,
+            "limit": limit,
+            "source_ids": json_ids(source_ids) if source_ids is not None else None,
+        },
+    ).fetchall()
+    found = _rows_to_candidates(rows, LABEL)
+    # Pins rank by their address, not bm25: every pin is equally "this is the
+    # named passage", and the SQL order already prefers earlier matches.
+    return {
+        chunk_id: replace(candidate, rank=1.0) for chunk_id, candidate in found.items()
+    }
+
+
+def _merge_pins(
+    pins: dict[UUID, Candidate], fused: tuple[Candidate, ...]
+) -> tuple[Candidate, ...]:
+    """Pinned label passages first, then the fused result, deduped. A chunk
+    that is both keeps the union of its layers and the better rank."""
+    by_id = {candidate.chunk_id: candidate for candidate in fused}
+    ordered: list[Candidate] = []
+    for chunk_id, pin in pins.items():
+        existing = by_id.get(chunk_id)
+        if existing is not None:
+            pin = replace(
+                pin,
+                layers=pin.layers | existing.layers,
+                rank=max(pin.rank, existing.rank),
+            )
+        ordered.append(pin)
+    ordered.extend(candidate for candidate in fused if candidate.chunk_id not in pins)
+    return tuple(ordered)
 
 
 def embedding_seam(
@@ -413,6 +478,80 @@ def _normalize(seam: dict[UUID, Candidate]) -> dict[UUID, Candidate]:
     }
 
 
+def _merge_seams(
+    keyword: dict[UUID, Candidate],
+    embeddings: dict[UUID, Candidate],
+    graph: dict[UUID, Candidate] | None,
+    *,
+    policy: RetrievalPolicy,
+    generated_hits: dict[UUID, Candidate] | None = None,
+) -> dict[UUID, Candidate]:
+    """Normalize every seam to 0..1 and union them by chunk: layer union, max
+    rank, generated-material union. Shared by top-k fusion and score mode so
+    the two cannot drift."""
+    normalized_keyword = _normalize(keyword)
+    normalized_graph = _normalize(graph or {})
+    normalized_embeddings = _normalize(embeddings)
+    annotations = {
+        identity: replace(
+            candidate, rank=candidate.rank * policy.generated_lookup_weight
+        )
+        for identity, candidate in _normalize(generated_hits or {}).items()
+    }
+
+    merged: dict[UUID, Candidate] = {}
+    for seam in (
+        normalized_keyword,
+        normalized_embeddings,
+        normalized_graph,
+        annotations,
+    ):
+        for chunk_id, candidate in seam.items():
+            if chunk_id in merged:
+                existing = merged[chunk_id]
+                merged[chunk_id] = replace(
+                    candidate if candidate.window_end is not None else existing,
+                    layers=existing.layers | candidate.layers,
+                    rank=max(existing.rank, candidate.rank),
+                    generated_materials=tuple(
+                        dict.fromkeys(
+                            existing.generated_materials + candidate.generated_materials
+                        )
+                    ),
+                )
+            else:
+                merged[chunk_id] = candidate
+    return merged
+
+
+def _dedupe(candidates: list[Candidate]) -> list[Candidate]:
+    """Collapse candidates whose normalized text is identical (casefold,
+    collapsed whitespace), keeping the higher-ranked one and unioning their
+    layers (STK-032). Input is best-ranked first."""
+    seen: dict[str, int] = {}
+    result: list[Candidate] = []
+    for candidate in candidates:
+        key = hashlib.sha256(
+            " ".join(candidate.text.casefold().split()).encode("utf-8")
+        ).hexdigest()
+        existing = seen.get(key)
+        if existing is not None:
+            kept = result[existing]
+            result[existing] = replace(
+                kept,
+                layers=kept.layers | candidate.layers,
+                generated_materials=tuple(
+                    dict.fromkeys(
+                        kept.generated_materials + candidate.generated_materials
+                    )
+                ),
+            )
+            continue
+        seen[key] = len(result)
+        result.append(candidate)
+    return result
+
+
 def fuse(
     keyword: dict[UUID, Candidate],
     embeddings: dict[UUID, Candidate],
@@ -441,33 +580,9 @@ def fuse(
     after allocated slots (semantic expansion must not displace
     grounded hits). A single-source course fills naturally — no source
     can starve another when there is no competition."""
-    keyword = _normalize(keyword)
-    graph = _normalize(graph or {})
-    embeddings = _normalize(embeddings)
-    annotations = {
-        identity: replace(
-            candidate, rank=candidate.rank * policy.generated_lookup_weight
-        )
-        for identity, candidate in _normalize(generated_hits or {}).items()
-    }
-
-    merged: dict[UUID, Candidate] = {}
-    for seam in (keyword, embeddings, graph, annotations):
-        for chunk_id, candidate in seam.items():
-            if chunk_id in merged:
-                existing = merged[chunk_id]
-                merged[chunk_id] = replace(
-                    candidate if candidate.window_end is not None else existing,
-                    layers=existing.layers | candidate.layers,
-                    rank=max(existing.rank, candidate.rank),
-                    generated_materials=tuple(
-                        dict.fromkeys(
-                            existing.generated_materials + candidate.generated_materials
-                        )
-                    ),
-                )
-            else:
-                merged[chunk_id] = candidate
+    merged = _merge_seams(
+        keyword, embeddings, graph, policy=policy, generated_hits=generated_hits
+    )
 
     best_by_source: dict[UUID, float] = {}
     for candidate in merged.values():
@@ -639,16 +754,64 @@ def retrieve(
     query_embedding: list[float] | None = None,
     embedding_model: str | None = None,
     source_ids: Collection[UUID] | None = None,
+    mode: Literal["top_k", "score"] | None = None,
 ) -> RetrievalResult:
     """Run every seam, fuse, attribute layers. Trace persistence is the
     caller's job (the tutor flow owns the transaction).
 
     `source_ids` narrows each SQL seam before its candidate limit (a chat's
     source selection); None searches the whole course. This ensures noisy,
-    unselected sources cannot consume the selected sources' candidate slots."""
+    unselected sources cannot consume the selected sources' candidate slots.
+
+    Explicit addresses in the question are routed first: a named week filters
+    to that week's sources (fails open when none match), and a named label is
+    pinned ahead of the fused result.
+
+    `mode` forces "top_k" or "score"; None follows `[rerank] mode` in config."""
+    route_policy = load_route_policy()
+    addresses = (
+        route.parse_addresses(query, route_policy)
+        if route_policy.enabled
+        else route.Addresses((), ())
+    )
+    selected_sources = source_ids
+    week_filter = "off"
+    if addresses.weeks:
+        matched = {
+            source_id
+            for source_id, week in route.source_weeks(conn, course_id).items()
+            if week in addresses.weeks
+        }
+        if source_ids is not None:
+            matched &= set(source_ids)
+        if matched:
+            selected_sources = tuple(matched)
+            week_filter = "matched"
+        else:
+            # Fail open: a week with no matching source keeps what the caller
+            # selected (never silently search nothing).
+            week_filter = "no_match"
+    route_info: dict[str, object] = {
+        "labels": list(addresses.labels),
+        "weeks": list(addresses.weeks),
+        "week_filter": week_filter,
+        "sources": len(selected_sources) if selected_sources is not None else None,
+    }
+
     minimum = load_passage_policy().min_alnum_chars
+    rerank_policy = load_rerank_policy()
+    score_mode = (mode or rerank_policy.mode) == "score"
+    if score_mode:
+        limits = load_score_policy()
+        keyword_limit = limits.keyword_limit
+        embedding_limit = limits.embedding_limit
+        graph_limit = limits.graph_limit
+    else:
+        keyword_limit = policy.keyword_limit
+        embedding_limit = policy.embedding_limit
+        graph_limit = policy.graph_limit
     keyword = _keep_substantive(
-        keyword_seam(conn, course_id, query, policy.keyword_limit, source_ids),
+        keyword_seam(conn, course_id, query, keyword_limit, selected_sources),
         minimum,
     )
     embeddings = _keep_substantive(
@@ -657,8 +820,8 @@ def retrieve(
             course_id,
             query_embedding,
             embedding_model or "",
-            policy.embedding_limit,
-            source_ids,
+            embedding_limit,
+            selected_sources,
         ),
         minimum,
     )
@@ -667,45 +830,102 @@ def retrieve(
             conn,
             course_id,
             {**keyword, **embeddings},
-            policy.graph_limit,
+            graph_limit,
             embedding_model or "",
-            source_ids,
+            selected_sources,
             dimension=load_embedding_policy().dimension,
         ),
         minimum,
     )
-    final = fuse(keyword, embeddings, graph, policy=policy)
     generated_rows = generated.lookup(
-        conn, course_id, _keyword_tokens(query), policy.graph_limit, source_ids
+        conn, course_id, _keyword_tokens(query), graph_limit, selected_sources
     )
-    if generated_rows:
-        generated_hits = _keep_substantive(
-            _rows_to_candidates(generated_rows, GENERATED), minimum
+    generated_hits = _keep_substantive(
+        _rows_to_candidates(generated_rows, GENERATED), minimum
+    )
+    for row in generated_rows:
+        hit = generated_hits.get(row["chunk_id"])
+        if hit is None:
+            continue
+        generated_hits[row["chunk_id"]] = replace(
+            hit,
+            generated_materials=(
+                (
+                    str(row["generated_artifact_id"]),
+                    row["generated_title"],
+                    row["generated_version"],
+                ),
+            ),
         )
-        for row in generated_rows:
-            hit = generated_hits.get(row["chunk_id"])
-            if hit is None:
-                continue
-            generated_hits[row["chunk_id"]] = replace(
-                hit,
-                generated_materials=(
-                    (
-                        str(row["generated_artifact_id"]),
-                        row["generated_title"],
-                        row["generated_version"],
-                    ),
+    pins: dict[UUID, Candidate] = {}
+    if addresses.labels:
+        for label in addresses.labels:
+            for chunk_id, candidate in label_seam(
+                conn,
+                course_id,
+                label,
+                route_policy.label_limit,
+                selected_sources,
+            ).items():
+                pins.setdefault(chunk_id, candidate)
+    if score_mode:
+        # No slot allocation: normalize/merge exactly as fusion does, dedupe,
+        # order by merged rank, and cut to the wide pool. Pins lead and do not
+        # count toward the cut.
+        merged = _merge_seams(
+            keyword,
+            embeddings,
+            graph,
+            policy=policy,
+            generated_hits=generated_hits or None,
+        )
+        ordered = _dedupe(
+            sorted(
+                merged.values(),
+                key=lambda candidate: (
+                    -candidate.rank,
+                    candidate.chunk_index,
+                    candidate.chunk_id,
                 ),
             )
-        if generated_hits:
-            final = fuse(
-                keyword,
-                embeddings,
-                graph,
-                policy=policy,
-                generated_hits=generated_hits,
+        )
+        if pins:
+            # Union a pin's layers with its merged copy before dropping the
+            # merged copy from the pool, exactly as _merge_pins does in top-k.
+            merged_with_pins = _merge_pins(pins, tuple(ordered))
+            pin_list = [
+                candidate
+                for candidate in merged_with_pins
+                if candidate.chunk_id in pins
+            ]
+            pool = [
+                candidate
+                for candidate in merged_with_pins
+                if candidate.chunk_id not in pins
+            ][: rerank_policy.pool_limit]
+            final = tuple(_dedupe([*pin_list, *pool]))
+            route_info["pinned"] = len(pins)
+        else:
+            final = tuple(ordered[: rerank_policy.pool_limit])
+    else:
+        fused = fuse(
+            keyword,
+            embeddings,
+            graph,
+            policy=policy,
+            generated_hits=generated_hits or None,
+        )
+        if pins:
+            final = tuple(
+                _dedupe(list(_merge_pins(pins, fused)))[
+                    : max(policy.final_k, len(pins))
+                ]
             )
+            route_info["pinned"] = len(pins)
+        else:
+            final = tuple(_dedupe(list(fused)))
     final = surrounding_context(
-        conn, course_id, final, embedding_model or "", source_ids
+        conn, course_id, final, embedding_model or "", selected_sources
     )
     contribution: dict[str, int] = {}
     for candidate in final:
@@ -714,6 +934,7 @@ def retrieve(
     return RetrievalResult(
         candidates=final,
         layer_contribution=contribution,
+        route=route_info,
     )
 
 

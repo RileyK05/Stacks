@@ -27,6 +27,7 @@ from src.backend.common.schemas.base import SourceStatus, SourceType
 from src.backend.ingest import worker as worker_module
 from src.backend.ingest.extract import (
     INGESTABLE_MIME_TYPES,
+    PDFIUM_LOCK,
     SUPPORTED_FILES_HINT,
     EmptyExtractionError,
     resolve_mime_type,
@@ -240,37 +241,44 @@ def source_pdf_page(course_id: UUID, source_id: UUID, page_number: int) -> Respo
             row["stored_encoding"],
             max_decompressed_bytes=load_lifecycle_policy().max_decompressed_bytes,
         )
-    try:
-        pdf = pdfium.PdfDocument(io.BytesIO(raw))
-    except pdfium.PdfiumError as err:
-        raise HTTPException(
-            422, "The stored PDF could not be opened. Upload a readable copy."
-        ) from err
-    try:
-        if page_number < 1 or page_number > len(pdf):
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "page not found")
-        page = pdf[page_number - 1]
+    # pdfium is not thread-safe, including PdfDocument() itself (see
+    # PDFIUM_LOCK). Opening the file before taking the lock races the
+    # ingestion worker, which extracts and rasterizes on its own thread.
+    with PDFIUM_LOCK:
         try:
-            width, height = page.get_size()
-            scale = min(1.5, 4096 / max(width, 1), 4096 / max(height, 1))
-            image = page.render(scale=scale).to_pil()
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
+            pdf = pdfium.PdfDocument(io.BytesIO(raw))
+        except pdfium.PdfiumError as err:
+            raise HTTPException(
+                422, "The stored PDF could not be opened. Upload a readable copy."
+            ) from err
+        try:
+            if page_number < 1 or page_number > len(pdf):
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "page not found")
+            page = pdf[page_number - 1]
+            payload: bytes
+            page_count = len(pdf)
+            try:
+                width, height = page.get_size()
+                scale = min(1.5, 4096 / max(width, 1), 4096 / max(height, 1))
+                image = page.render(scale=scale).to_pil()
+                buffer = io.BytesIO()
+                image.save(buffer, format="PNG")
+                payload = buffer.getvalue()
+            finally:
+                page.close()
+        except pdfium.PdfiumError as err:
+            raise HTTPException(422, "This PDF page could not be rendered.") from err
         finally:
-            page.close()
-        return Response(
-            content=buffer.getvalue(),
-            media_type="image/png",
-            headers={
-                "X-Page-Count": str(len(pdf)),
-                "X-Content-Type-Options": "nosniff",
-                "Cache-Control": "private, no-store",
-            },
-        )
-    except pdfium.PdfiumError as err:
-        raise HTTPException(422, "This PDF page could not be rendered.") from err
-    finally:
-        pdf.close()
+            pdf.close()
+    return Response(
+        content=payload,
+        media_type="image/png",
+        headers={
+            "X-Page-Count": str(page_count),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
 
 
 @router.get(

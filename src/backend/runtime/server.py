@@ -189,7 +189,14 @@ class LlamaServer:
         self._state = "stopped"
         self._error: str | None = None
         self._restarts: list[float] = []
+        self._shutdown = threading.Event()
         self._job = _KillOnCloseJob() if sys.platform == "win32" else None
+
+    def request_shutdown(self) -> None:
+        """Signal that the app exits soon. An in-flight start notices it on
+        its next health poll and aborts within a second or two, instead of
+        holding the lock — and the app's shutdown — until the model loads."""
+        self._shutdown.set()
 
     @property
     def port(self) -> int:
@@ -228,6 +235,7 @@ class LlamaServer:
             self._model = model
             self._state = "starting"
             self._error = None
+            self._shutdown.clear()
             # Anything raised before the launch loop (a busy settings DB, an
             # unavailable hardware probe) must not strand the server in
             # "starting": the supervisor only recovers a "running" server.
@@ -238,6 +246,12 @@ class LlamaServer:
                     keys = [preferred] + [k for k in keys if k != preferred]
                 last_error = "no llama.cpp build for this platform"
                 for key in keys:
+                    if self._shutdown.is_set():
+                        # A shutdown signaled mid-loop must not spawn another
+                        # model load just to kill it moments later.
+                        raise RuntimeUnavailableError(
+                            "the app is shutting down while the local model starts"
+                        )
                     try:
                         self._launch_locked(key, model, path)
                     except (
@@ -339,6 +353,10 @@ class LlamaServer:
         deadline = time.monotonic() + timeout
         url = f"http://127.0.0.1:{self.port}/health"
         while time.monotonic() < deadline:
+            if self._shutdown.is_set():
+                raise RuntimeUnavailableError(
+                    "the app is shutting down before the local model became healthy"
+                )
             if process.poll() is not None:
                 raise RuntimeUnavailableError(
                     f"llama-server exited with code {process.returncode}; "

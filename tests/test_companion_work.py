@@ -460,6 +460,23 @@ def test_revision_stays_within_selected_passage(client, monkeypatch):
     assert client.get(path).json()["turns"] == []
 
 
+def test_a_style_only_revision_does_not_require_a_course_citation(client, monkeypatch):
+    """C-4: a pure style edit of the student's own paragraph has nothing to
+    cite, so it must not be rejected for citing nothing."""
+    original = "Representation guarantees accountability."
+    edit = {
+        "original": original,
+        "replacement": "Accountability is guaranteed by representation.",
+        "explanation": "Passive voice for a more formal tone.",
+    }
+    configure_test_provider(monkeypatch, json.dumps(edit))
+    course, path, _ = start(client, text=original)
+    add_chunk(course, "Representation alone does not ensure accountability.")
+    response, _ = ask(client, path, "Make this sentence passive.", action="revise")
+    assert response.status_code == 200, response.text
+    assert response.json()["proposed_edit"] == edit
+
+
 def test_archived_work_missing_sources_stays_inspectable_without_old_links(client):
     from src.backend.common.work_archive import export_work, import_work
 

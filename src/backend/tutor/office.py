@@ -232,7 +232,15 @@ def answer(
     result = dataclasses.replace(
         result, candidates=attach_passage_context(conn, result.candidates)
     )
-    candidates = rerank.select_for_generation(query, result.candidates)
+    rerank_meta: dict[str, object] = {}
+    try:
+        candidates = rerank.select_for_generation(
+            query, result.candidates, meta=rerank_meta
+        )
+    except rerank.NothingAboveFloorError as err:
+        raise NothingRelevantFoundError(
+            "nothing in this course's materials is relevant enough to answer"
+        ) from err
     numbered = numbered_passages(candidates)
     host_label = host.strip() or "the document"
     looked_at = _context(context) or "(nothing selected)"
@@ -265,7 +273,7 @@ def answer(
     markers = cited_numbers(text)
     if any(number < 1 or number > len(candidates) for number in markers):
         raise UngroundedAnswerError("the answer cited source material it was not given")
-    used = dataclasses.replace(result, candidates=tuple(candidates))
+    used = dataclasses.replace(result, candidates=tuple(candidates), rerank=rerank_meta)
     stored = trace.record_trace(
         conn,
         course_id,

@@ -29,13 +29,15 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
 from src.backend.common.db import Connection, json_ids
 from src.backend.common.queries import get
 from src.backend.retrieval import funnel
-from src.backend.retrieval.config import RetrievalPolicy
+from src.backend.retrieval.config import RetrievalPolicy, load_rerank_policy
 from src.backend.retrieval.funnel import Candidate
+from src.backend.retrieval.labels import attach_passage_context
 
 _FILE = "retrieval_traces"
 
@@ -49,6 +51,17 @@ class EvalCase:
     question: str
     course_tag: str
     expected_labels: tuple[str, ...]
+    # Source-share expectation: "|"-separated filename substrings. When set,
+    # the case reports what fraction of retrieved passages come from those
+    # sources (real-material cases scope a question to a week's file).
+    expected_source: str = ""
+    # The case hits only when source_share >= min_source_share (default 0.0,
+    # so it never gates unless asked). Empty labels are allowed when this is
+    # positive: the case is scored on source share alone.
+    min_source_share: float = 0.0
+    # A question the material cannot answer. It hits when retrieval returns
+    # nothing at all, and it is the only case kind allowed empty labels.
+    expect_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,6 +79,12 @@ class EvalResult:
     # Reciprocal rank of the first expected label in the fused ranking
     # (1.0 = the top result is relevant); 0.0 when none is present.
     reciprocal_rank: float = 0.0
+    # Fraction of retrieved passages from the case's expected_source
+    # substrings. 0.0 when the case names no source.
+    source_share: float = 0.0
+    # This case probes a question the material cannot answer; it is scored
+    # by empty_correct, not by fused recall.
+    expect_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,12 +98,19 @@ class EvalSummary:
     fusion_beats_best_single: bool
     mean_precision: float = 0.0
     mean_reciprocal_rank: float = 0.0
+    # Mean source share over cases that name an expected_source; 0.0 when
+    # none do.
+    mean_source_share: float = 0.0
+    # Fraction of expect_empty cases where retrieval returned nothing.
+    empty_correct: float = 0.0
 
     def __str__(self) -> str:
         lines = [
             f"fused recall@k: {self.fused_recall:.2f}",
             f"fused precision@k: {self.mean_precision:.2f}, "
             f"MRR: {self.mean_reciprocal_rank:.2f}",
+            f"mean source share: {self.mean_source_share:.2f}, "
+            f"empty correct: {self.empty_correct:.2f}",
             "seam recall@k: "
             + ", ".join(
                 f"{seam}={self.seam_recall.get(seam, 0.0):.2f}" for seam in SEAM_NAMES
@@ -108,9 +134,17 @@ def load_cases(path: Path = EVAL_DIR / "cases.json") -> list[EvalCase]:
     cases: list[EvalCase] = []
     for case in raw["cases"]:
         labels = tuple(case["expected_labels"])
-        if not labels:
-            # A case with no expected labels can never hit and would be
-            # scored a permanent miss (B-07): reject it at load instead.
+        expect_empty = bool(case.get("expect_empty", False))
+        min_source_share = float(case.get("min_source_share", 0.0))
+        if not 0.0 <= min_source_share <= 1.0:
+            raise ValueError(
+                f"retrieval case {case.get('question')!r} has min_source_share "
+                "outside 0..1"
+            )
+        # A case with no expected labels can never hit by label and would be
+        # scored a permanent miss (B-07): reject it at load, unless it is an
+        # empty-material probe or a source-share case.
+        if not labels and not expect_empty and min_source_share <= 0.0:
             raise ValueError(
                 f"retrieval case {case.get('question')!r} has no expected_labels"
             )
@@ -119,6 +153,9 @@ def load_cases(path: Path = EVAL_DIR / "cases.json") -> list[EvalCase]:
                 question=case["question"],
                 course_tag=case["course_tag"],
                 expected_labels=labels,
+                expected_source=str(case.get("expected_source", "")),
+                min_source_share=min_source_share,
+                expect_empty=expect_empty,
             )
         )
     return cases
@@ -181,8 +218,29 @@ def _hit(expected: tuple[str, ...], retrieved: frozenset[str]) -> bool:
     return all(label in retrieved for label in expected)
 
 
+def _source_share(candidates: tuple[Candidate, ...], expected_source: str) -> float:
+    """Fraction of retrieved passages whose filename contains any of the
+    "|"-separated source substrings (case-insensitive). 0.0 when the case
+    names no source."""
+    needles = [
+        part.strip().casefold() for part in expected_source.split("|") if part.strip()
+    ]
+    if not candidates or not needles:
+        return 0.0
+    matching = sum(
+        1
+        for candidate in candidates
+        if any(
+            needle in (candidate.source_filename or "").casefold() for needle in needles
+        )
+    )
+    return matching / len(candidates)
+
+
 def _seam_recall(results: list[EvalResult]) -> dict[str, float]:
-    resolved = [result for result in results if result.resolved]
+    resolved = [
+        result for result in results if result.resolved and not result.expect_empty
+    ]
     if not resolved:
         return dict.fromkeys(SEAM_NAMES, 0.0)
     recall: dict[str, float] = {}
@@ -199,12 +257,22 @@ def run_eval(
     cases_path: Path | None = None,
     query_embedding_for: Callable[[UUID, str], list[float] | None] | None = None,
     embedding_model: str = "eval-embed",
+    end_to_end: bool = False,
+    mode: Literal["top_k", "score"] | None = None,
 ) -> EvalSummary:
     """Run all cases through every seam alone AND the fusion. A case whose
     course_tag resolves to nothing is UNRESOLVED — excluded from recall and
-    reported, never silently passed."""
+    reported, never silently passed.
+
+    The per-seam numbers always come from the individual seams. `end_to_end`
+    instead takes the fused set from the full `funnel.retrieve` path (routing,
+    dedupe, the configured seam limits), and in score mode also applies the
+    rerank floor; a floor drop leaves the set empty. `mode` forces the rerank
+    mode; None follows config."""
     results: list[EvalResult] = []
     unresolved: list[str] = []
+    source_shares: list[float] = []
+    empty_checks: list[bool] = []
     cases = load_cases(cases_path or (EVAL_DIR / "cases.json"))
     for case in cases:
         course_id = _resolve_course(conn, case.course_tag)
@@ -242,13 +310,62 @@ def run_eval(
             policy.graph_limit,
             embedding_model,
         )
-        fused_candidates = funnel.fuse(keyword, embeddings, graph, policy=policy)
+        if end_to_end:
+            fused_candidates = funnel.retrieve(
+                conn,
+                course_id,
+                case.question,
+                policy,
+                query_embedding=embedding,
+                embedding_model=embedding_model,
+                mode=mode,
+            ).candidates
+            if (mode or load_rerank_policy().mode) == "score":
+                from src.backend.retrieval import rerank
+
+                rerank_policy = load_rerank_policy().model_copy(
+                    update={"mode": "score"}
+                )
+                try:
+                    fused_candidates = rerank.select_for_generation(
+                        case.question, fused_candidates, rerank_policy
+                    )
+                except rerank.NothingAboveFloorError:
+                    fused_candidates = ()
+        else:
+            fused_candidates = funnel.fuse(keyword, embeddings, graph, policy=policy)
         layer_contribution: dict[str, int] = {}
         for candidate in fused_candidates:
             for layer in candidate.layers:
                 layer_contribution[layer] = layer_contribution.get(layer, 0) + 1
 
-        per_seam_hits: dict[str, bool] = {}
+        if case.expect_empty:
+            # The material cannot answer this: a hit is an empty result; a
+            # non-empty one is the failure. Each seam must be empty too.
+            empty = not fused_candidates
+            empty_checks.append(empty)
+            per_seam_hits = {
+                seam_name: not _top(seam, policy.final_k)
+                for seam_name, seam in (
+                    ("keyword", keyword),
+                    ("graph", graph),
+                    ("embedding", embeddings),
+                )
+            }
+            results.append(
+                EvalResult(
+                    question=case.question,
+                    resolved=True,
+                    hit=empty,
+                    retrieved_labels=(),
+                    layer_contribution=layer_contribution,
+                    per_seam_hits=per_seam_hits,
+                    expect_empty=True,
+                )
+            )
+            continue
+
+        per_seam_hits = {}
         for seam_name, seam in (
             ("keyword", keyword),
             ("graph", graph),
@@ -258,6 +375,10 @@ def run_eval(
             per_seam_hits[seam_name] = _hit(case.expected_labels, labels)
 
         fused_labels = _labels_for_candidates(conn, fused_candidates)
+        enriched = attach_passage_context(conn, fused_candidates)
+        share = _source_share(enriched, case.expected_source)
+        if case.expected_source.strip():
+            source_shares.append(share)
         expected = set(case.expected_labels)
         precision = (
             len(expected & fused_labels) / len(fused_labels) if fused_labels else 0.0
@@ -271,37 +392,50 @@ def run_eval(
             if labels & expected:
                 rank_hit = 1.0 / position
                 break
+        label_hit = (
+            _hit(case.expected_labels, fused_labels) if case.expected_labels else True
+        )
         results.append(
             EvalResult(
                 question=case.question,
                 resolved=True,
-                hit=_hit(case.expected_labels, fused_labels),
+                hit=label_hit and share >= case.min_source_share - 1e-9,
                 retrieved_labels=tuple(sorted(fused_labels)),
                 layer_contribution=layer_contribution,
                 per_seam_hits=per_seam_hits,
                 precision=precision,
                 reciprocal_rank=rank_hit,
+                source_share=share,
             )
         )
 
     resolved_results = [result for result in results if result.resolved]
+    label_results = [result for result in resolved_results if not result.expect_empty]
+    empty_results = [result for result in resolved_results if result.expect_empty]
     seam_recall = _seam_recall(results)
     fused_recall = (
-        sum(1 for result in resolved_results if result.hit) / len(resolved_results)
-        if resolved_results
+        sum(1 for result in label_results if result.hit) / len(label_results)
+        if label_results
         else 0.0
     )
     best_seam = max(seam_recall, key=lambda seam: seam_recall[seam])
     best_recall = seam_recall[best_seam]
     mean_precision = (
-        sum(result.precision for result in resolved_results) / len(resolved_results)
-        if resolved_results
+        sum(result.precision for result in label_results) / len(label_results)
+        if label_results
         else 0.0
     )
     mean_mrr = (
-        sum(result.reciprocal_rank for result in resolved_results)
-        / len(resolved_results)
-        if resolved_results
+        sum(result.reciprocal_rank for result in label_results) / len(label_results)
+        if label_results
+        else 0.0
+    )
+    mean_source_share = (
+        sum(source_shares) / len(source_shares) if source_shares else 0.0
+    )
+    empty_correct = (
+        sum(1 for result in empty_results if result.hit) / len(empty_results)
+        if empty_results
         else 0.0
     )
     return EvalSummary(
@@ -314,4 +448,6 @@ def run_eval(
         fusion_beats_best_single=fused_recall > best_recall,
         mean_precision=mean_precision,
         mean_reciprocal_rank=mean_mrr,
+        mean_source_share=mean_source_share,
+        empty_correct=empty_correct,
     )

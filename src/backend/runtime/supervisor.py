@@ -48,6 +48,11 @@ async def run_forever(stop: asyncio.Event) -> None:
                         "local model supervision failed; retrying next tick"
                     )
     finally:
+        # An in-flight resume must not hold the app open until the model
+        # loads: an aborting start now fails within seconds (the flag is
+        # only set here, during this exit, so it cannot strand any later
+        # user-triggered start).
+        get_server().request_shutdown()
         try:
             await resume
         finally:

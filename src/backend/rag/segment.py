@@ -18,6 +18,10 @@ _EXAMPLE_START = re.compile(r"(?i)^\s*(?:worked example|example)\s*(?:\d|:)")
 _EXAMPLE_END = re.compile(r"(?i)^\s*end (?:of )?(?:worked )?example\b")
 _LIST = re.compile(r"(?m)^\s*(?:[-*•]|\d+[.)])\s+\S")
 _TABLE = re.compile(r"(?m)^\s*\|.+\|\s*$")
+_TABLE_CAPTION = re.compile(
+    r"(?is)^\s*(?:table|figure|fig\.?|chart|exhibit)\s+\d+(?:\.\d+)*[a-z]?\b.*$"
+)
+_TABLE_NOTE = re.compile(r"(?i)^\s*(?:source|sources|note|notes)\s*[:.]")
 _EQUATION = re.compile(r"\$\$|\\\[|\\begin\{(?:equation|align)")
 _DEFINITION = re.compile(r"(?i)^\s*(?:where|in which|here|with|that is)\b")
 _WORD = re.compile(r"[^\W\d_]{2,}")
@@ -105,6 +109,23 @@ def is_thin(text: str, minimum: int) -> bool:
 
 def _crosses(start: int, end: int, breaks: Sequence[int]) -> bool:
     return any(start < boundary < end for boundary in breaks)
+
+
+def _is_table_caption(block: str) -> bool:
+    """A block that is only a short "Table 2.2 Race of …" caption (one or two
+    lines). It belongs with the table it labels (R5-NEW-m)."""
+    stripped = block.strip()
+    return (
+        len(stripped) <= 200
+        and stripped.count("\n") <= 1
+        and _TABLE_CAPTION.match(stripped) is not None
+    )
+
+
+def _is_table_note(block: str) -> bool:
+    """A short "Source: …" / "Note: …" line directly after a table."""
+    stripped = block.strip()
+    return len(stripped) <= 600 and _TABLE_NOTE.match(stripped) is not None
 
 
 def _split_oversized(
@@ -200,11 +221,26 @@ def _blocks(
             if result:
                 previous_start, _, previous_kind = result[-1]
                 previous_text = text[previous_start:a].rstrip()
+                # A table caption ("Table 2.2 …") before a table, or a
+                # "Source:/Note:" line after one, belongs with the table
+                # (R5-NEW-m). They are small, so the merge may pass the token
+                # target by the caption or note size only.
+                caption_for_table = kind == "table" and _is_table_caption(previous_text)
+                note_after_table = previous_kind == "table" and _is_table_note(block)
                 attached = (
-                    kind in {"list", "table"}
-                    and (previous_text.endswith(":") or previous_kind == kind)
-                ) or (previous_kind == "equation" and _DEFINITION.search(block))
-                if attached and token_count(text[previous_start:b]) <= target_tokens:
+                    caption_for_table
+                    or note_after_table
+                    or (
+                        kind in {"list", "table"}
+                        and (previous_text.endswith(":") or previous_kind == kind)
+                    )
+                    or (previous_kind == "equation" and _DEFINITION.search(block))
+                )
+                if attached and (
+                    caption_for_table
+                    or note_after_table
+                    or token_count(text[previous_start:b]) <= target_tokens
+                ):
                     result[-1] = (
                         previous_start,
                         b,

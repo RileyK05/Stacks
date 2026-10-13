@@ -191,6 +191,9 @@ _CLAUSE_BARRIER = frozenset(
         "except",
     }
 )
+# "not … until/before" asserts that the event happened, so it is not a denial.
+_AFFIRMING_NEGATION = frozenset({"until", "before", "unless"})
+_BE_FORMS = frozenset({"am", "is", "are", "was", "were", "be", "been", "being"})
 
 
 def _tokens(text: str) -> list[_Token]:
@@ -256,13 +259,21 @@ def _advance(
 def _negated_before(tokens: list[_Token], index: int) -> bool:
     """Whether the clause holding `index` denies it. A negation reaches as
     far as its clause does ("there is no evidence that they preserve
-    addition"), and no further than a conjunction or a new sentence (CR-25)."""
+    addition"), and no further than a conjunction or a new sentence (CR-25).
+    "not … until/before" asserts the event, so it does not deny it (R5-NEW-b)."""
     cursor = index
     while cursor > 0:
         if tokens[cursor].new_clause or tokens[cursor - 1].word in _CLAUSE_BARRIER:
             break
         cursor -= 1
-    return any(token.word in _NEGATION for token in tokens[cursor:index])
+    if not any(token.word in _NEGATION for token in tokens[cursor:index]):
+        return False
+    for token in tokens[index + 1 :]:
+        if token.word in _AFFIRMING_NEGATION:
+            return False
+        if token.new_clause or token.word in _CLAUSE_BARRIER:
+            break
+    return True
 
 
 def _phrase_without_negation(answer: list[_Token], point: list[_Token]) -> bool:
@@ -317,6 +328,48 @@ def _claims_in_order(answer: list[_Token], point: list[_Token]) -> bool:
     return not any(_negated_before(answer, at) for at in matched)
 
 
+def _passive_permutation(answer: list[_Token], point: list[_Token]) -> bool:
+    """A correct answer restated in the passive voice, where the point's words
+    appear out of order because the object leads and the subject follows "by"
+    (R5-NEW-b). A reversed active claim has no passive auxiliary and is still
+    rejected (R4-NEW-c)."""
+    needed = [
+        token for token in point if token.word in _NEGATION or token.word not in _STOP
+    ]
+    if not needed:
+        return False
+    needed_words = [token.word for token in needed]
+    answer_words = [token.word for token in answer]
+    if set(needed_words) - set(answer_words):
+        return False
+    passive = False
+    for index, token in enumerate(answer):
+        if (
+            token.word in needed_words
+            and index > 0
+            and answer[index - 1].word in _BE_FORMS
+        ):
+            passive = True
+            break
+    if not passive:
+        return False
+    if "by" in answer_words:
+        # The point's subject is the agent of a passive restatement: it must sit
+        # after "by", not before it, or the roles are reversed.
+        last_by = max(i for i, word in enumerate(answer_words) if word == "by")
+        if needed_words[0] in answer_words[:last_by]:
+            return False
+    if any(token.word in _NEGATION for token in point):
+        return all(
+            token.word in answer_words for token in point if token.word in _NEGATION
+        )
+    return not any(
+        _negated_before(answer, index)
+        for index, token in enumerate(answer)
+        if token.word in needed_words
+    )
+
+
 def point_covered(answer: str, point: str) -> bool:
     answer_tokens = _tokens(answer)
     point_tokens = _tokens(point)
@@ -324,7 +377,9 @@ def point_covered(answer: str, point: str) -> bool:
         return False
     if _phrase_without_negation(answer_tokens, point_tokens):
         return True
-    return _claims_in_order(answer_tokens, point_tokens)
+    if _claims_in_order(answer_tokens, point_tokens):
+        return True
+    return _passive_permutation(answer_tokens, point_tokens)
 
 
 def missed_points(answer: str, points: list[str]) -> list[str]:

@@ -68,6 +68,17 @@ def test_every_task_has_a_task_class() -> None:
         task_class("not_a_task")
 
 
+def test_retrieval_route_policy_loads() -> None:
+    from src.backend.retrieval.config import load_retrieval_policy, load_route_policy
+
+    policy = load_retrieval_policy()
+    assert policy.retrieval_config_version == "4"
+    route = load_route_policy()
+    assert route.enabled
+    assert "table" in route.label_kinds and "figure" in route.label_kinds
+    assert route.label_limit >= 1
+
+
 def test_models_config_has_a_keyless_local_preset() -> None:
     config = load_models_config()
     local = config.presets["local"]

@@ -30,6 +30,9 @@
     disabled?: boolean;
     /** Full-width trigger (forms) instead of a compact chip (toolbars). */
     block?: boolean;
+    /** Closed-picker text when nothing is saved and there is no null row.
+        Settings uses this for the model that is already answering. */
+    unsetLabel?: string | null;
     align?: 'start' | 'end';
     onchange: (choice: ModelChoice | null) => void;
   }
@@ -42,6 +45,7 @@
     disabled = false,
     block = false,
     align = 'end',
+    unsetLabel = null,
     onchange
   }: Props = $props();
 
@@ -79,7 +83,10 @@
 
   const current = $derived.by(() => {
     if (choice === null) {
-      return { label: nullOption?.current ?? 'Choose a model', hint: nullOption?.hint ?? '' };
+      return {
+        label: nullOption?.current ?? unsetLabel ?? 'Choose a model',
+        hint: nullOption?.hint ?? (unsetLabel ? 'Automatic' : '')
+      };
     }
     const option = options.find(matches);
     const connection = connections.find((c) => c.id === choice?.connection);
@@ -153,7 +160,7 @@
       }`}
     >
       <Icon name="cpu" class="h-3.5 w-3.5 shrink-0 text-accent-text" />
-      <span class="truncate font-medium text-fg">{current.label}</span>
+      <span class="truncate font-medium text-fg" title={current.label}>{current.label}</span>
       {#if current.hint}
         <span class={`shrink-0 text-subtle ${block ? '' : 'hidden sm:inline'}`}>· {current.hint}</span>
       {/if}

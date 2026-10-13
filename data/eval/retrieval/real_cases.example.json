@@ -1,0 +1,62 @@
+{
+  "_comment": "Template for real-material retrieval evals (plan-score-retrieval.md Phase 0). Copy to data/eval/retrieval/real_cases.json (not committed; gitignored) and replace course_tag and the locator labels from your own database. Labels are exact locator labels (e.g. \"page 14\"); expected_source is a case-insensitive substring of a source filename, and | separates alternatives. min_source_share (0..1) gates a case on the fraction of retrieved passages from those sources. expect_empty marks a question the material cannot answer; it hits when retrieval returns nothing.",
+  "cases": [
+    {
+      "question": "Reproduce Table 2.2",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expected_source": "Week1",
+      "expected_labels": ["page 14"]
+    },
+    {
+      "question": "Make a 10-question multiple-choice quiz on Week 3",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expected_source": "Week3",
+      "min_source_share": 0.8,
+      "expected_labels": []
+    },
+    {
+      "question": "Create a study guide for the first exam covering Weeks 1-5",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expected_source": "Week1|Week2|Week3|Week5",
+      "min_source_share": 0.6,
+      "expected_labels": []
+    },
+    {
+      "question": "What did the course say about the 1972 Munich Olympics security arrangements?",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expect_empty": true,
+      "expected_labels": []
+    },
+    {
+      "question": "How does the course prove Fermat's Last Theorem?",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expect_empty": true,
+      "expected_labels": []
+    },
+    {
+      "question": "How much did the United States pay Mexico under the Treaty of Guadalupe Hidalgo?",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expected_labels": ["page 1"]
+    },
+    {
+      "question": "What does Reséndez argue about the other slavery?",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expected_labels": ["page 95"]
+    },
+    {
+      "question": "What is the thesis of the introduction?",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expected_labels": ["page 1"]
+    },
+    {
+      "question": "Which events led to the US-Mexico War?",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expected_labels": ["page 1"]
+    },
+    {
+      "question": "What is the difference between representation and accountability in the readings?",
+      "course_tag": "YOUR-COURSE-NAME",
+      "expected_labels": ["page 1"]
+    }
+  ]
+}

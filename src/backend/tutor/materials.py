@@ -14,8 +14,84 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 MAX_MATERIAL_CHARS = 200_000
 _TITLE_MAX = 120
-_LINE_BREAK = re.compile(r"(?:<br\s*/?>|\r\n|\r|\n)+", re.IGNORECASE)
+_LINE_BREAK = re.compile(r"<br\s*/?>|\r\n|\r|\n", re.IGNORECASE)
+_NEWLINE = re.compile(r"\r\n|\r|\n")
+# splitlines() would also split U+2028/U+2029/U+0085 (and \x1c–\x1e), which
+# some models emit inside a JSON string. Those are line breaks for rendering,
+# not structure (R5-NEW-l).
+_UNICODE_BREAK = re.compile(r"[\u2028\u2029\u0085\x1c-\x1e]")
 _TABLE_ROW = re.compile(r"^\s*\|.+\|\s*$")
+_TABLE_SEPARATOR = re.compile(r"^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$")
+_FENCE = re.compile(r"^\s*(?:```|~~~)")
+# A bullet glued to the sentence before it with no newline: "…[10].- **Term**"
+# (R5-NEW-k). Only split when the bullet is bold, so prose em-dashes survive.
+_GLUED_BULLET = re.compile(r"(?<=[.!?\]\)])\s*-\s+(?=\*\*)")
+# Short structural headings, not content: a vocabulary slide of bare terms
+# ("Manifest Destiny") is body, a bare "Exam Essentials" heading is not
+# (R5-NEW-f, keeping R4-NEW-i).
+_STRUCTURAL_HEADS = frozenset(
+    {
+        "overview",
+        "introduction",
+        "summary",
+        "conclusion",
+        "contents",
+        "outline",
+        "agenda",
+        "objectives",
+        "key terms",
+        "key concepts",
+        "exam essentials",
+        "review",
+        "references",
+    }
+)
+
+
+def _starts_new_table(rows: Sequence[str]) -> bool:
+    return (
+        len(rows) >= 2
+        and not _TABLE_SEPARATOR.match(rows[0])
+        and bool(_TABLE_SEPARATOR.match(rows[1]))
+    )
+
+
+def _split_tables(rows: Sequence[str]) -> list[list[str]]:
+    """A run of pipe rows may hold two adjacent tables (R5-NEW-u): a new
+    header row followed by a separator starts another one."""
+    tables: list[list[str]] = []
+    current: list[str] = []
+    for index, row in enumerate(rows):
+        if current and _starts_new_table(rows[index:]):
+            tables.append(current)
+            current = []
+        current.append(row)
+    if current:
+        tables.append(current)
+    return tables
+
+
+def _content_lines(text: str) -> list[str]:
+    """Paragraph text as lines, preserving indentation inside a fenced code
+    block (R5-NEW-e) and splitting glued bullets (R5-NEW-k)."""
+    glued = _GLUED_BULLET.sub("\n- ", text)
+    lines: list[str] = []
+    in_fence = False
+    for raw in _LINE_BREAK.split(glued):
+        stripped = raw.strip()
+        if _FENCE.match(stripped):
+            in_fence = not in_fence
+            if stripped:
+                lines.append(stripped)
+            continue
+        if in_fence:
+            # A blank line inside a fence is part of the code. Collapsing it
+            # (the way prose drops empty lines) changes the program.
+            lines.append(raw.rstrip())
+            continue
+        if stripped:
+            lines.append(stripped)
+    return lines
 
 
 def _reflowed(paragraphs: Sequence[str]) -> list[str]:
@@ -28,17 +104,18 @@ def _reflowed(paragraphs: Sequence[str]) -> list[str]:
 
     def flush() -> None:
         if table:
-            out.append("\n".join(table))
+            out.extend("\n".join(rows) for rows in _split_tables(table))
             table.clear()
 
     for paragraph in paragraphs:
-        lines = [
-            line.strip() for line in _LINE_BREAK.split(str(paragraph)) if line.strip()
-        ]
-        if lines and all(_TABLE_ROW.match(line) for line in lines):
-            table.extend(lines)
+        text = _UNICODE_BREAK.sub("\n", str(paragraph))
+        rows = [line.strip() for line in _NEWLINE.split(text) if line.strip()]
+        if rows and all(_TABLE_ROW.match(row) for row in rows):
+            # <br> inside a cell is one row, not a table break (R5-NEW-t).
+            table.extend(rows)
             continue
         flush()
+        lines = _content_lines(text)
         if lines:
             out.append("\n".join(lines))
     flush()
@@ -47,20 +124,22 @@ def _reflowed(paragraphs: Sequence[str]) -> list[str]:
 
 def has_body(markdown: str, title: str = "") -> bool:
     lines: list[str] = []
+    labels = {"content", "deck", "markdown", "body", title.strip().casefold()}
     for line in markdown.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
+        heading = bool(re.match(r"^\s*#{1,6}\s+", stripped))
         content = re.sub(r"^\s*#{1,6}\s+", "", stripped)
         content = content.strip(" *_`").strip()
         if not content or re.match(r"^[-*_]{3,}$", content):
             continue
-        labels = {"content", "deck", "markdown", "body", title.strip().casefold()}
-        if content.casefold() in labels:
+        folded = content.casefold()
+        if folded in labels or folded in _STRUCTURAL_HEADS:
             continue
-        # A bare label ("Overview", "Exam Essentials") is still a heading,
-        # whatever marker it wears (R4-NEW-i).
-        if len(content.split()) < 3 and not re.search(r"[^\w\s]", content):
+        # A bare short line is only a heading when it wears a heading marker;
+        # otherwise it may be a key term in a vocabulary slide (R5-NEW-f).
+        if heading and len(content.split()) < 3 and not re.search(r"[^\w\s]", content):
             continue
         lines.append(content)
     return bool(lines)
