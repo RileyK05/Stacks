@@ -13,6 +13,7 @@
 # Install (CI and local):
 #   python -m pip install -e ".[dev]" -c constraints.txt
 
+anthropic==2.14.0
 cryptography==50.0.1
 fastapi==0.141.1
 fonttools==4.66.0

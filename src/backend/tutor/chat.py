@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -45,6 +45,10 @@ RECENT_MESSAGES = 4
 # How much of an earlier answer the model re-reads. Answers can be long;
 # the gist is enough to resolve "it" and "the second one".
 EXCERPT_CHARS = 600
+# The tutor's latest reply is re-read almost whole: a student answering "1 B,
+# 2 C, 3 A" to a quiz written in the chat needs every question and option,
+# and a 600-character excerpt cut it after question 1.
+LATEST_REPLY_CHARS = 6000
 # A question this short is probably a follow-up and is searched together
 # with the previous questions.
 FOLLOW_UP_MAX_WORDS = 12
@@ -52,6 +56,31 @@ FOLLOW_UP_LOOKBACK = 2
 SUMMARY_MAX_CHARS = 1200
 
 _CITATIONS = re.compile(r"\[\d+(?:\s*[,–-]\s*\d+)*\]")
+
+
+_EXAM_ONLY = re.compile(
+    r"(?:(?:for|on|the|my|our|first|second|third|final|midterm|midterms|exam|exams"
+    r"|test|tests|1|2|3|one|two|three|i|ii|iii|review|prep|readings?|course"
+    r"|class|all|whole|upcoming|next)\b[\s,]*)+",
+    re.IGNORECASE,
+)
+
+
+def review_material(missed: Sequence[dict[str, str]]) -> str:
+    """The missed practice, as context for the tutor (fenced as data: the
+    student's answers are their own text)."""
+    if not missed:
+        return "Practice the student got wrong: none recorded yet."
+    lines = [
+        f"- Question: {item['question']} | Student answered: "
+        f"{item['student_answer'] or '(blank)'} | Correct: {item['correct_answer']}"
+        for item in missed
+    ]
+    return "Practice the student got wrong (newest first):\n" + "\n".join(lines)
+
+
+def review_search(missed: Sequence[dict[str, str]]) -> str:
+    return "\n".join(f"{m['question']} {m['correct_answer']}" for m in missed)
 
 
 @dataclass(frozen=True)
@@ -95,20 +124,20 @@ def _speaker(role: str) -> str:
     return "Student" if role == "user" else "Tutor"
 
 
-def _excerpt(text: str) -> str:
+def _excerpt(text: str, limit: int = EXCERPT_CHARS) -> str:
     plain = " ".join(_CITATIONS.sub("", text).split())
     plain = re.sub(r"\s+([.,!?;:])", r"\1", plain)
-    if len(plain) <= EXCERPT_CHARS:
+    if len(plain) <= limit:
         return plain
-    prefix = plain[: EXCERPT_CHARS - 1]
+    prefix = plain[: limit - 1]
     return (prefix.rsplit(" ", 1)[0] if " " in prefix else prefix) + "…"
 
 
-def _turn_text(message: Message) -> str:
+def _turn_text(message: Message, limit: int = EXCERPT_CHARS) -> str:
     """What a turn contributes to the context: its text, plus what the tutor
     put in the workspace beside it. A quiz's questions are not in the chat
     text, so without them "explain question 2" would have nothing to explain."""
-    text = _excerpt(message.text)
+    text = _excerpt(message.text, limit)
     items = message.payload.get("workspace") if message.role == "assistant" else None
     notes: list[str] = []
     for item in items if isinstance(items, list) else []:
@@ -119,20 +148,23 @@ def _turn_text(message: Message) -> str:
         questions = item.get("questions")
         if isinstance(questions, list):
             listed = []
-            for number, question in enumerate(questions[:6], start=1):
+            shown = questions if limit > EXCERPT_CHARS else questions[:6]
+            for number, question in enumerate(shown, start=1):
                 if not isinstance(question, dict):
                     continue
                 options = question.get("options") or []
                 answer = question.get("answer")
                 key = (
-                    options[answer]
+                    question.get("expected") or "?"
+                    if question.get("format") == "short_answer"
+                    else options[answer]
                     if isinstance(answer, int) and 0 <= answer < len(options)
                     else "?"
                 )
                 listed.append(f"{number}. {question.get('prompt', '')} (answer: {key})")
             if listed:
                 note += ": " + " ".join(listed)
-        notes.append(_excerpt(note))
+        notes.append(_excerpt(note, limit))
     if notes:
         text += " [Shown in the workspace: " + "; ".join(notes) + "]"
     return text
@@ -152,9 +184,21 @@ def context_for(conversation: Conversation, history: Sequence[Message]) -> ChatC
     scope_revised = bool(conversation.scope_revised_seq) and any(
         m.seq <= conversation.scope_revised_seq for m in history
     )
+    latest_reply = next(
+        (m.seq for m in reversed(recent) if m.role == "assistant"), None
+    )
     return ChatContext(
         summary=conversation.summary,
-        recent=tuple((m.role, _turn_text(m)) for m in recent),
+        recent=tuple(
+            (
+                m.role,
+                _turn_text(
+                    m,
+                    LATEST_REPLY_CHARS if m.seq == latest_reply else EXCERPT_CHARS,
+                ),
+            )
+            for m in recent
+        ),
         previous_questions=tuple(asked[:FOLLOW_UP_LOOKBACK]),
         scope_revised=scope_revised,
         teaching_trace_ids=tuple(
@@ -165,10 +209,15 @@ def context_for(conversation: Conversation, history: Sequence[Message]) -> ChatC
     )
 
 
-def retrieval_query(question: str, context: ChatContext | None) -> str:
+def retrieval_query(
+    question: str,
+    context: ChatContext | None,
+    names: Mapping[UUID, frozenset[str]] | None = None,
+) -> str:
     """What to search the course for. A request for a quiz or study guide is
     searched by its subject alone; one that names none ("quiz me on that")
-    takes the subject of the chat so far."""
+    takes the subject of the chat so far. `names` are the course's source
+    names (route.source_names)."""
     previous = context.previous_questions if context is not None else ()
     if asks_for_overview(question):
         return question
@@ -183,6 +232,10 @@ def retrieval_query(question: str, context: ChatContext | None) -> str:
         # An explicit address ("Table 2.2", "Week 3") is self-contained: do
         # not dilute it with earlier questions (R5-NEW-p).
         return topic
+    if names and route.named_sources(question, dict(names)):
+        # So is a named reading: "quiz me on resendez" after questions about
+        # Gutierrez must not search (and quiz) Gutierrez.
+        return topic
     if not previous or len(topic.split()) > FOLLOW_UP_MAX_WORDS:
         return topic
     return "\n".join((topic, *previous))
@@ -196,8 +249,14 @@ def wants_overview(question: str, context: ChatContext | None) -> bool:
         return True
     if classify_intent(question) in (Intent.ANSWER, Intent.GRADED, Intent.CHAT):
         return False
+    topic = retrieval_topic(question).strip()
+    if topic and _EXAM_ONLY.fullmatch(topic):
+        # "10 q's on everything for exam 1", "study guide for the midterm":
+        # the subject is the exam's material, not the word "exam", which
+        # matched only the syllabus's exam rules.
+        return True
     previous = context.previous_questions if context is not None else ()
-    return not retrieval_topic(question).strip() and not previous
+    return not topic and not previous
 
 
 @dataclass(frozen=True)

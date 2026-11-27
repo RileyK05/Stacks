@@ -27,7 +27,9 @@ _DOTTED = re.compile(r"^(?:[a-z]\.)+[a-z]$", re.IGNORECASE)
 # "no" is shorter than the content-word cutoff and "not" is a stopword, so
 # neither survives content_words. A point that differs only by one of them
 # would otherwise be marked covered.
-_NEGATION = frozenset({"no", "not"})
+# "never" and "cannot" deny a claim as surely: "it was never formally
+# abolished" must not cover "it was formally abolished".
+_NEGATION = frozenset({"no", "not", "never", "cannot", "nor", "neither"})
 _STOP = frozenset(
     (
         "a",
@@ -65,6 +67,17 @@ _STOP = frozenset(
         "then",
         "not",
         "no",
+        "never",
+        "cannot",
+        "nor",
+        "neither",
+        # Connectives that start a point ("so it was never abolished") are
+        # not part of the claim.
+        "so",
+        "thus",
+        "therefore",
+        "because",
+        "since",
     )
 )
 _NUMBER_WORDS = {

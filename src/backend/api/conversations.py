@@ -11,7 +11,7 @@ simply be sent again.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
@@ -28,11 +28,13 @@ from src.backend.common import (
 from src.backend.common.conversations_repo import Conversation, Message
 from src.backend.common.db import connection
 from src.backend.common.embeddings_config import load_embedding_policy
-from src.backend.retrieval.config import load_retrieval_policy
-from src.backend.student_model import research
+from src.backend.common.prompt_registry import load_prompt
+from src.backend.retrieval import route
+from src.backend.retrieval.config import load_retrieval_policy, load_route_policy
+from src.backend.student_model import learning, research
 from src.backend.tutor import answer as tutor_answer
-from src.backend.tutor import chat
-from src.backend.tutor.compose import Intent, classify_intent
+from src.backend.tutor import chat, syllabus
+from src.backend.tutor.compose import Intent, asks_for_review, classify_intent
 
 router = APIRouter(prefix="/courses/{course_id}/conversations", tags=["conversations"])
 
@@ -263,9 +265,39 @@ def send_message(
     conversation = _require_conversation(course_id, conversation_id)
     with connection() as conn:
         history = conversations_repo.messages(conn, conversation_id)
+        names = route.source_names(conn, course_id)
     context = chat.context_for(conversation, history)
-    search = chat.retrieval_query(payload.question, context)
+    search = chat.retrieval_query(payload.question, context, names)
     overview = chat.wants_overview(payload.question, context)
+    asked_weeks = route.parse_addresses(payload.question, load_route_policy()).weeks
+    schedule: list[syllabus.Week] = []
+    if syllabus.about_schedule(payload.question, asked_weeks):
+        with connection() as conn:
+            schedule = syllabus.course_schedule(conn, course_id)
+    calendar = syllabus.calendar_note(schedule, payload.question, date.today())
+    coverage = (
+        syllabus.missing_note(schedule, payload.question, asked_weeks)
+        if syllabus.wants_coverage(payload.question)
+        else ""
+    )
+    source_ids = conversation.source_ids
+    if overview and source_ids is None:
+        # "Practice test for exam 1": that exam's readings, not every file
+        # (the syllabus's exam rules, or readings for later weeks).
+        exam_readings = syllabus.exam_sources(schedule, payload.question)
+        if exam_readings:
+            source_ids = exam_readings
+    review = ""
+    review_note = ""
+    if asks_for_review(payload.question):
+        # "Quiz me on what I got wrong": search and teach the ideas behind the
+        # student's missed practice, which the tutor otherwise cannot see.
+        with connection() as conn:
+            missed = learning.missed_practice(conn, course_id)
+        review = chat.review_material(missed)
+        review_note = load_prompt("practice_review")
+        if missed:
+            search, overview = chat.review_search(missed), False
     choice = (
         providers.ProviderChoice.model_validate(conversation.model_choice)
         if conversation.model_choice
@@ -288,10 +320,16 @@ def send_message(
                     embedding_model=load_embedding_policy().model,
                     bigger=payload.bigger_model,
                     choice=choice,
-                    conversation=context.render(),
+                    conversation="\n\n".join(
+                        part for part in (context.render(), review) if part
+                    ),
                     teaching_trace_ids=context.teaching_trace_ids,
-                    scope_note=context.scope_note(),
-                    source_ids=conversation.source_ids,
+                    scope_note="\n\n".join(
+                        part
+                        for part in (context.scope_note(), review_note, calendar)
+                        if part
+                    ),
+                    source_ids=source_ids,
                     search_query=search,
                     overview=overview,
                 )
@@ -300,12 +338,16 @@ def send_message(
                     conn,
                     conversation_id,
                     question=payload.question,
-                    answer=str(err),
+                    answer=f"{err}\n\n{coverage}" if coverage else str(err),
                     trace_id=None,
                     payload={"no_match": True},
                 )
             else:
                 view = answer_view(result, bigger=payload.bigger_model)
+                if coverage:
+                    # Computed from the syllabus and the uploads, not generated:
+                    # what the student cannot study here for this exam or week.
+                    view.text = f"{view.text}\n\n{coverage}"
                 asked, replied = conversations_repo.add_turn(
                     conn,
                     conversation_id,

@@ -272,10 +272,14 @@ class IngestionHandlers:
                     if delay > 0:
                         self.sleeper(delay)
                     continue
-                if len(rendered) > 1 and retryable:
-                    # A refused or transient batch failure drops all its pages
-                    # at once; read them one at a time so a dropped connection
-                    # costs one page, not the whole batch (R5-NEW-o).
+                # Several dense pages can outgrow a model's output limit
+                # where each page alone fits (a model without a profile gets
+                # the 2048-token default for a 4-page batch).
+                truncated = isinstance(err, provider.ModelOutputTruncatedError)
+                if len(rendered) > 1 and (retryable or truncated):
+                    # A refused, transient or truncated batch failure drops all
+                    # its pages at once; read them one at a time so it costs
+                    # one page, not the whole batch (R5-NEW-o).
                     for page in rendered:
                         self._recognize_single_page(page, recognized, failures)
                     return

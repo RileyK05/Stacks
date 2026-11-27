@@ -26,7 +26,7 @@
 
   function makeSession(): QuizSession {
     return new QuizSession({
-      type: 'quiz', title: 'Practice test', questions: quiz.questions.map((q) => ({ ...q, topic: q.topic ?? '', capability: q.capability ?? 'recognition' })),
+      type: 'quiz', title: 'Practice test', questions: quiz.questions.map((q) => ({ ...q, format: q.format ?? 'multiple_choice', answer: q.answer ?? 0, expected: q.expected ?? '', topic: q.topic ?? '', capability: q.capability ?? 'recognition' })),
     }, practice ? { artifact_id: practice.artifactId, artifact_version: practice.version, item_index: 0 } : null);
   }
 

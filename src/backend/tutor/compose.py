@@ -84,6 +84,9 @@ _INTENT_RULES: tuple[tuple[Intent, re.Pattern[str]], ...] = (
         Intent.QUIZ,
         re.compile(
             r"\bquiz(?:zes|zed)?\b|\bmultiple[- ]choice\b|\btest me\b"
+            r"|\bmcqs?\b|\b\d+\s*(?:mc\s*)?(?:q'?s|qs)\b"
+            r"|\b(?:short[- ]answer|essay|open[- ]ended|written|free[- ]response)"
+            r" (?:questions?|prompts?|qs)\b"
             r"|\bpractice (?:questions?|problems?|tests?|suites?)\b|\bflash ?cards?\b",
             re.IGNORECASE,
         ),
@@ -125,7 +128,7 @@ _INTENT_RULES: tuple[tuple[Intent, re.Pattern[str]], ...] = (
 # "and a quiz on that", "now make a table": a request may lead with a filler.
 _LEAD = r"^\s*(?:(?:and|also|now|then|ok|okay|so|next)\b[\s,]+)*"
 _ARTIFACT_REQUEST = re.compile(
-    _LEAD + r"(?:(?:please|could you|can you|would you|will you)\s+)*"
+    _LEAD + r"(?:(?:please|pls|plz|(?:could|can|would|will) (?:you|u))\s+)*"
     r"(?:make|create|generate|write|draft|build|prepare|produce|give me|show me|"
     r"turn|convert|format|put|organize|quiz me|test me|"
     r"i (?:want|need|would like))\b"
@@ -190,12 +193,49 @@ def is_small_talk(question: str) -> bool:
     return bool(plain) and _SMALL_TALK.fullmatch(plain) is not None
 
 
+# Students rarely lead with a verb: "5 question quiz on Holloway",
+# "garcia sanchez quiz, 5 q", "10 q's on exam 1". A count of questions or the
+# word quiz is a request unless the message asks about a quiz ("when is the
+# quiz?", "what's on quiz 2?").
+_QUIZ_SHAPE = re.compile(
+    r"\b\d+\s*[- ]?(?:mc\s*)?(?:questions?|q'?s|qs|q|mcqs?)\b|\bquiz\b"
+    r"|\bpractice (?:tests?|exams?|questions?|quiz(?:zes)?)\b|\bflash ?cards?\b"
+    r"|\b(?:short[- ]answer|essay|open[- ]ended|written|free[- ]response)"
+    r" (?:questions?|prompts?|qs)\b",
+    re.IGNORECASE,
+)
+_ASKS_ABOUT = re.compile(
+    r"^\s*(?:what(?:'s|s)?|when|where|which|who|why|how|is|are|was|were|do|does"
+    r"|did|will|would|should|could i|can i|am i)\b"
+    r"|\?\s*$",
+    re.IGNORECASE,
+)
+
+
+_REVIEW = re.compile(
+    r"\b(?:what|stuff|things|ones?|questions?|parts?)\s+(?:that\s+)?i\s+"
+    r"(?:got|get|had)\s+wrong\b"
+    r"|\b(?:questions?|ones?|stuff)\s+i\s+(?:missed|failed|messed up)\b"
+    r"|\bmy\s+(?:mistakes|wrong answers|weak (?:spots|areas|points)|weak topics)\b"
+    r"|\bwhere i(?:'m| am) weak\b|\bwhat did i (?:get|got|miss)(?: wrong)?\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_review(question: str) -> bool:
+    """ "Quiz me on what I got wrong", "go over my mistakes": the subject is
+    the student's own missed practice, which the app records."""
+    return _REVIEW.search(question) is not None
+
+
 def classify_intent(question: str) -> Intent:
     if _GRADED_WORK.search(question):
         return Intent.GRADED
     if is_small_talk(question):
         return Intent.CHAT
     if not _ARTIFACT_REQUEST.search(question):
+        if _QUIZ_SHAPE.search(question) and not _ASKS_ABOUT.search(question):
+            return Intent.QUIZ
         return Intent.ANSWER
     if _RETRIEVAL_NOTES.search(question) and not _OTHER_ARTIFACT.search(question):
         return Intent.ANSWER
@@ -373,8 +413,42 @@ _NUMBERING_HEADS = frozenset(
         "handouts",
     }
 )
+# Student shorthand around a request: "10 q's on exam 1 pls", "can u make it
+# a real quiz w/ options". None of it names course material.
+_REQUEST_WORDS = _REQUEST_WORDS | frozenset(
+    {
+        "u",
+        "pls",
+        "plz",
+        "w",
+        "q",
+        "q's",
+        "qs",
+        "mc",
+        "mcq",
+        "mcqs",
+        "real",
+        "take",
+        "options",
+        "hard",
+        "harder",
+        "easy",
+        "medium",
+        "medium-hard",
+        "difficult",
+        "everything",
+        "that",
+        "it",
+        "this",
+        "into",
+    }
+)
 _SIZE_UNITS = frozenset(
     {
+        "q",
+        "qs",
+        "q's",
+        "mcqs",
         "word",
         "words",
         "page",
@@ -598,6 +672,59 @@ def _object(properties: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def schema_skeleton(schema: dict[str, Any]) -> Any:
+    """A compact example of the JSON a schema asks for, with its exact field
+    names. Some providers accept `response_format` but do not enforce it
+    (Ollama Cloud returned YAML, or JSON with its own field names), so the
+    shape is also stated in the prompt."""
+    if "const" in schema:
+        return schema["const"]
+    if "enum" in schema:
+        return "|".join(str(value) for value in schema["enum"])
+    kind = schema.get("type")
+    if kind == "object":
+        return {
+            key: schema_skeleton(value)
+            for key, value in schema.get("properties", {}).items()
+        }
+    if kind == "array":
+        return [schema_skeleton(schema.get("items", {}))]
+    return {"integer": 0, "number": 0, "boolean": False}.get(str(kind), "...")
+
+
+def shape_instruction(schema: dict[str, Any]) -> str:
+    return (
+        "\n\nReturn ONE JSON object only, no prose or YAML, using exactly "
+        "these field names:\n" + json.dumps(schema_skeleton(schema), ensure_ascii=False)
+    )
+
+
+# Field names models use instead of the quiz schema's own.
+_QUIZ_FIELD_ALIASES = {
+    "prompt": ("question", "stem", "text"),
+    "options": ("choices", "answers", "alternatives"),
+    "answer": ("answer_index", "correct", "correct_index", "correct_answer"),
+}
+
+
+def normalize_quiz_fields(item: Any) -> Any:
+    """Map common alternative field names onto the quiz schema. Only renames
+    fields; every question still passes the same checks afterwards."""
+    if not isinstance(item, dict) or item.get("type") != "quiz":
+        return item
+    for question in item.get("questions") or []:
+        if not isinstance(question, dict):
+            continue
+        for field, aliases in _QUIZ_FIELD_ALIASES.items():
+            if field in question:
+                continue
+            for alias in aliases:
+                if alias in question:
+                    question[field] = question.pop(alias)
+                    break
+    return item
+
+
 def workspace_schema(
     intent: Intent,
     material_count: int,
@@ -654,6 +781,10 @@ def workspace_schema(
                     "maxItems": quiz_count or 20,
                     "items": _object(
                         {
+                            "format": {
+                                "type": "string",
+                                "enum": ["multiple_choice", "short_answer"],
+                            },
                             "prompt": _string(400),
                             "topic": _string(160),
                             "capability": {
@@ -673,10 +804,21 @@ def workspace_schema(
                                     "minLength": 2,
                                     "maxLength": 200,
                                 },
-                                "minItems": 2,
+                                "minItems": 0,
                                 "maxItems": 4,
                             },
                             "answer": {"type": "integer", "minimum": 0, "maximum": 3},
+                            "expected": {"type": "string", "maxLength": 600},
+                            "points": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "minLength": 3,
+                                    "maxLength": 200,
+                                },
+                                "minItems": 0,
+                                "maxItems": 4,
+                            },
                             "explanation": _string(400),
                             "sources": sources,
                         }
@@ -767,6 +909,107 @@ def workspace_schema(
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+
+_STOP_WORDS = frozenset(
+    [
+        "this",
+        "that",
+        "with",
+        "from",
+        "they",
+        "them",
+        "their",
+        "there",
+        "these",
+        "those",
+        "than",
+        "then",
+        "were",
+        "what",
+        "when",
+        "which",
+        "while",
+        "would",
+        "could",
+        "should",
+        "about",
+        "into",
+        "also",
+        "been",
+        "being",
+        "have",
+        "only",
+        "over",
+        "such",
+        "very",
+        "more",
+        "most",
+        "some",
+        "other",
+    ]
+)
+_QUOTED = re.compile(r"[\"\u201c\u2018']([^\"\u201d\u2019']{12,})[\"\u201d\u2019']")
+
+
+def _claim_words(text: str) -> frozenset[str]:
+    return frozenset(
+        word
+        for word in re.findall(r"[a-z0-9]{4,}", text.casefold())
+        if word not in _STOP_WORDS
+    )
+
+
+def reattribute_sources(item: Any, candidates: tuple[Candidate, ...]) -> Any:
+    """Point each quiz question at the passage its answer comes from. A model
+    can write a correct key from one reading and cite another (inkling cited
+    Resendez for answers quoted from Gutierrez), so a student who opens the
+    citation finds nothing there. When the cited passages share few words
+    with the key and the passage it quotes, and one other passage clearly
+    holds them, cite that one instead; otherwise leave it to the checks."""
+    if not isinstance(item, dict) or item.get("type") != "quiz" or not candidates:
+        return item
+    texts = [_claim_words(candidate.text) for candidate in candidates]
+    for question in item.get("questions") or []:
+        if not isinstance(question, dict):
+            continue
+        options, answer = question.get("options"), question.get("answer")
+        if not (
+            isinstance(options, list)
+            and type(answer) is int
+            and 0 <= answer < len(options)
+        ):
+            continue
+        quoted = " ".join(_QUOTED.findall(str(question.get("explanation") or "")))
+        claim = _claim_words(f"{options[answer]} {quoted}")
+        if len(claim) < 3:
+            continue
+
+        def support(numbers: list[int], claim: frozenset[str] = claim) -> float:
+            held = frozenset().union(*(texts[n - 1] for n in numbers))
+            return len(claim & held) / len(claim)
+
+        cited = [
+            n
+            for n in question.get("sources") or []
+            if type(n) is int and 1 <= n <= len(candidates)
+        ]
+        current = support(cited) if cited else 0.0
+        best = max(range(1, len(candidates) + 1), key=lambda n: support([n]))
+        if current < 0.5 and support([best]) >= 0.7 and best not in cited:
+            question["sources"] = [best]
+    return item
+
+
+def _parse_workspace(
+    text: str, candidates: tuple[Candidate, ...] = ()
+) -> dict[str, Any] | None:
+    parsed = parse_json_object(text)
+    if parsed is not None and "item" in parsed:
+        parsed["item"] = reattribute_sources(
+            normalize_quiz_fields(parsed["item"]), candidates
+        )
+    return parsed
 
 
 def parse_json_object(text: str) -> dict[str, Any] | None:
@@ -880,11 +1123,78 @@ def _requested_count(question: str, units: str) -> int | None:
 
 
 def requested_quiz_count(question: str) -> int | None:
-    return _requested_count(question, r"questions?|problems?")
+    return _requested_count(
+        question, r"questions?|problems?|q'?s|q|mc\s*q'?s|mcqs?|flash ?cards?|cards?"
+    )
 
 
 def requested_slide_count(question: str) -> int | None:
     return _requested_count(question, r"slides?")
+
+
+_CONTENT_WORD = re.compile(r"[a-z0-9']{4,}")
+
+
+def _answer_text(question: dict[str, Any]) -> str:
+    """The correct option, or a written question's model answer."""
+    if question.get("format") == "short_answer":
+        return str(question.get("expected") or "")
+    options = question.get("options")
+    answer = question.get("answer")
+    return (
+        str(options[answer])
+        if isinstance(options, list)
+        and type(answer) is int
+        and 0 <= answer < len(options)
+        else ""
+    )
+
+
+def _key_words(question: dict[str, Any]) -> frozenset[str]:
+    return frozenset(_CONTENT_WORD.findall(_answer_text(question).casefold()))
+
+
+def same_point(first: dict[str, Any], second: dict[str, Any]) -> bool:
+    """Two questions whose correct answers make the same claim ("Her husband
+    convinced her literacy would encourage a desire for freedom" / "He
+    believed literacy would encourage a desire for freedom"): one question
+    asked twice in different words."""
+    a, b = _key_words(first), _key_words(second)
+    if len(a) < 3 or len(b) < 3:
+        return False
+    return len(a & b) / min(len(a), len(b)) >= 0.7
+
+
+def _usable_short_answer(
+    question: dict[str, Any], candidates: tuple[Candidate, ...]
+) -> bool:
+    """A written question is usable when its model answer and each required
+    point are stated in the passages it cites: the points are what the
+    student is graded on, so an unsupported point would mark a right answer
+    wrong."""
+    expected = question.get("expected")
+    points = question.get("points")
+    cited = question.get("sources")
+    if not isinstance(expected, str) or len(expected.strip()) < 12:
+        return False
+    if (
+        not isinstance(points, list)
+        or not 1 <= len(points) <= 4
+        or any(not isinstance(p, str) or not p.strip() for p in points)
+    ):
+        return False
+    if question.get("options"):
+        return False
+    if not isinstance(cited, list) or not cited:
+        return False
+    if any(type(n) is not int or not 1 <= n <= len(candidates) for n in cited):
+        return False
+    evidence = frozenset().union(*(_claim_words(candidates[n - 1].text) for n in cited))
+    for point in points:
+        words = _claim_words(point)
+        if words and len(words & evidence) / len(words) < 0.5:
+            return False
+    return True
 
 
 def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> bool:
@@ -912,6 +1222,16 @@ def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> boo
         if prompt_key in seen_prompts:
             return False
         seen_prompts.add(prompt_key)
+        if any(
+            same_point(question, other)
+            for other in questions[: questions.index(question)]
+            if isinstance(other, dict)
+        ):
+            return False
+        if question.get("format") == "short_answer":
+            if not _usable_short_answer(question, candidates):
+                return False
+            continue
         if not isinstance(options, list) or len(options) < 2:
             return False
         if type(answer) is not int or not 0 <= answer < len(options):
@@ -1088,7 +1408,7 @@ def _shuffle_quiz_options(item: dict[str, Any]) -> dict[str, Any]:
             continue
         options = question.get("options")
         answer = question.get("answer")
-        if not isinstance(options, list) or type(answer) is not int:
+        if not isinstance(options, list) or not options or type(answer) is not int:
             shuffled.append(question)
             continue
         rewritten = [_self_contained_option(option, options) for option in options]
@@ -1115,7 +1435,32 @@ def _shuffle_quiz_options(item: dict[str, Any]) -> dict[str, Any]:
         if "explanation" in question:
             moved["explanation"] = _relettered(question.get("explanation"), order)
         shuffled.append(moved)
-    return {**item, "questions": shuffled}
+    return {
+        **item,
+        "questions": [
+            {**q, "explanation": plain_references(q["explanation"])}
+            if isinstance(q, dict) and isinstance(q.get("explanation"), str)
+            else q
+            for q in shuffled
+        ],
+    }
+
+
+_NUMBERED_REFERENCE = re.compile(
+    r"\b(?:the\s+)?(?:cited\s+)?(source|passage|material|excerpt)\s*"
+    r"(?:number\s*|no\.\s*|#\s*)?\[?\d+\]?",
+    re.IGNORECASE,
+)
+
+
+def plain_references(text: str) -> str:
+    """ "Source 9 states this figure" names a number the student never sees on
+    the quiz; say "the reading" instead."""
+
+    def replace(match: re.Match[str]) -> str:
+        return "The reading" if match.group(0)[:1].isupper() else "the reading"
+
+    return _NUMBERED_REFERENCE.sub(replace, text)
 
 
 def _workspace_response(
@@ -1264,11 +1609,12 @@ def compose_answer(
             withheld=out_of_range,
         )
 
-    prompt = grounded_prompt(
-        load_prompt(f"workspace_{intent.value}") + teaching, material
-    )
     schema = workspace_schema(
         intent, len(candidates), quiz_count, slide_count=slide_count
+    )
+    shape = shape_instruction(schema)
+    prompt = grounded_prompt(
+        load_prompt(f"workspace_{intent.value}") + teaching + shape, material
     )
     try:
         raw = generate("artifact_generation", prompt, response_schema=schema)
@@ -1276,7 +1622,7 @@ def compose_answer(
         if on_schema_rejected is None or not on_schema_rejected(err):
             raise
         raw = generate("artifact_generation", prompt + _SCHEMA_REMINDER)
-    parsed = parse_json_object(raw)
+    parsed = _parse_workspace(raw, candidates)
     item = parsed.get("item") if parsed else None
     # The small local model can produce schema-valid but misleading quizzes.
     # Keep individually verified questions across attempts, while never
@@ -1301,9 +1647,9 @@ def compose_answer(
             for valid in _usable_quiz_questions(candidate_item, candidates):
                 key = (
                     tuple(valid["sources"]),
-                    str(valid["options"][valid["answer"]]).strip(" .,:;!?").casefold(),
+                    _answer_text(valid).strip(" .,:;!?").casefold(),
                 )
-                if key in seen:
+                if key in seen or any(same_point(valid, a) for a in accepted):
                     continue
                 seen.add(key)
                 accepted.append(valid)
@@ -1315,6 +1661,7 @@ def compose_answer(
             + "\n\n"
             + load_prompt("workspace_quiz_repair")
             + teaching
+            + shape
         )
         repair_prompt = grounded_prompt(repair_instruction, material)
         for _ in range(2):
@@ -1333,7 +1680,7 @@ def compose_answer(
                     break
                 else:
                     raise
-            parsed = parse_json_object(repaired)
+            parsed = _parse_workspace(repaired, candidates)
             item = parsed.get("item") if parsed else None
             collect(parsed)
         if not accepted:
@@ -1369,7 +1716,8 @@ def compose_answer(
             load_prompt(f"workspace_{intent.value}")
             + "\n\n"
             + load_prompt("workspace_repair")
-            + teaching,
+            + teaching
+            + shape,
             material + "\n\nPrevious output to replace:\n" + raw,
         )
         try:
@@ -1381,7 +1729,7 @@ def compose_answer(
                 raise
             repaired = generate("artifact_generation", repair_prompt + _SCHEMA_REMINDER)
         workspace_text = _workspace_response(
-            parse_json_object(repaired),
+            _parse_workspace(repaired, candidates),
             intent,
             len(candidates),
             passages,

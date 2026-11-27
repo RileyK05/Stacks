@@ -28,7 +28,12 @@ from src.backend.common.schemas.learning import (
     SuiteState,
     TeachingMethod,
 )
-from src.backend.student_model import inspection, learning, practice_support
+from src.backend.student_model import (
+    inspection,
+    learning,
+    practice_support,
+    short_answer_judge,
+)
 
 router = APIRouter(tags=["learning"])
 
@@ -204,9 +209,22 @@ def submit_practice(
     course_id: UUID, suite_id: UUID, payload: PracticeSubmission
 ) -> PracticeRun:
     require_course(course_id)
+    # Written answers the word matcher missed get a model check first, outside
+    # the write transaction: a model call must not hold the database lock.
+    judged: dict[str, list[str]] = {}
     with connection() as conn:
         try:
-            result = learning.submit(conn, course_id, suite_id, payload)
+            test = learning.suite(conn, course_id, suite_id)
+        except LookupError as err:
+            raise HTTPException(404, str(err)) from err
+        already = inspection.rows(
+            conn, "run", course_id=course_id, run_id=payload.run_id
+        )
+    if not already and any(q.format == "short_answer" for q in test.questions):
+        judged = short_answer_judge.judge(course_id, test, payload.answers)
+    with connection() as conn:
+        try:
+            result = learning.submit(conn, course_id, suite_id, payload, judged)
         except LookupError as err:
             raise HTTPException(404, str(err)) from err
         except ValueError as err:

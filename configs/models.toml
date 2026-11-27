@@ -5,6 +5,8 @@ models_config_version = "2"
 # templates a connection is made from. The user adds connections in
 # Settings (as many as they like, each with its own key in the OS
 # keyring) and picks a connection + model per task or per chat.
+# `key_env` names development environment variables read, in order, only
+# when the keyring holds no key for the connection.
 # `disclosure = true` means using it sends course excerpts off this
 # machine, and the UI says so once — it is the user's choice. Every
 # endpoint below speaks the OpenAI chat-completions API.
@@ -23,12 +25,16 @@ default_model = ""
 requires_key = true
 disclosure = true
 
+# Anthropic is called through the official SDK (Messages API), not the
+# OpenAI-compatible shim; base_url is passed explicitly so an ambient
+# ANTHROPIC_BASE_URL never redirects the app's traffic.
 [presets.anthropic]
 label = "Anthropic"
-base_url = "https://api.anthropic.com/v1"
+base_url = "https://api.anthropic.com"
 default_model = ""
 requires_key = true
 disclosure = true
+key_env = ["ANTHROPIC_API_KEY", "ANT_KEY"]
 
 [presets.google]
 label = "Google Gemini"
@@ -50,6 +56,14 @@ base_url = "https://api.groq.com/openai/v1"
 default_model = ""
 requires_key = true
 disclosure = true
+
+[presets.ollama_cloud]
+label = "Ollama Cloud"
+base_url = "https://ollama.com/v1"
+default_model = ""
+requires_key = true
+disclosure = true
+key_env = ["OLLAMA_API_KEY", "OLLAMA_KEY"]
 
 # Runners on this computer: nothing leaves the machine.
 [presets.lmstudio]

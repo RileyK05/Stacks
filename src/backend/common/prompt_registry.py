@@ -45,6 +45,8 @@ KNOWN_PROMPTS = (
         "companion_critique_reflective",
         "companion_critique_rhetorical",
         "practice_hint",
+        "short_answer_grading",
+        "practice_review",
         "practice_explain",
         "practice_explain_flagged",
         "map_explain",

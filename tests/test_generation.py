@@ -95,14 +95,17 @@ def test_cutoff_recovers_entire_unit_with_same_prompt_and_counts_every_attempt(
     assert usage_repo.cloud_tokens_this_month() == 30
 
 
-def test_unknown_capacity_does_not_invent_a_larger_limit(
+def test_unknown_capacity_starts_short_and_widens_only_to_the_task_need(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """No profile: the first request asks for the short default; a cut-off
+    reply widens toward the task's own need (a quiz is longer than an
+    answer), never past it."""
     monkeypatch.setattr(model_profiles, "profile_for", lambda *_: None)
-    calls = _http(monkeypatch, [(200, _payload("secret partial", "length"))])
+    calls = _http(monkeypatch, [(200, _payload("secret partial", "length"))] * 2)
     with pytest.raises(provider.ModelOutputTruncatedError) as error:
         provider.generate("artifact_generation", "task")
-    assert len(calls) == 1 and calls[0]["max_tokens"] == 2048
+    assert [c["max_tokens"] for c in calls] == [2048, 16384]
     assert error.value.partial_text == "secret partial"
     assert "secret partial" not in str(error.value)
 
@@ -166,11 +169,12 @@ def test_empty_is_retried_only_once_and_background_summary_does_not_retry(
 ) -> None:
     reasoning = _payload(None)
     reasoning["choices"][0]["message"]["reasoning_content"] = "private thoughts"
-    calls = _http(monkeypatch, [(200, reasoning)])
+    calls = _http(monkeypatch, [(200, reasoning)] * 2)
     with pytest.raises(provider.ModelReasoningOnlyError):
-        # Known reasoning with an unknown output ceiling cannot be widened.
+        # An answer that ran out while reasoning retries once with the
+        # task's widening room, never more.
         provider.generate("tutor_answer", "task")
-    assert len(calls) == 1
+    assert [c["max_tokens"] for c in calls] == [2048, 8192]
     calls = _http(monkeypatch, [(200, _payload("")), (200, _payload(""))])
     with pytest.raises(provider.EmptyModelError):
         provider.generate("tutor_answer", "task")
@@ -390,3 +394,12 @@ def test_successful_rate_limit_fallback_remains_visible_on_subsequent_repairs(
         repair = provider.generate("artifact_generation", "repair")
     assert first.fell_back_to_local and repair.fell_back_to_local
     assert seen == ["custom", "local", "local"] and operation.calls == 3
+
+
+def test_a_cut_off_answer_has_room_to_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A comparison across readings outgrew the 2048-token answer with no
+    room to widen: "hit its output limit before finishing"."""
+    monkeypatch.setattr(model_profiles, "profile_for", lambda *_: None)
+    limits = generation.plan_call("tutor_answer", _endpoint(), "q")
+    assert limits.output_tokens == 2048
+    assert limits.wider() is not None and limits.wider().output_tokens == 8192

@@ -21,6 +21,11 @@ for _name in (
     "LLM_BIGGER_BASE_URL",
     "LLM_BIGGER_MODEL",
     "APP_API_TOKEN",
+    # Development key fallbacks (configs/models.toml key_env).
+    "ANTHROPIC_API_KEY",
+    "ANT_KEY",
+    "OLLAMA_API_KEY",
+    "OLLAMA_KEY",
 ):
     os.environ[_name] = ""
 os.environ["APP_ENV"] = "test"

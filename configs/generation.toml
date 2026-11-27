@@ -17,6 +17,9 @@ min_output_tokens = 128
 desired_output_tokens = 2048
 max_recoveries = 2
 reasoning_multiplier = 6
+# A cut-off answer from a profile-less cloud model retries once with room for
+# a long comparison across readings.
+widen_to_output_tokens = 8192
 
 [tasks.artifact_generation]
 desired_output_tokens = 16384
@@ -25,6 +28,10 @@ max_recoveries = 2
 [tasks.ocr]
 desired_output_tokens = 2048
 max_recoveries = 1
+# Transcription needs no deliberation. Measured on Ollama Cloud
+# mimo-v2.6-flash, one slide: 1037 output tokens thinking vs 71 without,
+# same text; dense pages ran into the 8K/16K ceilings.
+reasoning = false
 
 [tasks.conversation_summary]
 desired_output_tokens = 1024
@@ -33,6 +40,10 @@ max_recoveries = 0
 [tasks.learning_research]
 desired_output_tokens = 2048
 max_recoveries = 0
+
+[tasks.answer_grading]
+desired_output_tokens = 512
+max_recoveries = 1
 
 [tasks.answer_eval_judge]
 desired_output_tokens = 4096

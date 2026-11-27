@@ -36,9 +36,14 @@ INLINE_CITATION_RE = re.compile(r"\[(\d+)\]")
 
 
 class QuizQuestion(BaseModel):
+    # A short answer (also a flashcard: prompt = front, expected = back) is
+    # written, not picked: it has no options, and is graded against `points`.
+    format: Literal["multiple_choice", "short_answer"] = "multiple_choice"
     prompt: str = Field(min_length=1, max_length=5000)
-    options: list[str] = Field(min_length=2, max_length=8)
-    answer: int
+    options: list[str] = Field(default_factory=list, max_length=8)
+    answer: int = 0
+    expected: str = Field(default="", max_length=5000)
+    points: list[str] = Field(default_factory=list, max_length=6)
     explanation: str | None = Field(default=None, max_length=5000)
     sources: list[int] = Field(min_length=1)
     topic: str = Field(default="", max_length=160)
@@ -46,6 +51,14 @@ class QuizQuestion(BaseModel):
 
     @model_validator(mode="after")
     def _answer_is_an_option(self) -> QuizQuestion:
+        if self.format == "short_answer":
+            if self.options:
+                raise ValueError("a short answer has no options")
+            if not self.expected.strip() or not any(p.strip() for p in self.points):
+                raise ValueError("a short answer needs an expected answer and points")
+            return self
+        if len(self.options) < 2:
+            raise ValueError("a multiple-choice question needs options")
         if not 0 <= self.answer < len(self.options):
             raise ValueError(
                 f"answer index {self.answer} is not one of the "

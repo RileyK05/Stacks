@@ -58,6 +58,10 @@ class RoutePolicy(BaseModel):
     enabled: bool
     label_kinds: tuple[str, ...]
     label_limit: int = Field(ge=1)
+    # Source-name routing: a question that names a source by a distinctive
+    # word of its filename ("the Resendez reading") is filtered to it.
+    name_min_chars: int = Field(default=4, ge=3)
+    name_stopwords: tuple[str, ...] = ()
 
 
 def load_route_policy(path: Path = DEFAULT_RETRIEVAL_PATH) -> RoutePolicy:

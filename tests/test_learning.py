@@ -616,7 +616,7 @@ def test_upgrade_keeps_capability_history_and_only_valid_method_associations(
     assert _submit(client, course.course_id, suite_id, [0, 1]).status_code == 200
     with connection() as conn:
         assert len(inspection.rows(conn, "core_observations")) == 2
-    assert migrations.migrate(path) == ["021", "022", "023"]
+    assert migrations.migrate(path) == ["021", "022", "023", "024"]
     with connection() as conn:
         observations = inspection.rows(conn, "observations", course_id=course.course_id)
         assert len(observations) == 2 and all(row["correct"] for row in observations)
@@ -738,3 +738,75 @@ def test_portable_learning_keeps_distilled_deleted_sessions_without_duplicating_
     notebook = archive_notebook.export_notebook(course.course_id)
     assert notebook.learning and len(notebook.learning.observations) == 2
     assert any(c.chunk_id == chunk for c in notebook.citations)
+
+
+def _written_suite(course_id: UUID, chunk: UUID) -> UUID:
+    with connection() as conn:
+        suite_id = learning.create_suite(
+            conn,
+            course_id,
+            "Written",
+            [
+                PracticeQuestion(
+                    format="short_answer",
+                    prompt="Why was Indian slavery never formally abolished?",
+                    expected="It had no legal basis, so there was nothing to abolish.",
+                    points=["Indian slavery had no legal basis"],
+                    sources=[1],
+                    topic="Indian slavery",
+                    capability="explanation",
+                )
+            ],
+            (chunk,),
+            {"by": "test", "batch": str(uuid4())},
+            None,
+        )
+        conn.commit()
+    return suite_id
+
+
+def test_a_correct_answer_in_the_students_own_words_is_credited(client, monkeypatch):
+    """The word matcher missed every paraphrase ("it was already illegal");
+    the model check credits the idea, and the grade is stored with the run."""
+    course = make_course()
+    chunk = add_chunk(course.course_id, "Indian slavery had no legal basis.")
+    suite_id = _written_suite(course.course_id, chunk)
+    calls = configure_test_provider(
+        monkeypatch, '{"points": [{"index": 0, "covered": true}]}'
+    )
+    run_id = str(uuid4())
+    answer = "Because enslaving Native people was already illegal."
+    graded = client.post(
+        f"/courses/{course.course_id}/practice/{suite_id}/runs",
+        json={"run_id": run_id, "answers": [answer]},
+    ).json()
+    assert graded["results"] == [True]
+    assert graded["missed_points"] == [[]]
+    assert [c["task"] for c in calls] == ["answer_grading"]
+    assert answer in str(calls[0]["prompt"])
+    again = client.get(f"/courses/{course.course_id}/practice/runs/{run_id}").json()
+    assert again["latest_run"]["results"] == [True], "stored, not re-judged"
+    assert len(calls) == 1
+
+
+def test_the_model_check_cannot_take_credit_away_or_survive_failure(
+    client, monkeypatch
+):
+    course = make_course()
+    chunk = add_chunk(course.course_id, "Indian slavery had no legal basis.")
+    suite_id = _written_suite(course.course_id, chunk)
+    calls = configure_test_provider(monkeypatch, None)
+    wrong = client.post(
+        f"/courses/{course.course_id}/practice/{suite_id}/runs",
+        json={"run_id": str(uuid4()), "answers": ["It was abolished by Congress."]},
+    ).json()
+    assert wrong["results"] == [False], "a failed check leaves the matcher's grade"
+    verbatim = client.post(
+        f"/courses/{course.course_id}/practice/{suite_id}/runs",
+        json={
+            "run_id": str(uuid4()),
+            "answers": ["Indian slavery had no legal basis at all."],
+        },
+    ).json()
+    assert verbatim["results"] == [True]
+    assert len(calls) == 1, "a fully credited answer is not sent to the model"

@@ -127,6 +127,9 @@ class PracticeRun(BaseModel):
     correct_answers: list[int | None]
     # Required points a short answer did not cover. Empty for other questions.
     missed_points: list[list[str]] = Field(default_factory=list)
+    # Points the model credited after the word matcher missed them, by
+    # question index (student_model/short_answer_judge.py).
+    judged_points: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class SuiteState(BaseModel):

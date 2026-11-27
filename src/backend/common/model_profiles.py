@@ -17,6 +17,7 @@ from __future__ import annotations
 import tomllib
 from functools import cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 from src.backend.common.config import PROJECT_ROOT
@@ -32,6 +33,10 @@ class ModelProfile(BaseModel):
     output_token_limit: int | None = Field(default=None, ge=1)
     context_window_tokens: int | None = Field(default=None, ge=1)
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    # Native Anthropic path only: the pinned `output_config.effort`, and
+    # whether a policy refusal re-runs on the server-side fallback model.
+    effort: Literal["low", "medium", "high", "xhigh", "max"] | None = None
+    refusal_fallback: bool = False
     notes: str = ""
 
     @model_validator(mode="after")

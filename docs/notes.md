@@ -4169,3 +4169,118 @@ taking the lock, so a viewer request could still race ingestion. Every
 pdfium call on that route, including open and close, stays inside the lock.
 A workbook that stores cell text inline has no `xl/sharedStrings.xml`; that
 absence is not a missing-data warning.
+
+## 2026-11-27 — Native Anthropic path, Ollama Cloud, and a real-course run
+
+Stacks is a harness: the student picks provider and model, so presets ship
+no default model and Stacks adds no per-model choices of its own. Anthropic
+connections are called through the official SDK (`provider._call_anthropic`)
+instead of the OpenAI-compatible shim: streamed, no `temperature` (current
+Claude models reject it), billed input = uncached + cache-write + cache-read,
+and effort / refusal fallback only if a model profile asks for them. The SDK
+client is always given the connection's `base_url`, because the SDK otherwise
+honours an ambient `ANTHROPIC_BASE_URL`. The Anthropic preset's Settings
+"Test" never worked: its Models API wants `x-api-key`, not a Bearer token, so
+the model list is read through the SDK. Ollama Cloud is a preset
+(`https://ollama.com/v1`). Presets may name `key_env` development variables,
+read only when the keychain has no key (a dev container has no keychain).
+
+A run with a real course (syllabus, slides, four readings, one with no text
+layer) on claude-haiku-5-5 and inkling-2-small, and earlier on
+mimo-v2.6-flash, found these, now fixed with tests:
+- OCR inherited a model profile's reasoning switch: MiMo spent ~15x the
+  tokens thinking before transcribing (1037 vs 71 on one slide).
+  `[tasks.ocr] reasoning = false`; Ollama Cloud gets `reasoning_effort: none`.
+- A 4-page OCR batch outgrew a profile-less model's 2048-token output default
+  and all four pages were dropped. A truncated batch now falls back to one
+  page per call, like a transient failure.
+- "The Resendez reading" found nothing in it: book pages rarely print the
+  author's name. A distinctive filename word in the question now filters to
+  that source (accent-insensitive, generic words excluded, fails open).
+- A week filter dropped every source whose filename names no week, so
+  "Weeks 1-3" meant the Week1 slide deck only. Only sources dated to other
+  weeks are excluded now.
+- Grouped markers ("[11, 12]", inkling's style) got no hover title in chat.
+Open: a request naming only a week range ("study guide for Weeks 1-3") is not
+treated as an overview, so generic words rank the syllabus and slides above
+the readings.
+
+### 2026-11-27 — Student test pass on quizzes (Haiku 5.5, inkling-2-small)
+
+Four simulated students (≈120 messages, ~25 graded practice tests) plus an
+audit of 170 generated questions against their cited passages. Fixed, with
+tests:
+- A profile-less cloud model was capped at the 2048-token answer default for
+  quizzes and study guides: Haiku failed any quiz over ~5 questions ("hit its
+  output limit"). The retry now goes straight to the task's own need (16384
+  for artifact_generation) instead of doubling to 8192. Local models still
+  double.
+- Ollama Cloud accepts `response_format` but enforces nothing: inkling
+  returned YAML or JSON with its own field names ("question", "choices"), so
+  every quiz failed as "couldn't create a trustworthy quiz". The exact JSON
+  shape is now in the workspace prompt and common alias names are mapped.
+- Students' phrasings were not recognised as quiz requests ("5 question quiz
+  on Holloway", "garcia sanchez quiz, 5 q", "10 q's on exam 1", "make that a
+  real quiz"); they got a chat-text quiz with the key printed below it.
+- "Quiz me on resendez" after Gutierrez questions searched both readings and
+  quizzed Gutierrez. A message naming a reading is now self-contained, like a
+  week or table address.
+- "Quiz/study guide for exam 1" searched the words "exam 1" and quizzed the
+  syllabus's exam rules. An exam-only subject is answered from the course
+  spread (overview).
+- The tutor re-read only 600 characters of its previous reply, so a quiz it
+  wrote in chat was "cut off after question 1" when the student answered it.
+  The latest reply is re-read up to 6000 characters.
+- inkling cited the wrong reading for correct keys. A key whose words are not
+  in its cited passage but clearly are in another now cites that passage.
+- Same point asked twice in different words is treated as a duplicate.
+- Practice allocation silently dropped already-seen questions under a reply
+  promising "a 10-question quiz"; the reply now says how many were left out.
+- Short-answer grading: "never" was not a negation, so "it was never
+  abolished" covered "it was abolished"; a point starting "so ..." was never
+  covered even by a verbatim answer.
+- workspace_quiz prompt (v46): exam-style points (arguments, causes,
+  contrasts, terms) over dates; plausible distractors of similar length; an
+  explanation that teaches. Key-is-longest-option fell from 74% to 36% on
+  Haiku (inkling 79% → 67%); "According to…" stems from 22% to ~1%.
+Open: quizzes are multiple-choice only (students asked for short answer and
+essay prompts; the exam has a short-essay part); short-answer grading is
+lexical and fails correct paraphrases; flashcards come back as a quiz; the
+tutor treats its own fenced conversation as unusable evidence, so "explain
+castelike" got "the material doesn't use that word"; no date in the prompt, so
+"what's due this week" can't be answered.
+
+### 2026-11-27 — What students said they needed for an A
+
+Built after the student test pass (docs/student-test-report.md):
+- Short-answer, essay-style and flashcard questions in generated quizzes
+  (`format: short_answer`, `expected`, `points`; each point must be stated in
+  its cited passage). Written answers are graded by the word matcher first;
+  points it misses go to the interactive model (`answer_grading`,
+  student_model/short_answer_judge.py), which can only add credit. The
+  verdict is stored with the run (`practice_runs.judged_points`, migration
+  024), so a grade never changes on reload; a failed check keeps the
+  matcher's grade.
+- "Quiz me on what I got wrong": the student's latest missed practice (not
+  since answered correctly) is given to the tutor and steers the search;
+  practice allocation does not ration weak topics for such a request.
+- Readings named together ("compare Resendez with Gutierrez") each keep
+  pinned passages through the reranker. A course spread of a few readings
+  interleaves them, leads with each reading's middle passage (not its title
+  page) and pins one of each: an exam-1 study guide had dropped Holloway.
+- The syllabus outline is parsed (tutor/syllabus.py). A request to study for
+  an exam or weeks gets a computed list of assigned readings that are not
+  uploaded (15 for Exam 1 here); an exam-wide request is built from that
+  exam's readings; "this week / due / next class" gets today's date and the
+  current and next week from the schedule as trusted instruction.
+- Prompts v48: hints name the reading or idea, never a passage number;
+  quiz explanations name the reading ("source 9" is rewritten); the tutor
+  must check every passage before saying a word is absent, and may give a
+  labelled one-sentence general definition of a term the material uses
+  without defining.
+- A cut-off plain answer from a profile-less cloud model retries once at
+  8192 tokens (`widen_to_output_tokens`).
+Known limits: written answers are all-or-nothing per question (missed points
+are listed); with misses across several readings the review search leans to
+one; inkling still makes the correct option the longest one more often than
+chance.

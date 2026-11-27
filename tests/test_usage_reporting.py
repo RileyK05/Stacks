@@ -97,12 +97,13 @@ def test_truncated_usage_is_saved_even_when_no_answer_can_be_delivered(
         },
     )
     with pytest.raises(provider.ModelOutputTruncatedError):
+        # The cut-off answer retries once with more room; both are recorded.
         provider.generate("tutor_answer", "task")
     view = client.get("/settings/usage").json()
     assert view["recent"][0]["usage_reported"] is False
-    assert view["cloud_calls_without_usage"] == 1
-    assert view["cloud_tokens_this_month"] == 5
-    assert view["totals"][0]["calls"] == 1
+    assert view["cloud_calls_without_usage"] == 2
+    assert view["cloud_tokens_this_month"] == 10
+    assert view["totals"][0]["calls"] == 2
 
 
 def test_monthly_reporting_excludes_local_calls_and_old_unknown_rows(
@@ -184,7 +185,7 @@ def test_upgrade_preserves_historical_counts_with_unknown_reporting_status(
         conn.commit()
     finally:
         conn.close()
-    assert migrations.migrate(path) == ["022", "023"]
+    assert migrations.migrate(path) == ["022", "023", "024"]
     monkeypatch.setenv("DATABASE_PATH", str(path))
     entries = usage_repo.ledger_page()
     assert {(e.input_tokens, e.output_tokens) for e in entries} == {(0, 0), (10, 5)}

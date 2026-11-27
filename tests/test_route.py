@@ -179,6 +179,21 @@ def test_a_follow_up_naming_an_address_drops_previous_questions() -> None:
     assert "and the encomienda" in unaddressed
 
 
+def test_a_follow_up_naming_a_reading_drops_previous_questions() -> None:
+    """After questions about Gutierrez, "quiz me on resendez" must search
+    Resendez alone; the earlier questions pulled in Gutierrez passages and the
+    quiz came back about the wrong reading."""
+    reading = uuid4()
+    names = {reading: frozenset({"resendez"}), uuid4(): frozenset({"gutierrez"})}
+    context = ChatContext(
+        summary="", recent=(), previous_questions=("whats the gutierrez one about",)
+    )
+    query = retrieval_query("quiz me on resendez", context, names)
+    assert "gutierrez" not in query.casefold()
+    assert "resendez" in query.casefold()
+    assert "gutierrez" in retrieval_query("quiz me on that", context, names)
+
+
 # --- rerank pins ----------------------------------------------------------
 
 
@@ -215,3 +230,163 @@ def test_a_pinned_candidate_survives_the_reranker(
     policy = load_rerank_policy().model_copy(update={"generation_k": 1})
     chosen = select_for_generation("reproduce table 2.2", (pin, *others), policy)
     assert chosen[0].chunk_id == pin.chunk_id
+
+
+# --- source-name routing ------------------------------------------------------
+
+
+def test_filename_names_split_authors_and_drop_generic_words() -> None:
+    assert route.filename_names("GarciaSanchez_2021_Ch2.pdf") == {
+        "garcia",
+        "sanchez",
+        "garciasanchez",
+    }
+    assert route.filename_names("Holloway_2021_Ch1-3_Searchable.pdf") == {"holloway"}
+    assert route.filename_names("Week1_Aug26.pdf") == frozenset()
+
+
+def test_named_sources_match_whole_words_without_accents() -> None:
+    a, b = uuid4(), uuid4()
+    names = {a: frozenset({"resendez"}), b: frozenset({"holloway"})}
+    assert route.named_sources("What does Reséndez argue?", names) == {a}
+    assert route.named_sources("Compare Resendez and Holloway", names) == {a, b}
+    assert route.named_sources("What is a resendezvous?", names) == set()
+
+
+def _named_course() -> tuple[object, UUID, UUID]:
+    course = make_course("Named Source Course")
+    syllabus = insert_source(course.course_id, filename="Syllabus.pdf")
+    reading = insert_source(course.course_id, filename="Resendez_2016.pdf")
+    insert_chunk(
+        syllabus,
+        "Week two readings: Resendez, The Other Slavery, pages one to twelve, "
+        "assigned before the Monday lecture",
+        label="page 1",
+    )
+    insert_chunk(
+        reading,
+        "The very word slavery brings to mind African bodies in the hold of a "
+        "ship, yet Indians were enslaved across the West for centuries",
+        label="page 1",
+    )
+    return course, syllabus, reading
+
+
+def test_a_source_named_by_its_author_is_retrieved_even_without_the_name() -> None:
+    """Book pages rarely print the author's name: before name routing, the
+    question only matched the syllabus line that lists the reading."""
+    course, _syllabus, reading = _named_course()
+    with connection() as conn:
+        result = funnel.retrieve(
+            conn,
+            course.course_id,
+            "What is the main argument of the Resendez reading?",
+            load_retrieval_policy(),
+        )
+    assert result.route["name_filter"] == "matched"
+    assert {candidate.source_id for candidate in result.candidates} == {reading}
+
+
+def test_no_named_source_leaves_the_search_open() -> None:
+    course, syllabus, reading = _named_course()
+    with connection() as conn:
+        result = funnel.retrieve(
+            conn,
+            course.course_id,
+            "Which readings cover slavery?",
+            load_retrieval_policy(),
+        )
+    assert result.route["name_filter"] == "off"
+    assert {c.source_id for c in result.candidates} & {syllabus, reading}
+
+
+def test_a_week_filter_keeps_sources_that_name_no_week() -> None:
+    """Readings are rarely named by week: "Weeks 1-3" must not narrow the
+    search to the one slide deck whose filename says "Week1"."""
+    course, week1, week3 = _week_course()
+    reading = insert_source(course.course_id, filename="Gutierrez_1995.pdf")
+    insert_chunk(
+        reading,
+        "quiz material on conquest and the treaty for the readings of the "
+        "course, assigned before the first exam",
+        label="page 1",
+    )
+    with connection() as conn:
+        result = funnel.retrieve(
+            conn, course.course_id, "Make a quiz on Week 3", load_retrieval_policy()
+        )
+    assert result.route["week_filter"] == "matched"
+    found = {candidate.source_id for candidate in result.candidates}
+    assert reading in found
+    assert week1 not in found
+
+
+def test_comparing_two_named_readings_keeps_both() -> None:
+    """ "Compare Resendez with Gutierrez" was answered from Gutierrez alone
+    ("the text does not contain any information about Resendez")."""
+    course = make_course("Compare Course")
+    resendez = insert_source(course.course_id, filename="Resendez_2016.pdf")
+    gutierrez = insert_source(course.course_id, filename="Gutierrez_1995.pdf")
+    insert_chunk(
+        resendez,
+        "Indian captives were taken across the Southwest for centuries by "
+        "colonists and later by Native slavers themselves",
+        label="page 1",
+    )
+    for index in range(12):
+        insert_chunk(
+            gutierrez,
+            f"passive victims of conquest is a view the chapter rejects {index}, "
+            "describing how Mexican Americans adapted and resisted",
+            chunk_index=index,
+            label=f"page {index + 1}",
+        )
+    with connection() as conn:
+        result = funnel.retrieve(
+            conn,
+            course.course_id,
+            "Compare Resendez with Gutierrez on passive victims",
+            load_retrieval_policy(),
+        )
+    found = {candidate.source_id for candidate in result.candidates}
+    assert found == {resendez, gutierrez}
+    chosen = select_for_generation(
+        "Compare Resendez with Gutierrez on passive victims",
+        result.candidates,
+        load_rerank_policy().model_copy(update={"generation_k": 2}),
+    )
+    assert {c.source_id for c in chosen} == {resendez, gutierrez}
+
+
+def test_a_course_spread_of_a_few_readings_keeps_each_through_the_reranker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A study guide for exam 1 left Holloway out: the reranker preferred the
+    other readings' passages."""
+    course = make_course("Spread Course")
+    sources = [
+        insert_source(course.course_id, filename=f"Reading{n}.pdf") for n in range(3)
+    ]
+    for source in sources:
+        for index in range(4):
+            insert_chunk(
+                source,
+                f"passage {index} of this reading about conquest and identity "
+                "in the borderlands",
+                chunk_index=index,
+                label=f"page {index + 1}",
+            )
+    with connection() as conn:
+        spread = funnel.overview(conn, course.course_id, 12)
+    assert {c.source_id for c in spread.candidates[:3]} == set(sources), (
+        "interleaved: a token budget that keeps the first passages keeps every reading"
+    )
+
+    def scores(model: str, question: str, texts: list[str]) -> list[float]:
+        return [10.0 if i < 3 else 0.0 for i in range(len(texts))]
+
+    monkeypatch.setattr(provider, "rerank_scores", scores)
+    chosen = select_for_generation(
+        "study guide", spread.candidates, load_rerank_policy()
+    )
+    assert {c.source_id for c in chosen} == set(sources)

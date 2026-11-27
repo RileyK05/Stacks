@@ -40,6 +40,7 @@ from src.backend.student_model import inspection, learning
 from src.backend.tutor.compose import (
     AnswerMode,
     Intent,
+    asks_for_review,
     classify_intent,
     compose_answer,
     compose_chat,
@@ -236,10 +237,19 @@ def answer_question(
     generation_k = load_rerank_policy().generation_k
     result = None
     if overview:
+        # A study guide or practice test for a whole exam needs more than one
+        # passage per reading: with six slots over four readings, Holloway was
+        # represented only by its front matter. The material budget still caps
+        # what reaches the prompt.
+        spread = (
+            generation_k
+            if classify_intent(question) in (Intent.ANSWER, Intent.GRADED)
+            else generation_k * 3
+        )
         result = funnel.overview(
             conn,
             course_id,
-            generation_k,
+            spread,
             embedding_model=embedding_model,
             source_ids=source_ids,
         )
@@ -364,6 +374,7 @@ def answer_question(
                     for q in item.questions
                 ],
                 source_ids=[UUID(cid) for cid in current_sources],
+                review=asks_for_review(question),
             )
             if not selected:
                 answer.withheld = (
@@ -375,6 +386,16 @@ def answer_question(
                     "Try another topic or a broader source selection."
                 )
                 continue
+            if len(selected) < len(item.questions):
+                # The reply was written for the full quiz ("Here is a
+                # 10-question quiz"); say why fewer are shown.
+                left_out = len(item.questions) - len(selected)
+                answer.body = (
+                    f"{answer.body}\n\n(Showing {len(selected)} of "
+                    f"{len(item.questions)} questions: {left_out} repeated "
+                    "practice you have already done or did not fit your "
+                    "practice plan.)"
+                ).strip()
             item = item.model_copy(
                 update={
                     "questions": [

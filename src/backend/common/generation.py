@@ -36,6 +36,9 @@ class CallLimits:
     available_output_tokens: int | None
     max_recoveries: int
     images: bool = False
+    # No profile: the ceiling is the task's need, not a known model limit, so
+    # one retry goes straight there instead of doubling through wasted calls.
+    jump_to_ceiling: bool = False
 
     def wider(self) -> CallLimits | None:
         ceiling = self.output_ceiling
@@ -44,7 +47,9 @@ class CallLimits:
                 # Image token costs are not inferred from PNG byte counts.
                 return None
             ceiling = min(ceiling, self.available_output_tokens)
-        allowance = min(self.output_tokens * 2, ceiling)
+        allowance = (
+            ceiling if self.jump_to_ceiling else min(self.output_tokens * 2, ceiling)
+        )
         return (
             replace(self, output_tokens=allowance)
             if allowance > self.output_tokens
@@ -71,8 +76,13 @@ def plan_call(
         else defaults.max_output_tokens
     )
     ceiling = profile.output_token_limit if profile else None
-    ceiling = ceiling or preferred
-    thinking = profile.reasoning if profile else defaults.enable_thinking
+    # An unknown model starts at the short default, but a reply it cut off
+    # may widen up to what the task asks for: a quiz or study guide needs
+    # more than 2048 tokens and otherwise fails outright.
+    ceiling = ceiling or max(
+        preferred, demand.desired_output_tokens, demand.widen_to_output_tokens or 0
+    )
+    thinking = task_thinking(task, endpoint.model, policy)
     if thinking:
         # A reasoning model still needs room to think, but it must not claim
         # its full maximum for every task: a 1024-token summary reserving
@@ -117,7 +127,15 @@ def plan_call(
             )
         output = min(output, available)
     return CallLimits(
-        output, ceiling, estimate, context, available, demand.max_recoveries, images
+        output,
+        ceiling,
+        estimate,
+        context,
+        available,
+        demand.max_recoveries,
+        images,
+        jump_to_ceiling=endpoint.name != "local"
+        and (profile is None or profile.output_token_limit is None),
     )
 
 
@@ -231,6 +249,20 @@ def operation(
         yield active
     finally:
         _OPERATION.reset(token)
+
+
+def task_thinking(
+    task: str, model: str, policy: GenerationPolicy | None = None
+) -> bool:
+    """Whether this call lets the model reason: the task's override in
+    configs/generation.toml, else the model's profile, else the default."""
+    demand = (policy or load_generation_policy()).tasks.get(task)
+    if demand is not None and demand.reasoning is not None:
+        return demand.reasoning
+    profile = model_profiles.profile_for(model)
+    if profile is not None:
+        return profile.reasoning
+    return providers.load_models_config().generation.enable_thinking
 
 
 def output_allowance() -> int | None:
