@@ -85,6 +85,8 @@ _INTENT_RULES: tuple[tuple[Intent, re.Pattern[str]], ...] = (
         re.compile(
             r"\bquiz(?:zes|zed)?\b|\bmultiple[- ]choice\b|\btest me\b"
             r"|\bmcqs?\b|\b\d+\s*(?:mc\s*)?(?:q'?s|qs)\b"
+            r"|\b(?:short[- ]answer|essay|open[- ]ended|written|free[- ]response)"
+            r" (?:questions?|prompts?|qs)\b"
             r"|\bpractice (?:questions?|problems?|tests?|suites?)\b|\bflash ?cards?\b",
             re.IGNORECASE,
         ),
@@ -197,7 +199,9 @@ def is_small_talk(question: str) -> bool:
 # quiz?", "what's on quiz 2?").
 _QUIZ_SHAPE = re.compile(
     r"\b\d+\s*[- ]?(?:mc\s*)?(?:questions?|q'?s|qs|q|mcqs?)\b|\bquiz\b"
-    r"|\bpractice (?:tests?|exams?|questions?|quiz(?:zes)?)\b|\bflash ?cards?\b",
+    r"|\bpractice (?:tests?|exams?|questions?|quiz(?:zes)?)\b|\bflash ?cards?\b"
+    r"|\b(?:short[- ]answer|essay|open[- ]ended|written|free[- ]response)"
+    r" (?:questions?|prompts?|qs)\b",
     re.IGNORECASE,
 )
 _ASKS_ABOUT = re.compile(
@@ -206,6 +210,22 @@ _ASKS_ABOUT = re.compile(
     r"|\?\s*$",
     re.IGNORECASE,
 )
+
+
+_REVIEW = re.compile(
+    r"\b(?:what|stuff|things|ones?|questions?|parts?)\s+(?:that\s+)?i\s+"
+    r"(?:got|get|had)\s+wrong\b"
+    r"|\b(?:questions?|ones?|stuff)\s+i\s+(?:missed|failed|messed up)\b"
+    r"|\bmy\s+(?:mistakes|wrong answers|weak (?:spots|areas|points)|weak topics)\b"
+    r"|\bwhere i(?:'m| am) weak\b|\bwhat did i (?:get|got|miss)(?: wrong)?\b",
+    re.IGNORECASE,
+)
+
+
+def asks_for_review(question: str) -> bool:
+    """ "Quiz me on what I got wrong", "go over my mistakes": the subject is
+    the student's own missed practice, which the app records."""
+    return _REVIEW.search(question) is not None
 
 
 def classify_intent(question: str) -> Intent:
@@ -761,6 +781,10 @@ def workspace_schema(
                     "maxItems": quiz_count or 20,
                     "items": _object(
                         {
+                            "format": {
+                                "type": "string",
+                                "enum": ["multiple_choice", "short_answer"],
+                            },
                             "prompt": _string(400),
                             "topic": _string(160),
                             "capability": {
@@ -780,10 +804,21 @@ def workspace_schema(
                                     "minLength": 2,
                                     "maxLength": 200,
                                 },
-                                "minItems": 2,
+                                "minItems": 0,
                                 "maxItems": 4,
                             },
                             "answer": {"type": "integer", "minimum": 0, "maximum": 3},
+                            "expected": {"type": "string", "maxLength": 600},
+                            "points": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "minLength": 3,
+                                    "maxLength": 200,
+                                },
+                                "minItems": 0,
+                                "maxItems": 4,
+                            },
                             "explanation": _string(400),
                             "sources": sources,
                         }
@@ -1088,7 +1123,9 @@ def _requested_count(question: str, units: str) -> int | None:
 
 
 def requested_quiz_count(question: str) -> int | None:
-    return _requested_count(question, r"questions?|problems?|q'?s|q|mc\s*q'?s|mcqs?")
+    return _requested_count(
+        question, r"questions?|problems?|q'?s|q|mc\s*q'?s|mcqs?|flash ?cards?|cards?"
+    )
 
 
 def requested_slide_count(question: str) -> int | None:
@@ -1098,17 +1135,23 @@ def requested_slide_count(question: str) -> int | None:
 _CONTENT_WORD = re.compile(r"[a-z0-9']{4,}")
 
 
-def _key_words(question: dict[str, Any]) -> frozenset[str]:
+def _answer_text(question: dict[str, Any]) -> str:
+    """The correct option, or a written question's model answer."""
+    if question.get("format") == "short_answer":
+        return str(question.get("expected") or "")
     options = question.get("options")
     answer = question.get("answer")
-    key = (
-        options[answer]
+    return (
+        str(options[answer])
         if isinstance(options, list)
         and type(answer) is int
         and 0 <= answer < len(options)
         else ""
     )
-    return frozenset(_CONTENT_WORD.findall(f"{key}".casefold()))
+
+
+def _key_words(question: dict[str, Any]) -> frozenset[str]:
+    return frozenset(_CONTENT_WORD.findall(_answer_text(question).casefold()))
 
 
 def same_point(first: dict[str, Any], second: dict[str, Any]) -> bool:
@@ -1120,6 +1163,38 @@ def same_point(first: dict[str, Any], second: dict[str, Any]) -> bool:
     if len(a) < 3 or len(b) < 3:
         return False
     return len(a & b) / min(len(a), len(b)) >= 0.7
+
+
+def _usable_short_answer(
+    question: dict[str, Any], candidates: tuple[Candidate, ...]
+) -> bool:
+    """A written question is usable when its model answer and each required
+    point are stated in the passages it cites: the points are what the
+    student is graded on, so an unsupported point would mark a right answer
+    wrong."""
+    expected = question.get("expected")
+    points = question.get("points")
+    cited = question.get("sources")
+    if not isinstance(expected, str) or len(expected.strip()) < 12:
+        return False
+    if (
+        not isinstance(points, list)
+        or not 1 <= len(points) <= 4
+        or any(not isinstance(p, str) or not p.strip() for p in points)
+    ):
+        return False
+    if question.get("options"):
+        return False
+    if not isinstance(cited, list) or not cited:
+        return False
+    if any(type(n) is not int or not 1 <= n <= len(candidates) for n in cited):
+        return False
+    evidence = frozenset().union(*(_claim_words(candidates[n - 1].text) for n in cited))
+    for point in points:
+        words = _claim_words(point)
+        if words and len(words & evidence) / len(words) < 0.5:
+            return False
+    return True
 
 
 def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> bool:
@@ -1153,6 +1228,10 @@ def _usable_quiz(item: dict[str, Any], candidates: tuple[Candidate, ...]) -> boo
             if isinstance(other, dict)
         ):
             return False
+        if question.get("format") == "short_answer":
+            if not _usable_short_answer(question, candidates):
+                return False
+            continue
         if not isinstance(options, list) or len(options) < 2:
             return False
         if type(answer) is not int or not 0 <= answer < len(options):
@@ -1329,7 +1408,7 @@ def _shuffle_quiz_options(item: dict[str, Any]) -> dict[str, Any]:
             continue
         options = question.get("options")
         answer = question.get("answer")
-        if not isinstance(options, list) or type(answer) is not int:
+        if not isinstance(options, list) or not options or type(answer) is not int:
             shuffled.append(question)
             continue
         rewritten = [_self_contained_option(option, options) for option in options]
@@ -1356,7 +1435,32 @@ def _shuffle_quiz_options(item: dict[str, Any]) -> dict[str, Any]:
         if "explanation" in question:
             moved["explanation"] = _relettered(question.get("explanation"), order)
         shuffled.append(moved)
-    return {**item, "questions": shuffled}
+    return {
+        **item,
+        "questions": [
+            {**q, "explanation": plain_references(q["explanation"])}
+            if isinstance(q, dict) and isinstance(q.get("explanation"), str)
+            else q
+            for q in shuffled
+        ],
+    }
+
+
+_NUMBERED_REFERENCE = re.compile(
+    r"\b(?:the\s+)?(?:cited\s+)?(source|passage|material|excerpt)\s*"
+    r"(?:number\s*|no\.\s*|#\s*)?\[?\d+\]?",
+    re.IGNORECASE,
+)
+
+
+def plain_references(text: str) -> str:
+    """ "Source 9 states this figure" names a number the student never sees on
+    the quiz; say "the reading" instead."""
+
+    def replace(match: re.Match[str]) -> str:
+        return "The reading" if match.group(0)[:1].isupper() else "the reading"
+
+    return _NUMBERED_REFERENCE.sub(replace, text)
 
 
 def _workspace_response(
@@ -1543,7 +1647,7 @@ def compose_answer(
             for valid in _usable_quiz_questions(candidate_item, candidates):
                 key = (
                     tuple(valid["sources"]),
-                    str(valid["options"][valid["answer"]]).strip(" .,:;!?").casefold(),
+                    _answer_text(valid).strip(" .,:;!?").casefold(),
                 )
                 if key in seen or any(same_point(valid, a) for a in accepted):
                     continue

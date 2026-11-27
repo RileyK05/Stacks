@@ -21,13 +21,17 @@ def test_generation_policy_loads_all_known_tasks_and_operation_bounds() -> None:
     assert policy.max_requested_tokens == 262144
     assert set(policy.tasks) == KNOWN_GENERATION_TASKS
     assert policy.tasks["tutor_answer"] == GenerationTask(
-        desired_output_tokens=2048, max_recoveries=2, reasoning_multiplier=6
+        desired_output_tokens=2048,
+        max_recoveries=2,
+        reasoning_multiplier=6,
+        widen_to_output_tokens=8192,
     )
     assert policy.tasks["artifact_generation"].desired_output_tokens == 16384
     assert policy.tasks["ocr"].max_recoveries == 1
     assert policy.tasks["conversation_summary"].max_recoveries == 0
     assert policy.tasks["learning_research"].desired_output_tokens == 2048
     assert policy.tasks["answer_eval_judge"].desired_output_tokens == 4096
+    assert policy.tasks["answer_grading"].desired_output_tokens == 512
 
 
 @pytest.mark.parametrize(

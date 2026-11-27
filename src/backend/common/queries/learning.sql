@@ -25,6 +25,10 @@ SELECT * FROM practice_runs WHERE course_id = :course_id AND run_id = :run_id;
 INSERT OR IGNORE INTO practice_runs(run_id, suite_id, course_id, answers, helped, requested_help, policy_version)
 VALUES(:run_id, :suite_id, :course_id, :answers, :helped, :requested_help, :policy_version);
 
+-- name: set_run_judged_points
+UPDATE practice_runs SET judged_points = :judged_points
+WHERE course_id = :course_id AND run_id = :run_id;
+
 -- name: update_run_help
 UPDATE practice_runs SET helped = :helped WHERE course_id = :course_id AND run_id = :run_id;
 

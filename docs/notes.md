@@ -4249,3 +4249,38 @@ lexical and fails correct paraphrases; flashcards come back as a quiz; the
 tutor treats its own fenced conversation as unusable evidence, so "explain
 castelike" got "the material doesn't use that word"; no date in the prompt, so
 "what's due this week" can't be answered.
+
+### 2026-11-27 — What students said they needed for an A
+
+Built after the student test pass (docs/student-test-report.md):
+- Short-answer, essay-style and flashcard questions in generated quizzes
+  (`format: short_answer`, `expected`, `points`; each point must be stated in
+  its cited passage). Written answers are graded by the word matcher first;
+  points it misses go to the interactive model (`answer_grading`,
+  student_model/short_answer_judge.py), which can only add credit. The
+  verdict is stored with the run (`practice_runs.judged_points`, migration
+  024), so a grade never changes on reload; a failed check keeps the
+  matcher's grade.
+- "Quiz me on what I got wrong": the student's latest missed practice (not
+  since answered correctly) is given to the tutor and steers the search;
+  practice allocation does not ration weak topics for such a request.
+- Readings named together ("compare Resendez with Gutierrez") each keep
+  pinned passages through the reranker. A course spread of a few readings
+  interleaves them, leads with each reading's middle passage (not its title
+  page) and pins one of each: an exam-1 study guide had dropped Holloway.
+- The syllabus outline is parsed (tutor/syllabus.py). A request to study for
+  an exam or weeks gets a computed list of assigned readings that are not
+  uploaded (15 for Exam 1 here); an exam-wide request is built from that
+  exam's readings; "this week / due / next class" gets today's date and the
+  current and next week from the schedule as trusted instruction.
+- Prompts v48: hints name the reading or idea, never a passage number;
+  quiz explanations name the reading ("source 9" is rewritten); the tutor
+  must check every passage before saying a word is absent, and may give a
+  labelled one-sentence general definition of a term the material uses
+  without defining.
+- A cut-off plain answer from a profile-less cloud model retries once at
+  8192 tokens (`widen_to_output_tokens`).
+Known limits: written answers are all-or-nothing per question (missed points
+are listed); with misses across several readings the review search leans to
+one; inkling still makes the correct option the longest one more often than
+chance.

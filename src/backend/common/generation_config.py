@@ -22,6 +22,10 @@ class GenerationTask(BaseModel):
     # costs the student the whole wait (R4-NEW-q). The multiple must still
     # leave a widening step below the model's ceiling.
     reasoning_multiplier: int = Field(default=4, ge=1, le=16)
+    # How far a cut-off reply from a cloud model with no profile may widen.
+    # None: to desired_output_tokens. A comparison across readings outgrew
+    # the 2048-token answer and had no room to retry.
+    widen_to_output_tokens: int | None = Field(default=None, ge=1)
     # Overrides the model profile's reasoning switch for this task. OCR is
     # transcription: a reasoning model left to think spends 10-15x the
     # tokens of the answer and can run into its output ceiling on a dense

@@ -79,7 +79,9 @@ def plan_call(
     # An unknown model starts at the short default, but a reply it cut off
     # may widen up to what the task asks for: a quiz or study guide needs
     # more than 2048 tokens and otherwise fails outright.
-    ceiling = ceiling or max(preferred, demand.desired_output_tokens)
+    ceiling = ceiling or max(
+        preferred, demand.desired_output_tokens, demand.widen_to_output_tokens or 0
+    )
     thinking = task_thinking(task, endpoint.model, policy)
     if thinking:
         # A reasoning model still needs room to think, but it must not claim

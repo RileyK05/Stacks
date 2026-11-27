@@ -1260,3 +1260,83 @@ def test_a_key_quoted_from_one_reading_cites_that_reading() -> None:
     assert reattribute_sources(item, candidates)["questions"][0]["sources"] == [2]
     right = {"type": "quiz", "questions": [dict(question, sources=[2])]}
     assert reattribute_sources(right, candidates)["questions"][0]["sources"] == [2]
+
+
+def _written(point: str) -> dict[str, object]:
+    return {
+        "format": "short_answer",
+        "prompt": "Why was Indian slavery never formally abolished?",
+        "options": [],
+        "answer": 0,
+        "expected": "Because it had no legal basis, there was nothing to abolish.",
+        "points": [point],
+        "explanation": "The reading says it had no legal basis.",
+        "sources": [1],
+    }
+
+
+def test_a_short_answer_question_is_built_when_the_student_asks_for_one() -> None:
+    """Students asked for "4 SHORT ANSWER questions" and got multiple choice;
+    the exam has a short-essay part."""
+    assert classify_intent("short answer questions on resendez") is Intent.QUIZ
+    assert classify_intent("give me 3 essay questions for exam 1") is Intent.QUIZ
+    candidates = (
+        Candidate(
+            chunk_id=uuid4(),
+            source_id=uuid4(),
+            locator_id=uuid4(),
+            chunk_index=0,
+            text="Indian slavery had no legal basis, so it was never abolished.",
+            layers=frozenset({"keyword"}),
+            rank=1.0,
+        ),
+    )
+    replies = iter(
+        [
+            _quiz_reply([_written("it had no legal basis")]),
+        ]
+    )
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        assert "short_answer" in prompt
+        return next(replies)
+
+    result = compose_answer("short answer questions on resendez", candidates, generate)
+    question = (
+        extract_workspace_items(result.text, material_count=1).items[0].questions[0]
+    )
+    assert question.format == "short_answer" and question.options == []
+    assert question.points == ["it had no legal basis"]
+
+
+def test_a_required_point_the_reading_does_not_state_is_rejected() -> None:
+    from src.backend.tutor.compose import _usable_quiz
+
+    candidates = (
+        Candidate(
+            chunk_id=uuid4(),
+            source_id=uuid4(),
+            locator_id=uuid4(),
+            chunk_index=0,
+            text="Indian slavery had no legal basis, so it was never abolished.",
+            layers=frozenset({"keyword"}),
+            rank=1.0,
+        ),
+    )
+    supported = {"type": "quiz", "questions": [_written("it had no legal basis")]}
+    invented = {
+        "type": "quiz",
+        "questions": [_written("Congress debated abolition in eighteen sixty")],
+    }
+    assert _usable_quiz(supported, candidates)
+    assert not _usable_quiz(invented, candidates)
+
+
+def test_explanations_name_the_reading_not_a_number_students_never_see() -> None:
+    from src.backend.tutor.compose import plain_references
+
+    assert plain_references("Source 9 states this figure.") == (
+        "The reading states this figure."
+    )
+    assert plain_references("as passage [3] says") == "as the reading says"
+    assert plain_references("Sources disagree") == "Sources disagree"

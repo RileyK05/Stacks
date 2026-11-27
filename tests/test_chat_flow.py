@@ -711,3 +711,77 @@ def test_a_request_for_an_exam_covers_the_course_not_the_word_exam(
 
 def test_a_named_subject_is_still_searched() -> None:
     assert not chat.wants_overview("quiz me on resendez for exam 1", None)
+
+
+def test_quiz_me_on_what_i_got_wrong_sees_the_missed_practice(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "I can't see which questions you missed", right after a graded test:
+    the missed practice now reaches the tutor and steers the search."""
+    from src.backend.common.schemas.learning import PracticeQuestion
+    from src.backend.student_model import learning
+
+    course_id = _course(client)
+    chunk = add_chunk(
+        UUID(course_id),
+        "Linearity preserves addition and scaling.",
+        embedding=[0.1, 0.2],
+        embedding_model=load_embedding_policy().model,
+    )
+    with connection() as conn:
+        suite_id = learning.create_suite(
+            conn,
+            UUID(course_id),
+            "Check",
+            [
+                PracticeQuestion(
+                    prompt="Which property defines a linear map?",
+                    options=["Preserves addition and scaling", "Preserves lengths"],
+                    answer=0,
+                    sources=[1],
+                    topic="Linearity",
+                )
+            ],
+            (chunk,),
+            {"by": "test", "batch": str(uuid4())},
+            None,
+        )
+        conn.commit()
+    client.post(
+        f"/courses/{course_id}/practice/{suite_id}/runs",
+        json={"run_id": str(uuid4()), "answers": [1]},
+    )
+    calls = configure_test_provider(monkeypatch, ANSWER)
+    monkeypatch.setattr(tutor_answer_module(), "embed_search", lambda text: None)
+    reply = _send(client, course_id, _chat(client, course_id), "what did i get wrong")
+    assert reply.status_code == 200, reply.text
+    prompt = str(calls[-1]["prompt"])
+    assert "Which property defines a linear map?" in prompt
+    assert "Student answered: Preserves lengths" in prompt
+    assert "practise what they got wrong" in prompt
+
+
+def tutor_answer_module():
+    from src.backend.tutor import answer
+
+    return answer
+
+
+def test_studying_for_an_exam_lists_assigned_readings_not_uploaded(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.factories import insert_chunk, insert_source
+    from tests.test_syllabus import OUTLINE
+
+    course_id = _course(client, "Indian slavery had no legal basis.")
+    source = insert_source(UUID(course_id), filename="Syllabus_F26.pdf")
+    insert_chunk(source, OUTLINE, label="page 6")
+    configure_test_provider(monkeypatch, ANSWER)
+    monkeypatch.setattr(tutor_answer_module(), "embed_search", lambda text: None)
+    reply = _send(
+        client, course_id, _chat(client, course_id), "what should i study for exam 1"
+    ).json()["reply"]["text"]
+    assert "**Not in your library:**" in reply
+    assert "Gonzalez (2022) Harvest of Empire" in reply
+    plain = _send(client, course_id, _chat(client, course_id), "when is exam 1?")
+    assert "Not in your library" not in plain.json()["reply"]["text"]

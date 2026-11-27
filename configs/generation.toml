@@ -17,6 +17,9 @@ min_output_tokens = 128
 desired_output_tokens = 2048
 max_recoveries = 2
 reasoning_multiplier = 6
+# A cut-off answer from a profile-less cloud model retries once with room for
+# a long comparison across readings.
+widen_to_output_tokens = 8192
 
 [tasks.artifact_generation]
 desired_output_tokens = 16384
@@ -37,6 +40,10 @@ max_recoveries = 0
 [tasks.learning_research]
 desired_output_tokens = 2048
 max_recoveries = 0
+
+[tasks.answer_grading]
+desired_output_tokens = 512
+max_recoveries = 1
 
 [tasks.answer_eval_judge]
 desired_output_tokens = 4096

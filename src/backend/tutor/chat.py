@@ -66,6 +66,23 @@ _EXAM_ONLY = re.compile(
 )
 
 
+def review_material(missed: Sequence[dict[str, str]]) -> str:
+    """The missed practice, as context for the tutor (fenced as data: the
+    student's answers are their own text)."""
+    if not missed:
+        return "Practice the student got wrong: none recorded yet."
+    lines = [
+        f"- Question: {item['question']} | Student answered: "
+        f"{item['student_answer'] or '(blank)'} | Correct: {item['correct_answer']}"
+        for item in missed
+    ]
+    return "Practice the student got wrong (newest first):\n" + "\n".join(lines)
+
+
+def review_search(missed: Sequence[dict[str, str]]) -> str:
+    return "\n".join(f"{m['question']} {m['correct_answer']}" for m in missed)
+
+
 @dataclass(frozen=True)
 class ChatContext:
     summary: str
@@ -138,7 +155,9 @@ def _turn_text(message: Message, limit: int = EXCERPT_CHARS) -> str:
                 options = question.get("options") or []
                 answer = question.get("answer")
                 key = (
-                    options[answer]
+                    question.get("expected") or "?"
+                    if question.get("format") == "short_answer"
+                    else options[answer]
                     if isinstance(answer, int) and 0 <= answer < len(options)
                     else "?"
                 )

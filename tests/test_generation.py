@@ -169,11 +169,12 @@ def test_empty_is_retried_only_once_and_background_summary_does_not_retry(
 ) -> None:
     reasoning = _payload(None)
     reasoning["choices"][0]["message"]["reasoning_content"] = "private thoughts"
-    calls = _http(monkeypatch, [(200, reasoning)])
+    calls = _http(monkeypatch, [(200, reasoning)] * 2)
     with pytest.raises(provider.ModelReasoningOnlyError):
-        # Known reasoning with an unknown output ceiling cannot be widened.
+        # An answer that ran out while reasoning retries once with the
+        # task's widening room, never more.
         provider.generate("tutor_answer", "task")
-    assert len(calls) == 1
+    assert [c["max_tokens"] for c in calls] == [2048, 8192]
     calls = _http(monkeypatch, [(200, _payload("")), (200, _payload(""))])
     with pytest.raises(provider.EmptyModelError):
         provider.generate("tutor_answer", "task")
@@ -393,3 +394,12 @@ def test_successful_rate_limit_fallback_remains_visible_on_subsequent_repairs(
         repair = provider.generate("artifact_generation", "repair")
     assert first.fell_back_to_local and repair.fell_back_to_local
     assert seen == ["custom", "local", "local"] and operation.calls == 3
+
+
+def test_a_cut_off_answer_has_room_to_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A comparison across readings outgrew the 2048-token answer with no
+    room to widen: "hit its output limit before finishing"."""
+    monkeypatch.setattr(model_profiles, "profile_for", lambda *_: None)
+    limits = generation.plan_call("tutor_answer", _endpoint(), "q")
+    assert limits.output_tokens == 2048
+    assert limits.wider() is not None and limits.wider().output_tokens == 8192

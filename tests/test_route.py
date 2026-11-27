@@ -319,3 +319,74 @@ def test_a_week_filter_keeps_sources_that_name_no_week() -> None:
     found = {candidate.source_id for candidate in result.candidates}
     assert reading in found
     assert week1 not in found
+
+
+def test_comparing_two_named_readings_keeps_both() -> None:
+    """ "Compare Resendez with Gutierrez" was answered from Gutierrez alone
+    ("the text does not contain any information about Resendez")."""
+    course = make_course("Compare Course")
+    resendez = insert_source(course.course_id, filename="Resendez_2016.pdf")
+    gutierrez = insert_source(course.course_id, filename="Gutierrez_1995.pdf")
+    insert_chunk(
+        resendez,
+        "Indian captives were taken across the Southwest for centuries by "
+        "colonists and later by Native slavers themselves",
+        label="page 1",
+    )
+    for index in range(12):
+        insert_chunk(
+            gutierrez,
+            f"passive victims of conquest is a view the chapter rejects {index}, "
+            "describing how Mexican Americans adapted and resisted",
+            chunk_index=index,
+            label=f"page {index + 1}",
+        )
+    with connection() as conn:
+        result = funnel.retrieve(
+            conn,
+            course.course_id,
+            "Compare Resendez with Gutierrez on passive victims",
+            load_retrieval_policy(),
+        )
+    found = {candidate.source_id for candidate in result.candidates}
+    assert found == {resendez, gutierrez}
+    chosen = select_for_generation(
+        "Compare Resendez with Gutierrez on passive victims",
+        result.candidates,
+        load_rerank_policy().model_copy(update={"generation_k": 2}),
+    )
+    assert {c.source_id for c in chosen} == {resendez, gutierrez}
+
+
+def test_a_course_spread_of_a_few_readings_keeps_each_through_the_reranker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A study guide for exam 1 left Holloway out: the reranker preferred the
+    other readings' passages."""
+    course = make_course("Spread Course")
+    sources = [
+        insert_source(course.course_id, filename=f"Reading{n}.pdf") for n in range(3)
+    ]
+    for source in sources:
+        for index in range(4):
+            insert_chunk(
+                source,
+                f"passage {index} of this reading about conquest and identity "
+                "in the borderlands",
+                chunk_index=index,
+                label=f"page {index + 1}",
+            )
+    with connection() as conn:
+        spread = funnel.overview(conn, course.course_id, 12)
+    assert {c.source_id for c in spread.candidates[:3]} == set(sources), (
+        "interleaved: a token budget that keeps the first passages keeps every reading"
+    )
+
+    def scores(model: str, question: str, texts: list[str]) -> list[float]:
+        return [10.0 if i < 3 else 0.0 for i in range(len(texts))]
+
+    monkeypatch.setattr(provider, "rerank_scores", scores)
+    chosen = select_for_generation(
+        "study guide", spread.candidates, load_rerank_policy()
+    )
+    assert {c.source_id for c in chosen} == set(sources)

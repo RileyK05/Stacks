@@ -17,7 +17,7 @@ from src.backend.common import provider
 from src.backend.rag.config import load_policy as load_passage_policy
 from src.backend.rag.segment import windows
 from src.backend.retrieval.config import RerankPolicy, load_rerank_policy
-from src.backend.retrieval.funnel import LABEL, Candidate
+from src.backend.retrieval.funnel import PINNED_LAYERS, Candidate
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +43,8 @@ def select_for_generation(
         return ()
     # A pinned label passage is never dropped by a cut or the floor; it is
     # only subject to the token budget in _with_context (plan Phase 1).
-    pinned = tuple(c for c in anchors if LABEL in c.layers)
-    rest = tuple(c for c in anchors if LABEL not in c.layers)
+    pinned = tuple(c for c in anchors if c.layers & PINNED_LAYERS)
+    rest = tuple(c for c in anchors if not c.layers & PINNED_LAYERS)
     if policy.mode == "score":
         return _select_scored(question, pinned, rest, context, policy, meta)
     slots = max(0, policy.generation_k - len(pinned))

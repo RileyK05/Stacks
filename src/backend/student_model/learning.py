@@ -101,18 +101,32 @@ def _assessments(conn: Connection, suite_id: UUID) -> dict[int, int | None]:
     }
 
 
+def _written_misses(
+    question: PracticeQuestion, picked: int | str, credited: list[str]
+) -> list[str]:
+    """Required points a written answer still misses: the word matcher's
+    misses, less the points the model credited when the run was stored."""
+    text = picked if isinstance(picked, str) else ""
+    if not text.strip():
+        return list(question.points)
+    return [p for p in missed_points(text, question.points) if p not in credited]
+
+
 def _judged(
     question: PracticeQuestion,
     picked: int | str,
     assessments: dict[int, int | None],
     index: int,
+    credited: list[str] | None = None,
 ) -> bool | None:
     """None means the question is excluded from scoring."""
     if index in assessments and assessments[index] is None:
         return None
     if question.format == "short_answer":
-        text = picked if isinstance(picked, str) else ""
-        return short_answer_correct(text, question.points)
+        if credited is None:
+            text = picked if isinstance(picked, str) else ""
+            return short_answer_correct(text, question.points)
+        return bool(question.points) and not _written_misses(question, picked, credited)
     key = assessments.get(index, question.answer)
     if key is None or type(picked) is not int:
         return None if key is None else False
@@ -125,9 +139,11 @@ def run_view(conn: Connection, record: dict[str, Any]) -> PracticeRun:
     keys: list[int | None] = []
     results: list[bool | None] = []
     missed: list[list[str]] = []
+    judged_points = record.get("judged_points") or {}
     for index, question in enumerate(test.questions):
         picked = record["answers"][index]
-        result = _judged(question, picked, assessments, index)
+        credited = list(judged_points.get(str(index), []))
+        result = _judged(question, picked, assessments, index, credited)
         results.append(result)
         if question.format == "short_answer" or result is None:
             keys.append(None)
@@ -138,7 +154,7 @@ def run_view(conn: Connection, record: dict[str, Any]) -> PracticeRun:
             and result is not None
             and isinstance(picked, str)
         ):
-            missed.append(missed_points(picked, question.points))
+            missed.append(_written_misses(question, picked, credited))
         else:
             missed.append([])
     return PracticeRun(
@@ -176,7 +192,10 @@ def submit(
     course_id: UUID,
     suite_id: UUID,
     payload: PracticeSubmission,
+    judged_points: dict[str, list[str]] | None = None,
 ) -> PracticeRun:
+    """`judged_points` are the written-answer points the model credited
+    (short_answer_judge.judge), computed before this transaction opens."""
     if not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
     test = suite(conn, course_id, suite_id)
@@ -229,6 +248,15 @@ def submit(
         if not existing:
             raise ValueError("this submission ID belongs to another course")
         return submit(conn, course_id, suite_id, payload)
+    if judged_points:
+        conn.execute(
+            get("learning", "set_run_judged_points"),
+            {
+                "course_id": course_id,
+                "run_id": payload.run_id,
+                "judged_points": _json(judged_points),
+            },
+        )
     prior = rows(conn, "observations", course_id=course_id)
     seen = {r["fingerprint"] for r in prior}
     assisted = {
@@ -256,7 +284,13 @@ def submit(
         zip(test.questions, payload.answers, actual_help, strict=True)
     ):
         fingerprint = _fingerprint(question)
-        correct = _judged(question, picked, assessments, index)
+        correct = _judged(
+            question,
+            picked,
+            assessments,
+            index,
+            (judged_points or {}).get(str(index), []),
+        )
         fresh = fingerprint not in seen
         seen.add(fingerprint)
         observation_id = uuid4()
@@ -315,7 +349,14 @@ def submit(
                 },
             )
     _check_experiments(
-        conn, course_id, test, payload.answers, assessments, requested_help, prior
+        conn,
+        course_id,
+        test,
+        payload.answers,
+        assessments,
+        requested_help,
+        prior,
+        judged_points or {},
     )
     refresh_memory(conn, course_id)
     stored = rows(conn, "run", course_id=course_id, run_id=payload.run_id)
@@ -428,6 +469,7 @@ def _check_experiments(
     assessments: dict[int, int | None],
     helped: list[bool],
     prior: list[dict[str, Any]],
+    judged_points: dict[str, list[str]] | None = None,
 ) -> None:
     now = utc_now()
     policy = load_learning_policy().practice
@@ -436,7 +478,13 @@ def _check_experiments(
         if experiment.status not in ("proposed", "cooldown"):
             continue
         judged = [
-            _judged(question, answers[index], assessments, index)
+            _judged(
+                question,
+                answers[index],
+                assessments,
+                index,
+                (judged_points or {}).get(str(index), []),
+            )
             for index, question in enumerate(test.questions)
         ]
         matches = [
@@ -621,7 +669,10 @@ def allocate_questions(
     questions: list[PracticeQuestion],
     *,
     source_ids: list[UUID],
+    review: bool = False,
 ) -> list[PracticeQuestion]:
+    """`review`: the student asked to practise what they got wrong, so weak
+    topics are the point, not something to ration; repeats still drop."""
     policy = load_learning_policy().practice
     focus, maintenance = practice_plan(conn, course_id, request, source_ids=source_ids)
     due_focus = {(topic, capability) for topic, capability, _ in focus}
@@ -636,7 +687,7 @@ def allocate_questions(
             continue
         key = (question.topic.casefold(), question.capability)
         target = known.get(key)
-        explicit = bool(
+        explicit = review or bool(
             question.topic and question.topic.casefold() in request.casefold()
         )
         if not explicit and target is not None and target.proficiency is not None:
@@ -655,3 +706,32 @@ def allocate_questions(
         selected.append(question)
         seen.add(fingerprint)
     return selected
+
+
+def missed_practice(
+    conn: Connection, course_id: UUID, limit: int = 8
+) -> list[dict[str, Any]]:
+    """Practice questions the student most recently got wrong and has not
+    answered correctly since, newest first: what "quiz me on what I got
+    wrong" is about. Each has the question, the student's answer, the key
+    and its topic."""
+    latest: dict[str, dict[str, Any]] = {}
+    for observation in rows(conn, "observations", course_id=course_id):
+        latest[observation["fingerprint"]] = observation
+    missed = [
+        o
+        for o in sorted(latest.values(), key=lambda o: o["created_at"], reverse=True)
+        if o["correct"] == 0
+    ]
+    result: list[dict[str, Any]] = []
+    for observation in missed[:limit]:
+        evidence = observation["evidence"] or {}
+        result.append(
+            {
+                "question": str(evidence.get("question") or ""),
+                "student_answer": str(evidence.get("selected") or ""),
+                "correct_answer": str(evidence.get("key") or ""),
+                "topic": observation["topic"],
+            }
+        )
+    return [item for item in result if item["question"]]

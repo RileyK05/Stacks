@@ -33,6 +33,10 @@ CONTEXT = "context"
 GENERATED = "generated_lookup"
 EMBEDDING = "embedding"
 LABEL = "label"
+# A passage kept for one of several readings the question names ("compare
+# Resendez and Gutierrez"); pinned through the reranker like a label.
+NAMED = "named"
+PINNED_LAYERS = frozenset({LABEL, NAMED})
 
 # Only letters and digits (of any script) survive keyword tokenization.
 # Everything else — including every FTS5 operator ( ) " * ^ : + - and the
@@ -953,6 +957,10 @@ def retrieve(
     final = surrounding_context(
         conn, course_id, final, embedding_model or "", selected_sources
     )
+    if name_filter == "matched" and len(named) > 1:
+        final = _each_named_source(
+            conn, course_id, final, named, embedding_model=embedding_model
+        )
     if not final and name_filter == "matched":
         # The student named the source, so it is the evidence even when no
         # seam matched their wording: give a spread of it, not nothing.
@@ -973,6 +981,37 @@ def retrieve(
         layer_contribution=contribution,
         route=route_info,
     )
+
+
+def _each_named_source(
+    conn: Connection,
+    course_id: UUID,
+    final: tuple[Candidate, ...],
+    named: set[UUID],
+    *,
+    embedding_model: str | None,
+    per_source: int = 2,
+) -> tuple[Candidate, ...]:
+    """Every reading the question names keeps passages, pinned. Fused ranking
+    let one reading take every slot, and "compare Resendez with Gutierrez"
+    was answered as "the text does not contain any information about
+    Resendez"."""
+    kept: list[Candidate] = []
+    for source_id in sorted(named, key=str):
+        own = [c for c in final if c.source_id == source_id and not c.context_for]
+        if not own:
+            own = list(
+                overview(
+                    conn,
+                    course_id,
+                    per_source,
+                    embedding_model=embedding_model,
+                    source_ids=(source_id,),
+                ).candidates
+            )
+        kept.extend(replace(c, layers=c.layers | {NAMED}) for c in own[:per_source])
+    pinned = {c.chunk_id for c in kept}
+    return tuple(_dedupe([*kept, *(c for c in final if c.chunk_id not in pinned)]))
 
 
 OVERVIEW = "overview"
@@ -1006,16 +1045,34 @@ def overview(
         return RetrievalResult(candidates=())
     per_source = max(1, limit // len(by_source))
     picked: list[dict[str, Any]] = []
+    # With a handful of sources (an exam's readings), one passage of each is
+    # pinned through the reranker: otherwise a study guide for exam 1 could
+    # leave a whole assigned reading out.
+    pin_each = len(by_source) <= max(1, limit // 2)
+    pinned: set[UUID] = set()
+    spreads: list[list[dict[str, Any]]] = []
     for chunks in list(by_source.values())[:limit]:
         take = min(len(chunks), per_source)
         if take == 1:
-            picked.append(chunks[0])
-            continue
-        # Spread over the whole source, first and last chunk included, so a
-        # source's opening and closing material both reach the overview (CR-12).
-        picked.extend(
-            chunks[index * (len(chunks) - 1) // (take - 1)] for index in range(take)
-        )
+            spread = [chunks[0]]
+        else:
+            # Spread over the whole source, first and last chunk included, so
+            # a source's opening and closing material both reach the overview
+            # (CR-12).
+            spread = [
+                chunks[index * (len(chunks) - 1) // (take - 1)] for index in range(take)
+            ]
+        middle = spread[len(spread) // 2]
+        if pin_each:
+            pinned.add(middle["chunk_id"])
+        # The middle of a reading leads its share: a first chunk is often a
+        # title page ("THE CAUSE OF FREEDOM … OXFORD UNIVERSITY PRESS"), and a
+        # tight budget may keep only one passage per reading.
+        spreads.append([middle, *(row for row in spread if row is not middle)])
+    # Interleave the sources: a token budget later keeps passages in order, and
+    # source-by-source order let the first two readings use all of it.
+    for rank in range(max((len(spread) for spread in spreads), default=0)):
+        picked.extend(spread[rank] for spread in spreads if rank < len(spread))
     final = tuple(
         Candidate(
             chunk_id=row["chunk_id"],
@@ -1023,7 +1080,9 @@ def overview(
             locator_id=row["locator_id"],
             chunk_index=row["chunk_index"],
             text=row["text"],
-            layers=frozenset({OVERVIEW}),
+            layers=frozenset({OVERVIEW, NAMED})
+            if row["chunk_id"] in pinned
+            else frozenset({OVERVIEW}),
             rank=0.5,
         )
         for row in picked[:limit]
