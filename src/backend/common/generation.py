@@ -72,7 +72,7 @@ def plan_call(
     )
     ceiling = profile.output_token_limit if profile else None
     ceiling = ceiling or preferred
-    thinking = profile.reasoning if profile else defaults.enable_thinking
+    thinking = task_thinking(task, endpoint.model, policy)
     if thinking:
         # A reasoning model still needs room to think, but it must not claim
         # its full maximum for every task: a 1024-token summary reserving
@@ -231,6 +231,20 @@ def operation(
         yield active
     finally:
         _OPERATION.reset(token)
+
+
+def task_thinking(
+    task: str, model: str, policy: GenerationPolicy | None = None
+) -> bool:
+    """Whether this call lets the model reason: the task's override in
+    configs/generation.toml, else the model's profile, else the default."""
+    demand = (policy or load_generation_policy()).tasks.get(task)
+    if demand is not None and demand.reasoning is not None:
+        return demand.reasoning
+    profile = model_profiles.profile_for(model)
+    if profile is not None:
+        return profile.reasoning
+    return providers.load_models_config().generation.enable_thinking
 
 
 def output_allowance() -> int | None:

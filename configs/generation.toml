@@ -25,6 +25,10 @@ max_recoveries = 2
 [tasks.ocr]
 desired_output_tokens = 2048
 max_recoveries = 1
+# Transcription needs no deliberation. Measured on Ollama Cloud
+# mimo-v2.6-flash, one slide: 1037 output tokens thinking vs 71 without,
+# same text; dense pages ran into the 8K/16K ceilings.
+reasoning = false
 
 [tasks.conversation_summary]
 desired_output_tokens = 1024

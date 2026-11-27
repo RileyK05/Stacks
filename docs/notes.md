@@ -4169,3 +4169,35 @@ taking the lock, so a viewer request could still race ingestion. Every
 pdfium call on that route, including open and close, stays inside the lock.
 A workbook that stores cell text inline has no `xl/sharedStrings.xml`; that
 absence is not a missing-data warning.
+
+## 2026-11-27 — Native Anthropic path, Ollama Cloud, and a real-course run
+
+Anthropic is now called through the official SDK (`provider._call_anthropic`),
+not the OpenAI-compatible shim: streamed, effort pinned per model profile
+(Opus 5.5's API default is `medium`), no `temperature` (current Claude models
+reject it), server-side refusal fallback where the profile opts in, and
+billed input = uncached + cache-write + cache-read. The SDK client is always
+given the connection's `base_url`, because the SDK otherwise honours an
+ambient `ANTHROPIC_BASE_URL`. The old preset's Settings "Test" never worked:
+Anthropic's Models API wants `x-api-key`, not a Bearer token, so the model
+list is read through the SDK too. Ollama Cloud is a preset
+(`https://ollama.com/v1`). Presets may name `key_env` development variables,
+read only when the keychain has no key (a container has no keychain).
+
+A run with a real course (syllabus, slides, four readings, one with no text
+layer) found three retrieval/generation defects, now fixed with tests:
+- OCR inherited the model profile's reasoning switch. MiMo on Ollama Cloud
+  spent ~15x the tokens thinking before transcribing (1037 vs 71 on one
+  slide) and dense slides hit the 8K/16K ceilings. Tasks can now override
+  reasoning (`[tasks.ocr] reasoning = false`), and Ollama Cloud receives
+  `reasoning_effort: "none"`.
+- "The Resendez reading" found nothing in that reading: book pages rarely
+  print the author's name, so only the syllabus line listing it matched.
+  A distinctive filename word in the question now filters to that source
+  (accent-insensitive; generic words excluded; fails open).
+- A week filter dropped every source whose filename names no week, so
+  "Weeks 1-3" meant "the Week1 slide deck". Only sources dated to other
+  weeks are excluded now.
+Open: a request naming only a week range ("study guide for Weeks 1-3") is not
+treated as an overview, so generic words rank the syllabus and slides above
+the readings.

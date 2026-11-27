@@ -119,7 +119,7 @@ def test_model_options_list_local_models_and_connection_defaults(
         "/settings/connections",
         json={"preset": "openai", "name": "Mine", "default_model": "gpt-x", "key": "k"},
     )
-    client.post("/settings/connections", json={"preset": "anthropic"})
+    client.post("/settings/connections", json={"preset": "google"})
     options = client.get("/settings/model-options").json()
     local = [o for o in options if o["is_local"]]
     assert local and all(o["connection"] == "local" for o in local)

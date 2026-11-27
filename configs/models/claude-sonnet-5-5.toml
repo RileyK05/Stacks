@@ -1,0 +1,8 @@
+# Claude Sonnet 5.5 through the native Anthropic path (see claude-opus-5-5).
+model = "claude-sonnet-5-5"
+reasoning = true
+max_output_tokens = 32000
+output_token_limit = 128000
+context_window_tokens = 1000000
+effort = "medium"
+refusal_fallback = true

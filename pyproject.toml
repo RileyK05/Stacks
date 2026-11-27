@@ -20,6 +20,8 @@ dependencies = [
     "Pillow>=10.0",
     "numpy>=1.26",
     "httpx>=0.27",
+    # Claude is called through the official SDK (common/provider.py).
+    "anthropic>=2.14",
     "keyring>=25",
     # In-process encoders (embeddings, reranker) — no torch at runtime.
     "onnxruntime>=1.20",

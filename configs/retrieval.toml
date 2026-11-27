@@ -49,4 +49,18 @@ label_kinds = [
   "section", "chapter",
 ]
 label_limit = 5
+# A question naming a source by a distinctive filename word (an author such
+# as "Resendez", accent-insensitive) is filtered to that source: book pages
+# rarely print the author's name, so neither keyword nor embedding search
+# can find "the Resendez reading" otherwise. Generic filename words that a
+# question uses casually are not names. Fails open when nothing matches.
+name_min_chars = 4
+name_stopwords = [
+  "week", "weeks", "chapter", "chapters", "part", "parts", "pages", "final",
+  "draft", "copy", "version", "searchable", "scan", "scanned", "slides",
+  "slide", "lecture", "lectures", "reading", "readings", "notes", "note",
+  "handout", "intro", "introduction", "review", "exam", "exams", "quiz",
+  "homework", "assignment", "problem", "problems", "solutions", "midterm",
+  "study", "guide", "class", "course", "unit", "module",
+]
 

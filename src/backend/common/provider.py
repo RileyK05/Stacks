@@ -52,6 +52,11 @@ _USAGE_RECORDER: ContextVar[Callable[[int, int, bool], None] | None] = ContextVa
 # Presets for servers the user runs (not the bundled one). They get the
 # runtime-specific reasoning switches that cloud APIs would reject.
 SELF_HOSTED_PRESETS = frozenset({"custom", "lmstudio", "ollama"})
+# Cloud endpoints that take OpenAI's `reasoning_effort` to turn thinking off.
+REASONING_EFFORT_PRESETS = frozenset({"ollama_cloud"})
+# Served through the official SDK's Messages API (`_call_anthropic`).
+ANTHROPIC = "anthropic"
+_ANTHROPIC_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
 @dataclass(frozen=True)
@@ -445,7 +450,7 @@ def request_body(
         messages = [{"role": "user", "content": prompt}]
 
     profile = model_profiles.profile_for(endpoint.model)
-    thinking = profile.reasoning if profile else defaults.enable_thinking
+    thinking = generation.task_thinking(task, endpoint.model)
     body: dict[str, Any] = {
         "model": endpoint.model,
         "messages": messages,
@@ -467,6 +472,10 @@ def request_body(
         # Cloud APIs reject unknown fields, so neither goes to them.
         body["chat_template_kwargs"] = {"enable_thinking": thinking}
         body["reasoning_effort"] = "high" if thinking else "none"
+    elif endpoint.name in REASONING_EFFORT_PRESETS and not thinking:
+        # Ollama Cloud honours reasoning_effort (measured); a provider that
+        # rejects it is caught by the no_runtime_switches adaptation.
+        body["reasoning_effort"] = "none"
     if response_schema is not None:
         body["response_format"] = {
             "type": "json_schema",
@@ -487,6 +496,10 @@ def _call_provider(
     counts come from the provider's usage response, never estimated.
     Fails closed: any HTTP/parse failure raises ProviderUnavailableError
     (ProviderRateLimitedError for 429)."""
+    if endpoint.name == ANTHROPIC:
+        return _call_anthropic(
+            task, endpoint, prompt, images=images, response_schema=response_schema
+        )
     import httpx
 
     defaults = providers.load_models_config().generation
@@ -672,6 +685,180 @@ def _call_provider(
             f"{who} sent a reply Stacks could not read ({endpoint.model}): {err}",
             transient=False,
         ) from err
+    return text, input_tokens, output_tokens
+
+
+def anthropic_client(base_url: str, api_key: str | None, *, timeout: float) -> Any:
+    """An SDK client pinned to the connection's URL. Passing `base_url`
+    explicitly matters: the SDK otherwise honours an ambient
+    ANTHROPIC_BASE_URL and would send course text somewhere else. Older
+    connections saved the OpenAI-compatible `/v1` URL; the SDK adds that
+    itself. Retries are the generation controller's job, not the SDK's."""
+    import anthropic
+
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[: -len("/v1")]
+    return anthropic.Anthropic(
+        api_key=api_key or "", base_url=root, timeout=timeout, max_retries=0
+    )
+
+
+def anthropic_request(
+    task: str,
+    endpoint: ResolvedProvider,
+    prompt: str,
+    *,
+    images: Sequence[bytes] | None = None,
+    response_schema: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The Messages API request for one call. No `temperature`: current
+    Claude models reject sampling parameters. Effort is pinned from the
+    model's profile because the API default differs between models."""
+    import base64
+
+    import anthropic
+
+    defaults = providers.load_models_config().generation
+    profile = model_profiles.profile_for(endpoint.model)
+    content: list[dict[str, Any]] = [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64.standard_b64encode(img).decode("ascii"),
+            },
+        }
+        for img in images or ()
+    ]
+    content.append({"type": "text", "text": prompt})
+    output_config: dict[str, Any] = {}
+    if profile and profile.effort:
+        output_config["effort"] = profile.effort
+    if response_schema is not None:
+        output_config["format"] = {
+            "type": "json_schema",
+            "schema": anthropic.transform_schema(response_schema),
+        }
+    request: dict[str, Any] = {
+        "model": endpoint.model,
+        "max_tokens": (
+            generation.output_allowance()
+            or (profile.max_output_tokens if profile else None)
+            or defaults.max_output_tokens
+        ),
+        "messages": [{"role": "user", "content": content}],
+    }
+    if output_config:
+        request["output_config"] = output_config
+    if profile and profile.refusal_fallback:
+        request["betas"] = [_ANTHROPIC_FALLBACK_BETA]
+        request["fallbacks"] = "default"
+    return request
+
+
+def _call_anthropic(
+    task: str,
+    endpoint: ResolvedProvider,
+    prompt: str,
+    *,
+    images: Sequence[bytes] | None = None,
+    response_schema: dict[str, Any] | None = None,
+) -> tuple[str, int, int]:
+    """One streamed Messages API call, with the same contract and error
+    types as the OpenAI-compatible path. Billed input counts uncached,
+    cache-write and cache-read tokens."""
+    import anthropic
+
+    who = endpoint.label or endpoint.name
+    request = anthropic_request(
+        task, endpoint, prompt, images=images, response_schema=response_schema
+    )
+    timeout = providers.load_models_config().generation.request_timeout_seconds
+    remaining = generation.before_http(request)
+    if remaining is not None:
+        timeout = min(timeout, remaining)
+    usage_repo.check_cloud_budget()
+    client = anthropic_client(endpoint.base_url, endpoint.api_key, timeout=timeout)
+    try:
+        with client.beta.messages.stream(**request) as stream:
+            message = stream.get_final_message()
+    except anthropic.RateLimitError as err:
+        raise ProviderRateLimitedError(
+            f"{who} is rate-limiting requests right now: {err.message}. "
+            "Wait a minute or pick another model."
+        ) from err
+    except anthropic.APITimeoutError as err:
+        raise ProviderUnavailableError(
+            f"{who} did not answer in time ({endpoint.model}). Try again or pick "
+            "a faster model.",
+            transient=True,
+        ) from err
+    except anthropic.APIConnectionError as err:
+        raise ProviderUnavailableError(
+            f"Could not reach {who} at {endpoint.base_url}. Check your internet "
+            "connection.",
+            transient=True,
+        ) from err
+    except anthropic.APIStatusError as err:
+        detail = " ".join(str(err.message).split())[:_DETAIL_LIMIT]
+        logger.warning(
+            "%s answered %s (task=%s, model=%s): %s",
+            endpoint.name,
+            err.status_code,
+            task,
+            endpoint.model,
+            detail,
+        )
+        if err.status_code >= 500 or err.status_code == 529:
+            raise ProviderUnavailableError(
+                f"{who} had a server error ({err.status_code}): {detail}. "
+                "Try again shortly.",
+                transient=True,
+            ) from err
+        raise ProviderRequestRejectedError(
+            rejection_message(who, err.status_code, detail)
+        ) from err
+
+    usage = message.usage
+    input_tokens = (
+        (usage.input_tokens or 0)
+        + (getattr(usage, "cache_creation_input_tokens", None) or 0)
+        + (getattr(usage, "cache_read_input_tokens", None) or 0)
+    )
+    output_tokens = usage.output_tokens or 0
+    recorder = _USAGE_RECORDER.get()
+    if recorder is not None:
+        recorder(input_tokens, output_tokens, True)
+    text = "\n".join(
+        block.text for block in message.content if block.type == "text"
+    ).strip()
+    if message.stop_reason == "refusal":
+        raise ModelRefusalError(
+            f"{who} ({endpoint.model}) declined this request. "
+            "Try rephrasing or pick another model."
+        )
+    if message.stop_reason == "max_tokens":
+        raise ModelOutputTruncatedError(
+            f"{who} ({endpoint.model}) hit its output limit before finishing. "
+            "Try one section at a time or pick another model.",
+            partial_text=text,
+            output_limit=int(request["max_tokens"]),
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            usage_reported=True,
+        )
+    if not text:
+        if any(block.type == "thinking" for block in message.content):
+            raise ModelReasoningOnlyError(
+                f"{who} ({endpoint.model}) returned only reasoning and no answer. "
+                "Try the question again or pick another model."
+            )
+        raise EmptyModelError(
+            f"{who} ({endpoint.model}) returned no usable answer. "
+            "Try again or pick another model."
+        )
     return text, input_tokens, output_tokens
 
 

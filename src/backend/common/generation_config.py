@@ -22,6 +22,11 @@ class GenerationTask(BaseModel):
     # costs the student the whole wait (R4-NEW-q). The multiple must still
     # leave a widening step below the model's ceiling.
     reasoning_multiplier: int = Field(default=4, ge=1, le=16)
+    # Overrides the model profile's reasoning switch for this task. OCR is
+    # transcription: a reasoning model left to think spends 10-15x the
+    # tokens of the answer and can run into its output ceiling on a dense
+    # page. None lets the model profile decide.
+    reasoning: bool | None = None
 
 
 class GenerationPolicy(BaseModel):

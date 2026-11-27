@@ -173,7 +173,7 @@ def _overview() -> ProvidersView:
     config = providers.load_models_config()
     presets = [
         PresetView(
-            **preset.model_dump(),
+            **preset.model_dump(exclude={"key_env"}),
             has_key=bool(secrets.get_api_key(preset.name))
             if preset.requires_key or preset.accepts_key
             else False,
@@ -307,9 +307,14 @@ def delete_key(connection_id: str) -> None:
     secrets.delete_api_key(connection.id)
 
 
-def _list_models(base_url: str, api_key: str | None) -> ConnectionTest:
+def _list_models(
+    base_url: str, api_key: str | None, preset: str = ""
+) -> ConnectionTest:
     """GET /models on an OpenAI-compatible endpoint: proves the URL and key
-    work without spending any tokens."""
+    work without spending any tokens. Anthropic's Models API takes its key
+    in x-api-key, not as a Bearer token, so it is listed through the SDK."""
+    if preset == "anthropic":
+        return _list_anthropic_models(base_url, api_key)
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     try:
         response = httpx.get(
@@ -340,12 +345,33 @@ def _list_models(base_url: str, api_key: str | None) -> ConnectionTest:
     return ConnectionTest(ok=True, models=models)
 
 
+def _list_anthropic_models(base_url: str, api_key: str | None) -> ConnectionTest:
+    import anthropic
+
+    try:
+        client = provider.anthropic_client(base_url, api_key, timeout=15.0)
+        models = sorted(model.id for model in client.models.list())
+    except anthropic.AuthenticationError:
+        return ConnectionTest(ok=False, error="the key was not accepted")
+    except anthropic.PermissionDeniedError:
+        return ConnectionTest(ok=False, error="the key was not accepted")
+    except anthropic.APITimeoutError:
+        return ConnectionTest(ok=False, error=f"{base_url} did not answer in time")
+    except anthropic.APIConnectionError:
+        return ConnectionTest(
+            ok=False, error=f"nothing is answering at {base_url}. Check the URL."
+        )
+    except anthropic.APIStatusError as err:
+        return ConnectionTest(ok=False, error=f"the server answered {err.status_code}")
+    return ConnectionTest(ok=True, models=models)
+
+
 @router.post("/providers/{task_class}/test", response_model=ConnectionTest)
 def test_provider(task_class: TaskClass) -> ConnectionTest:
     endpoint = providers.resolve(task_class)
     if endpoint is None:
         return ConnectionTest(ok=False, error="no provider configured")
-    return _list_models(endpoint.base_url, endpoint.api_key)
+    return _list_models(endpoint.base_url, endpoint.api_key, endpoint.name)
 
 
 def _local_models() -> list[CatalogModel]:
@@ -369,7 +395,9 @@ def test_connection(connection_id: str) -> ConnectionTest:
         return ConnectionTest(ok=False, error="this connection has no URL yet")
     if view.requires_key and not view.has_key:
         return ConnectionTest(ok=False, error="add an API key first")
-    result = _list_models(view.effective_base_url, secrets.get_api_key(connection.id))
+    result = _list_models(
+        view.effective_base_url, providers.api_key_for(connection), connection.preset
+    )
     model = view.effective_default_model
     if not result.ok or not model:
         return result
@@ -386,7 +414,9 @@ def connection_models(connection_id: str) -> ConnectionTest:
         return ConnectionTest(ok=False, error="no model list for this connection")
     if view.requires_key and not view.has_key:
         return ConnectionTest(ok=False, error="add an API key first")
-    return _list_models(view.effective_base_url, secrets.get_api_key(connection.id))
+    return _list_models(
+        view.effective_base_url, providers.api_key_for(connection), connection.preset
+    )
 
 
 def _try_model(connection_id: str, model: str, offered: list[str]) -> dict[str, Any]:

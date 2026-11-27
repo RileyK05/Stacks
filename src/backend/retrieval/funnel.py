@@ -764,8 +764,9 @@ def retrieve(
     unselected sources cannot consume the selected sources' candidate slots.
 
     Explicit addresses in the question are routed first: a named week filters
-    to that week's sources (fails open when none match), and a named label is
-    pinned ahead of the fused result.
+    to that week's sources (fails open when none match), a source named by a
+    distinctive filename word ("the Resendez reading") filters to it, and a
+    named label is pinned ahead of the fused result.
 
     `mode` forces "top_k" or "score"; None follows `[rerank] mode` in config."""
     route_policy = load_route_policy()
@@ -777,24 +778,49 @@ def retrieve(
     selected_sources = source_ids
     week_filter = "off"
     if addresses.weeks:
+        weeks_by_source = route.source_weeks(conn, course_id)
         matched = {
             source_id
-            for source_id, week in route.source_weeks(conn, course_id).items()
+            for source_id, week in weeks_by_source.items()
             if week in addresses.weeks
         }
         if source_ids is not None:
             matched &= set(source_ids)
         if matched:
-            selected_sources = tuple(matched)
+            # Exclude only sources known to be from other weeks. A reading
+            # whose filename names no week ("Gutierrez_1995_p13-38.pdf") may
+            # well be that week's reading; dropping it gave a "Weeks 1-3"
+            # study guide built from the Week 1 slides alone.
+            undated = {
+                source_id
+                for source_id, week in weeks_by_source.items()
+                if week is None and (source_ids is None or source_id in set(source_ids))
+            }
+            selected_sources = tuple(matched | undated)
             week_filter = "matched"
         else:
             # Fail open: a week with no matching source keeps what the caller
             # selected (never silently search nothing).
             week_filter = "no_match"
+    name_filter = "off"
+    if route_policy.enabled:
+        named = route.named_sources(
+            query, route.source_names(conn, course_id, route_policy)
+        )
+        if named:
+            if selected_sources is not None:
+                named &= set(selected_sources)
+            if named:
+                selected_sources = tuple(named)
+                name_filter = "matched"
+            else:
+                # Fail open, as for weeks: keep the narrower selection.
+                name_filter = "no_match"
     route_info: dict[str, object] = {
         "labels": list(addresses.labels),
         "weeks": list(addresses.weeks),
         "week_filter": week_filter,
+        "name_filter": name_filter,
         "sources": len(selected_sources) if selected_sources is not None else None,
     }
 
@@ -927,6 +953,17 @@ def retrieve(
     final = surrounding_context(
         conn, course_id, final, embedding_model or "", selected_sources
     )
+    if not final and name_filter == "matched":
+        # The student named the source, so it is the evidence even when no
+        # seam matched their wording: give a spread of it, not nothing.
+        final = overview(
+            conn,
+            course_id,
+            policy.final_k,
+            embedding_model=embedding_model,
+            source_ids=selected_sources,
+        ).candidates
+        route_info["name_fallback"] = "overview"
     contribution: dict[str, int] = {}
     for candidate in final:
         for layer in candidate.layers:

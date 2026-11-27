@@ -40,6 +40,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field
@@ -86,6 +87,9 @@ class ProviderPreset(BaseModel):
     disclosure: bool
     # Optional key: some endpoints (custom servers) take one, some don't.
     accepts_key: bool = False
+    # Development fallback: environment variables read, in order, when the
+    # keychain holds no key for a connection made from this preset.
+    key_env: tuple[str, ...] = ()
 
 
 class GenerationDefaults(BaseModel):
@@ -346,8 +350,22 @@ def remove_connection(connection_id: str) -> None:
             raise
 
 
+def api_key_for(connection: Connection) -> str | None:
+    """The connection's key: the keychain entry, else the preset's
+    development environment variables (`key_env`)."""
+    stored = secrets.get_api_key(connection.id)
+    if stored:
+        return stored
+    preset = load_models_config().presets.get(connection.preset)
+    for name in preset.key_env if preset else ():
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return None
+
+
 def has_key(connection: Connection) -> bool:
-    return bool(secrets.get_api_key(connection.id))
+    return bool(api_key_for(connection))
 
 
 def _ensure_connection(choice: ProviderChoice) -> Connection:
@@ -409,7 +427,7 @@ def resolve_choice(choice: ProviderChoice) -> ResolvedProvider | None:
     if not base_url or not model:
         return None
     wants_key = preset.requires_key or preset.accepts_key
-    api_key = secrets.get_api_key(connection.id) if wants_key else None
+    api_key = api_key_for(connection) if wants_key else None
     if preset.requires_key and not api_key:
         return None
     return ResolvedProvider(
