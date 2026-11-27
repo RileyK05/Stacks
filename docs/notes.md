@@ -4204,3 +4204,48 @@ mimo-v2.6-flash, found these, now fixed with tests:
 Open: a request naming only a week range ("study guide for Weeks 1-3") is not
 treated as an overview, so generic words rank the syllabus and slides above
 the readings.
+
+### 2026-11-27 — Student test pass on quizzes (Haiku 5.5, inkling-2-small)
+
+Four simulated students (≈120 messages, ~25 graded practice tests) plus an
+audit of 170 generated questions against their cited passages. Fixed, with
+tests:
+- A profile-less cloud model was capped at the 2048-token answer default for
+  quizzes and study guides: Haiku failed any quiz over ~5 questions ("hit its
+  output limit"). The retry now goes straight to the task's own need (16384
+  for artifact_generation) instead of doubling to 8192. Local models still
+  double.
+- Ollama Cloud accepts `response_format` but enforces nothing: inkling
+  returned YAML or JSON with its own field names ("question", "choices"), so
+  every quiz failed as "couldn't create a trustworthy quiz". The exact JSON
+  shape is now in the workspace prompt and common alias names are mapped.
+- Students' phrasings were not recognised as quiz requests ("5 question quiz
+  on Holloway", "garcia sanchez quiz, 5 q", "10 q's on exam 1", "make that a
+  real quiz"); they got a chat-text quiz with the key printed below it.
+- "Quiz me on resendez" after Gutierrez questions searched both readings and
+  quizzed Gutierrez. A message naming a reading is now self-contained, like a
+  week or table address.
+- "Quiz/study guide for exam 1" searched the words "exam 1" and quizzed the
+  syllabus's exam rules. An exam-only subject is answered from the course
+  spread (overview).
+- The tutor re-read only 600 characters of its previous reply, so a quiz it
+  wrote in chat was "cut off after question 1" when the student answered it.
+  The latest reply is re-read up to 6000 characters.
+- inkling cited the wrong reading for correct keys. A key whose words are not
+  in its cited passage but clearly are in another now cites that passage.
+- Same point asked twice in different words is treated as a duplicate.
+- Practice allocation silently dropped already-seen questions under a reply
+  promising "a 10-question quiz"; the reply now says how many were left out.
+- Short-answer grading: "never" was not a negation, so "it was never
+  abolished" covered "it was abolished"; a point starting "so ..." was never
+  covered even by a verbatim answer.
+- workspace_quiz prompt (v46): exam-style points (arguments, causes,
+  contrasts, terms) over dates; plausible distractors of similar length; an
+  explanation that teaches. Key-is-longest-option fell from 74% to 36% on
+  Haiku (inkling 79% → 67%); "According to…" stems from 22% to ~1%.
+Open: quizzes are multiple-choice only (students asked for short answer and
+essay prompts; the exam has a short-essay part); short-answer grading is
+lexical and fails correct paraphrases; flashcards come back as a quiz; the
+tutor treats its own fenced conversation as unusable evidence, so "explain
+castelike" got "the material doesn't use that word"; no date in the prompt, so
+"what's due this week" can't be answered.

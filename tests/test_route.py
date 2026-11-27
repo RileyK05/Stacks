@@ -179,6 +179,21 @@ def test_a_follow_up_naming_an_address_drops_previous_questions() -> None:
     assert "and the encomienda" in unaddressed
 
 
+def test_a_follow_up_naming_a_reading_drops_previous_questions() -> None:
+    """After questions about Gutierrez, "quiz me on resendez" must search
+    Resendez alone; the earlier questions pulled in Gutierrez passages and the
+    quiz came back about the wrong reading."""
+    reading = uuid4()
+    names = {reading: frozenset({"resendez"}), uuid4(): frozenset({"gutierrez"})}
+    context = ChatContext(
+        summary="", recent=(), previous_questions=("whats the gutierrez one about",)
+    )
+    query = retrieval_query("quiz me on resendez", context, names)
+    assert "gutierrez" not in query.casefold()
+    assert "resendez" in query.casefold()
+    assert "gutierrez" in retrieval_query("quiz me on that", context, names)
+
+
 # --- rerank pins ----------------------------------------------------------
 
 

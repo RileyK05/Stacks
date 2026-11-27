@@ -642,3 +642,72 @@ def test_an_overview_falls_back_to_searching_when_nothing_is_embedded(
     assert turn.status_code == 200, turn.text
     assert turn.json()["reply"]["no_match"] is False
     assert "preserving addition" in str(calls[0]["prompt"])
+
+
+def test_the_latest_reply_is_reread_whole_so_a_chat_quiz_can_be_checked() -> None:
+    """A 5-question quiz written in the chat ran past the 600-character
+    excerpt; answering "1 B, 2 C, 3 A..." then got "the question text for
+    these isn't included". The latest reply is kept; older ones are cut."""
+    quiz_text = " ".join(
+        f"{n}. Question number {n} about the reading? A) first B) second "
+        "C) third D) fourth, each option written out at some length here, "
+        "with a longer stem that a real quiz question would also carry."
+        for n in range(1, 6)
+    )
+    assert len(quiz_text) > chat.EXCERPT_CHARS
+
+    def message(seq: int, role: str, text: str) -> Message:
+        return Message(
+            message_id=uuid4(),
+            conversation_id=uuid4(),
+            seq=seq,
+            role=role,
+            text=text,
+            trace_id=None,
+            created_at=datetime.now(UTC),
+            payload={},
+        )
+
+    history = [
+        message(1, "user", "quiz me"),
+        message(2, "assistant", "OLD " + quiz_text),
+        message(3, "user", "another one"),
+        message(4, "assistant", "NEW " + quiz_text),
+    ]
+    conversation = Conversation(
+        conversation_id=uuid4(),
+        course_id=uuid4(),
+        title="",
+        model_choice=None,
+        source_ids=None,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        message_count=4,
+    )
+    recent = {
+        text.split()[0]: text
+        for role, text in chat.context_for(conversation, history).recent
+        if role == "assistant"
+    }
+    assert "5. Question number 5" in recent["NEW"]
+    assert "5. Question number 5" not in recent["OLD"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "10 q's on everything for exam 1",
+        "make a study guide for exam 1",
+        "practice test for the midterm",
+    ],
+)
+def test_a_request_for_an_exam_covers_the_course_not_the_word_exam(
+    question: str,
+) -> None:
+    """Searched by "exam 1", these found only the syllabus's exam rules: a
+    10-question quiz on attendance policy, a study guide from one reading."""
+    assert chat.wants_overview(question, None)
+
+
+def test_a_named_subject_is_still_searched() -> None:
+    assert not chat.wants_overview("quiz me on resendez for exam 1", None)

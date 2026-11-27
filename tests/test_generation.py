@@ -95,14 +95,17 @@ def test_cutoff_recovers_entire_unit_with_same_prompt_and_counts_every_attempt(
     assert usage_repo.cloud_tokens_this_month() == 30
 
 
-def test_unknown_capacity_does_not_invent_a_larger_limit(
+def test_unknown_capacity_starts_short_and_widens_only_to_the_task_need(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """No profile: the first request asks for the short default; a cut-off
+    reply widens toward the task's own need (a quiz is longer than an
+    answer), never past it."""
     monkeypatch.setattr(model_profiles, "profile_for", lambda *_: None)
-    calls = _http(monkeypatch, [(200, _payload("secret partial", "length"))])
+    calls = _http(monkeypatch, [(200, _payload("secret partial", "length"))] * 2)
     with pytest.raises(provider.ModelOutputTruncatedError) as error:
         provider.generate("artifact_generation", "task")
-    assert len(calls) == 1 and calls[0]["max_tokens"] == 2048
+    assert [c["max_tokens"] for c in calls] == [2048, 16384]
     assert error.value.partial_text == "secret partial"
     assert "secret partial" not in str(error.value)
 

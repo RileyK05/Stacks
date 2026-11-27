@@ -1130,3 +1130,133 @@ def test_quiz_repair_without_accepted_questions_still_propagates_error() -> None
 
     with pytest.raises(RuntimeError, match="provider budget exceeded"):
         compose_answer("Make a quiz", _candidates(), failing)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "5 question quiz on the Holloway reading",
+        "garcia sanchez quiz, 5 q, medium-hard",
+        "10 q's on everything for exam 1",
+        "5 mc q's on holloway ch 1-3",
+        "can u make that a real quiz i can take w/ options",
+    ],
+)
+def test_student_phrasings_of_a_quiz_request_are_quizzes(question: str) -> None:
+    """These went down the plain-answer path: a quiz written into the chat,
+    often with its key printed underneath, that could not be taken."""
+    assert classify_intent(question) is Intent.QUIZ
+
+
+@pytest.mark.parametrize(
+    "question", ["when is the quiz?", "what is on quiz 2", "is there a quiz this week"]
+)
+def test_questions_about_a_quiz_are_still_questions(question: str) -> None:
+    assert classify_intent(question) is Intent.ANSWER
+
+
+def _quiz_reply(questions: list[dict[str, object]]) -> str:
+    return json.dumps(
+        {
+            "reply": "Quiz",
+            "item": {"type": "quiz", "title": "T", "questions": questions},
+        }
+    )
+
+
+def test_a_quiz_with_the_models_own_field_names_is_read() -> None:
+    """Ollama Cloud does not enforce the schema: inkling wrote "question" and
+    "choices", and every question was dropped as unusable."""
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        assert '"prompt"' in prompt, "the exact field names are in the prompt"
+        return _quiz_reply(
+            [
+                {
+                    "question": f"Which group organized event {index}?",
+                    "choices": [f"Group {index}", "Another group"],
+                    "answer": 0,
+                    "explanation": f"Group {index} organized the event.",
+                    "sources": [1],
+                }
+                for index in range(2)
+            ]
+        )
+
+    result = compose_answer("quiz me on chapter 2", _candidates(), generate)
+    assert result.structured
+    items = extract_workspace_items(result.text, material_count=2).items
+    assert [q.prompt for q in items[0].questions] == [
+        "Which group organized event 0?",
+        "Which group organized event 1?",
+    ]
+
+
+def test_the_same_point_asked_twice_counts_once() -> None:
+    first = {
+        "prompt": "Why did his owner's wife stop teaching Douglass to read?",
+        "options": [
+            "Her husband said literacy would encourage a desire for freedom",
+            "x",
+        ],
+        "answer": 0,
+        "explanation": "He said literacy would encourage a desire for freedom.",
+        "sources": [1],
+    }
+    second = {
+        "prompt": "Why did the husband object to Douglass learning to read?",
+        "options": ["He believed literacy would encourage a desire for freedom", "y"],
+        "answer": 0,
+        "explanation": "He believed literacy would encourage a desire for freedom.",
+        "sources": [1],
+    }
+    replies = iter([_quiz_reply([first, second])] * 3)
+
+    def generate(task: str, prompt: str, *, response_schema=None) -> str:
+        return next(replies)
+
+    result = compose_answer("quiz me on Douglass", _candidates(), generate)
+    items = extract_workspace_items(result.text, material_count=2).items
+    assert len(items[0].questions) == 1
+
+
+def test_a_key_quoted_from_one_reading_cites_that_reading() -> None:
+    """inkling wrote correct Gutierrez keys but cited Resendez passages; the
+    student who opened the citation found nothing that supports the answer."""
+    from src.backend.tutor.compose import reattribute_sources
+
+    candidates = tuple(
+        Candidate(
+            chunk_id=uuid4(),
+            source_id=uuid4(),
+            locator_id=uuid4(),
+            chunk_index=index,
+            text=text,
+            layers=frozenset({"keyword"}),
+            rank=1.0,
+        )
+        for index, text in enumerate(
+            (
+                "Indian slaves were mostly women and children, unlike the "
+                "African trade, and were taken across the Southwest.",
+                "In the half century following annexation the ethnic Mexican "
+                "population was slowly but surely relegated to an inferior, "
+                "castelike status in the region's evolving social system.",
+            )
+        )
+    )
+    question = {
+        "prompt": "What happened to the ethnic Mexican population after annexation?",
+        "options": [
+            "It was relegated to an inferior, castelike status",
+            "It gained equal standing",
+        ],
+        "answer": 0,
+        "explanation": "The text says it was 'relegated to an inferior, "
+        "castelike status in the region's evolving social system'.",
+        "sources": [1],
+    }
+    item = {"type": "quiz", "questions": [dict(question)]}
+    assert reattribute_sources(item, candidates)["questions"][0]["sources"] == [2]
+    right = {"type": "quiz", "questions": [dict(question, sources=[2])]}
+    assert reattribute_sources(right, candidates)["questions"][0]["sources"] == [2]

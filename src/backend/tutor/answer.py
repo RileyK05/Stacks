@@ -375,6 +375,16 @@ def answer_question(
                     "Try another topic or a broader source selection."
                 )
                 continue
+            if len(selected) < len(item.questions):
+                # The reply was written for the full quiz ("Here is a
+                # 10-question quiz"); say why fewer are shown.
+                left_out = len(item.questions) - len(selected)
+                answer.body = (
+                    f"{answer.body}\n\n(Showing {len(selected)} of "
+                    f"{len(item.questions)} questions: {left_out} repeated "
+                    "practice you have already done or did not fit your "
+                    "practice plan.)"
+                ).strip()
             item = item.model_copy(
                 update={
                     "questions": [

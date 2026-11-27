@@ -28,6 +28,7 @@ from src.backend.common import (
 from src.backend.common.conversations_repo import Conversation, Message
 from src.backend.common.db import connection
 from src.backend.common.embeddings_config import load_embedding_policy
+from src.backend.retrieval import route
 from src.backend.retrieval.config import load_retrieval_policy
 from src.backend.student_model import research
 from src.backend.tutor import answer as tutor_answer
@@ -263,8 +264,9 @@ def send_message(
     conversation = _require_conversation(course_id, conversation_id)
     with connection() as conn:
         history = conversations_repo.messages(conn, conversation_id)
+        names = route.source_names(conn, course_id)
     context = chat.context_for(conversation, history)
-    search = chat.retrieval_query(payload.question, context)
+    search = chat.retrieval_query(payload.question, context, names)
     overview = chat.wants_overview(payload.question, context)
     choice = (
         providers.ProviderChoice.model_validate(conversation.model_choice)
