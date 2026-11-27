@@ -347,6 +347,37 @@ def test_a_transient_ocr_batch_failure_reads_page_by_page(
     assert calls == [4, 4, 1, 1, 1, 1]
 
 
+def test_a_truncated_ocr_batch_reads_page_by_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Four dense pages can outgrow a model's output limit where one fits:
+    seen with a profile-less model at the 2048-token default."""
+    from src.backend.common import generation
+    from src.backend.common.provider import GenerationResult
+    from src.backend.ingest import extract, orchestrator
+
+    handlers = _ocr_handlers(["", "", "", ""])
+    calls: list[int] = []
+
+    def render(*args: Any, pages: list[int], **kwargs: Any) -> list[Any]:
+        return [extract.RasterizedPage(index, b"png") for index in pages]
+
+    def generate(*args: Any, **kwargs: Any) -> Any:
+        images = kwargs.get("images") or []
+        calls.append(len(images))
+        if len(images) > 1:
+            raise provider.ModelOutputTruncatedError("hit its output limit")
+        return GenerationResult(f"page {len(calls)} clearly recognized", "m", 1, 1)
+
+    monkeypatch.setattr(extract, "rasterize_pages_with_ids", render)
+    monkeypatch.setattr(orchestrator.provider, "generate", generate)
+    with generation.operation():
+        handlers.ocr()
+    assert calls == [4, 1, 1, 1, 1]
+    assert handlers.extracted is not None
+    assert all(page.strip() for page in handlers.extracted.page_texts)
+
+
 def test_a_transient_ocr_failure_hides_the_raw_provider_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -25,3 +25,13 @@ test('a cited marker names the file and page, and code is left alone', () => {
   assert.equal(html.includes('[2]'), true);
   assert.equal(linked.includes('`keep [2]`'), true);
 });
+
+test('grouped citation markers get a title per number', () => {
+  const linked = linkCitationTitles('Land loss [6, 10].', [
+    { marker: 6, filename: 'Gutierrez.pdf', label: 'page 4' },
+    { marker: 10, filename: 'Gutierrez.pdf', label: 'page 9' }
+  ]);
+  const html = renderMarkdown(linked);
+  assert.equal(html.includes('title="Gutierrez.pdf, page 4"'), true);
+  assert.equal(html.includes('title="Gutierrez.pdf, page 9"'), true);
+});

@@ -31,7 +31,7 @@ disclosure = true
 [presets.anthropic]
 label = "Anthropic"
 base_url = "https://api.anthropic.com"
-default_model = "claude-opus-5-5"
+default_model = ""
 requires_key = true
 disclosure = true
 key_env = ["ANTHROPIC_API_KEY", "ANT_KEY"]
@@ -60,7 +60,7 @@ disclosure = true
 [presets.ollama_cloud]
 label = "Ollama Cloud"
 base_url = "https://ollama.com/v1"
-default_model = "mimo-v2.6-flash"
+default_model = ""
 requires_key = true
 disclosure = true
 key_env = ["OLLAMA_API_KEY", "OLLAMA_KEY"]

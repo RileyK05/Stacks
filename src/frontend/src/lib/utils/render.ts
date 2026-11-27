@@ -48,10 +48,18 @@ export function linkCitationTitles(markdown: string, sources: readonly CitationT
   return parts
     .map((part, index) => {
       if (index % 2 === 1) return part;
-      return part.replace(/\[(\d+)\]/g, (match, raw: string) => {
-        const title = titles.get(Number(raw));
-        if (!title) return match;
-        return `<abbr title="${escapeAttr(title)}">[${raw}]</abbr>`;
+      // Some models group markers ("[11, 12]"); title each number in it.
+      return part.replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (match, group: string) => {
+        const numbers = group.split(/\s*,\s*/);
+        if (!numbers.some((raw) => titles.has(Number(raw)))) return match;
+        if (numbers.length === 1) {
+          return `<abbr title="${escapeAttr(titles.get(Number(group)) ?? '')}">[${group}]</abbr>`;
+        }
+        const linked = numbers.map((raw) => {
+          const title = titles.get(Number(raw));
+          return title ? `<abbr title="${escapeAttr(title)}">${raw}</abbr>` : raw;
+        });
+        return `[${linked.join(', ')}]`;
       });
     })
     .join('');

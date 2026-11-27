@@ -4172,32 +4172,35 @@ absence is not a missing-data warning.
 
 ## 2026-11-27 — Native Anthropic path, Ollama Cloud, and a real-course run
 
-Anthropic is now called through the official SDK (`provider._call_anthropic`),
-not the OpenAI-compatible shim: streamed, effort pinned per model profile
-(Opus 5.5's API default is `medium`), no `temperature` (current Claude models
-reject it), server-side refusal fallback where the profile opts in, and
-billed input = uncached + cache-write + cache-read. The SDK client is always
-given the connection's `base_url`, because the SDK otherwise honours an
-ambient `ANTHROPIC_BASE_URL`. The old preset's Settings "Test" never worked:
-Anthropic's Models API wants `x-api-key`, not a Bearer token, so the model
-list is read through the SDK too. Ollama Cloud is a preset
+Stacks is a harness: the student picks provider and model, so presets ship
+no default model and Stacks adds no per-model choices of its own. Anthropic
+connections are called through the official SDK (`provider._call_anthropic`)
+instead of the OpenAI-compatible shim: streamed, no `temperature` (current
+Claude models reject it), billed input = uncached + cache-write + cache-read,
+and effort / refusal fallback only if a model profile asks for them. The SDK
+client is always given the connection's `base_url`, because the SDK otherwise
+honours an ambient `ANTHROPIC_BASE_URL`. The Anthropic preset's Settings
+"Test" never worked: its Models API wants `x-api-key`, not a Bearer token, so
+the model list is read through the SDK. Ollama Cloud is a preset
 (`https://ollama.com/v1`). Presets may name `key_env` development variables,
-read only when the keychain has no key (a container has no keychain).
+read only when the keychain has no key (a dev container has no keychain).
 
 A run with a real course (syllabus, slides, four readings, one with no text
-layer) found three retrieval/generation defects, now fixed with tests:
-- OCR inherited the model profile's reasoning switch. MiMo on Ollama Cloud
-  spent ~15x the tokens thinking before transcribing (1037 vs 71 on one
-  slide) and dense slides hit the 8K/16K ceilings. Tasks can now override
-  reasoning (`[tasks.ocr] reasoning = false`), and Ollama Cloud receives
-  `reasoning_effort: "none"`.
-- "The Resendez reading" found nothing in that reading: book pages rarely
-  print the author's name, so only the syllabus line listing it matched.
-  A distinctive filename word in the question now filters to that source
-  (accent-insensitive; generic words excluded; fails open).
+layer) on claude-haiku-5-5 and inkling-2-small, and earlier on
+mimo-v2.6-flash, found these, now fixed with tests:
+- OCR inherited a model profile's reasoning switch: MiMo spent ~15x the
+  tokens thinking before transcribing (1037 vs 71 on one slide).
+  `[tasks.ocr] reasoning = false`; Ollama Cloud gets `reasoning_effort: none`.
+- A 4-page OCR batch outgrew a profile-less model's 2048-token output default
+  and all four pages were dropped. A truncated batch now falls back to one
+  page per call, like a transient failure.
+- "The Resendez reading" found nothing in it: book pages rarely print the
+  author's name. A distinctive filename word in the question now filters to
+  that source (accent-insensitive, generic words excluded, fails open).
 - A week filter dropped every source whose filename names no week, so
-  "Weeks 1-3" meant "the Week1 slide deck". Only sources dated to other
+  "Weeks 1-3" meant the Week1 slide deck only. Only sources dated to other
   weeks are excluded now.
+- Grouped markers ("[11, 12]", inkling's style) got no hover title in chat.
 Open: a request naming only a week range ("study guide for Weeks 1-3") is not
 treated as an overview, so generic words rank the syllabus and slides above
 the readings.

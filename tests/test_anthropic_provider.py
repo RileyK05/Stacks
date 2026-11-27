@@ -9,7 +9,7 @@ from typing import Any
 import anthropic
 import httpx2
 import pytest
-from src.backend.common import provider, providers
+from src.backend.common import model_profiles, provider, providers
 from src.backend.common.providers import (
     Connection,
     ProviderChoice,
@@ -24,7 +24,7 @@ def _claude(**overrides: Any) -> ResolvedProvider:
     values: dict[str, Any] = {
         "name": "anthropic",
         "base_url": "https://api.anthropic.com",
-        "model": "claude-opus-5-5",
+        "model": "claude-haiku-5-5",
         "api_key": "sk-ant-test",
         "is_local": False,
         "label": "Anthropic",
@@ -92,23 +92,29 @@ def _status_error(cls: type[anthropic.APIStatusError], code: int) -> Exception:
 # --- request shape -----------------------------------------------------------
 
 
-def test_request_pins_effort_and_fallback_and_sends_no_sampling() -> None:
+def test_request_sends_no_sampling_and_no_unrequested_options() -> None:
+    """A model without a profile gets the API's own defaults: Stacks does
+    not choose effort or fallbacks for the user's model."""
     request = provider.anthropic_request("tutor_answer", _claude(), "hi")
     assert "temperature" not in request
-    assert request["output_config"] == {"effort": "medium"}
-    assert request["betas"] == ["server-side-fallback-2026-07-01"]
-    assert request["fallbacks"] == "default"
+    assert "output_config" not in request
+    assert "fallbacks" not in request and "betas" not in request
     assert request["messages"] == [
         {"role": "user", "content": [{"type": "text", "text": "hi"}]}
     ]
 
 
-def test_model_without_profile_gets_no_fallback_or_effort() -> None:
-    request = provider.anthropic_request(
-        "tutor_answer", _claude(model="claude-haiku-5-5"), "hi"
+def test_a_profile_can_pin_effort_and_opt_into_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = model_profiles.ModelProfile(
+        model="claude-haiku-5-5", effort="low", refusal_fallback=True
     )
-    assert "fallbacks" not in request and "betas" not in request
-    assert "output_config" not in request
+    monkeypatch.setattr(model_profiles, "profile_for", lambda model: profile)
+    request = provider.anthropic_request("tutor_answer", _claude(), "hi")
+    assert request["output_config"] == {"effort": "low"}
+    assert request["betas"] == ["server-side-fallback-2026-07-01"]
+    assert request["fallbacks"] == "default"
 
 
 def test_schema_and_images_use_messages_api_shapes() -> None:
@@ -154,7 +160,7 @@ def test_call_provider_dispatches_anthropic_and_bills_cached_input(
     )
     text, inputs, outputs = REAL_CALL("tutor_answer", _claude(), "capital?")
     assert (text, inputs, outputs) == ("Paris", 117, 5)
-    assert client.requests[0]["model"] == "claude-opus-5-5"
+    assert client.requests[0]["model"] == "claude-haiku-5-5"
 
 
 def test_refusal_stop_reason_is_a_refusal(fake_client: Any) -> None:
@@ -209,7 +215,10 @@ def test_sdk_errors_map_to_the_seam_errors(
 
 
 def test_missing_key_fails_closed(_memory_keyring: dict[str, str]) -> None:
-    providers.save_choice(TaskClass.INTERACTIVE, ProviderChoice(preset="anthropic"))
+    providers.save_choice(
+        TaskClass.INTERACTIVE,
+        ProviderChoice(preset="anthropic", model="claude-haiku-5-5"),
+    )
     assert providers.resolve(TaskClass.INTERACTIVE) is None
     with pytest.raises(provider.ProviderUnavailableError, match="Settings"):
         provider.generate("tutor_answer", "prompt")
@@ -236,24 +245,30 @@ def test_env_keys_do_not_cross_presets(
         assert providers.api_key_for(connection) is None
 
 
-def test_interactive_claude_and_background_ollama_cloud(
+def test_user_chosen_models_route_per_task_class(
     _memory_keyring: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("ANT_KEY", "a")
     monkeypatch.setenv("OLLAMA_KEY", "o")
-    providers.save_choice(TaskClass.INTERACTIVE, ProviderChoice(preset="anthropic"))
-    providers.save_choice(TaskClass.BACKGROUND, ProviderChoice(preset="ollama_cloud"))
+    providers.save_choice(
+        TaskClass.INTERACTIVE,
+        ProviderChoice(preset="anthropic", model="claude-haiku-5-5"),
+    )
+    providers.save_choice(
+        TaskClass.BACKGROUND,
+        ProviderChoice(preset="ollama_cloud", model="inkling-2-small"),
+    )
     interactive = providers.resolve(TaskClass.INTERACTIVE)
     background = providers.resolve(TaskClass.BACKGROUND)
     assert interactive is not None and background is not None
     assert (interactive.name, interactive.model, interactive.api_key) == (
         "anthropic",
-        "claude-opus-5-5",
+        "claude-haiku-5-5",
         "a",
     )
     assert (background.base_url, background.model, background.api_key) == (
         "https://ollama.com/v1",
-        "mimo-v2.6-flash",
+        "inkling-2-small",
         "o",
     )
     assert providers.task_class("ocr") == TaskClass.BACKGROUND
