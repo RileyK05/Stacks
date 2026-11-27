@@ -14,6 +14,7 @@ checks that parity against the torch implementation.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -104,12 +105,28 @@ def ensure_files(spec: EncoderSpec) -> Path:
     return root
 
 
-def _session(model_path: Path) -> Any:
+def _session(model_path: Path, *, lean_memory: bool = False) -> Any:
     import onnxruntime as ort
 
     options = ort.SessionOptions()
-    options.intra_op_num_threads = max(1, (os.cpu_count() or 2) - 1)
+    # Every core: the encoders run while the student waits (a query, a
+    # rerank) or during ingestion, never alongside generation. Measured on 4
+    # cores: rerank 598 -> 305 ms per question, chunk embedding 2.6x faster.
+    options.intra_op_num_threads = max(1, os.cpu_count() or 1)
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    # No busy-waiting between runs: the embedder and reranker share the cores,
+    # and a spinning pool slowed the next model's run (query embedding 60 ->
+    # 30 ms) and burned CPU while the app sat idle.
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    if lean_memory:
+        # For the embedder (a 600 MB model fed long chunks): no arena and no
+        # pre-planned activation buffers, which kept the largest batch's
+        # memory for the life of the app. Embedding 32 chunks grew the
+        # process by ~650 MB at batch 8 with them, ~115 MB at batch 2
+        # without, in the same time; query latency is unchanged. The small
+        # reranker keeps both: without them it ran 278 -> 398 ms.
+        options.enable_cpu_mem_arena = False
+        options.enable_mem_pattern = False
     return ort.InferenceSession(
         str(model_path), sess_options=options, providers=["CPUExecutionProvider"]
     )
@@ -155,7 +172,7 @@ class OnnxEmbedder:
 
     def __init__(self, spec: EncoderSpec, *, max_length: int = 8192) -> None:
         root = ensure_files(spec)
-        self._session = _session(root / spec.model.path)
+        self._session = _session(root / spec.model.path, lean_memory=True)
         self._tokenizer = _tokenizer(root, spec, max_length)
         from tokenizers import Tokenizer
 
@@ -163,9 +180,14 @@ class OnnxEmbedder:
         self._count_tokenizer.no_truncation()
         self._count_tokenizer.no_padding()
         self._dimension: int | None = None
+        # Retrieval budgets count the same chunks on every question.
+        self._token_counts = functools.lru_cache(maxsize=8192)(self._count_tokens)
+
+    def _count_tokens(self, text: str) -> int:
+        return len(self._count_tokenizer.encode(text).ids)
 
     def token_count(self, text: str) -> int:
-        return len(self._count_tokenizer.encode(text).ids)
+        return int(self._token_counts(text))
 
     def get_embedding_dimension(self) -> int:
         if self._dimension is None:
@@ -180,16 +202,28 @@ class OnnxEmbedder:
         show_progress_bar: bool = False,
     ) -> np.ndarray:
         del show_progress_bar
+        # Batch similar lengths together: a batch is padded to its longest
+        # text, so mixed lengths spent most of the work on padding. Output
+        # order is restored below; the vectors are identical.
+        order = sorted(range(len(texts)), key=lambda index: len(texts[index]))
+        ordered = [texts[index] for index in order]
         batches: list[np.ndarray] = []
-        for start in range(0, len(texts), batch_size):
-            encodings = self._tokenizer.encode_batch(texts[start : start + batch_size])
+        for start in range(0, len(ordered), batch_size):
+            encodings = self._tokenizer.encode_batch(
+                ordered[start : start + batch_size]
+            )
             hidden = self._session.run(None, _feeds(self._session, encodings))[0]
             vectors = hidden[:, 0, :].astype(np.float32)
             if normalize_embeddings:
                 norms = np.linalg.norm(vectors, axis=1, keepdims=True)
                 vectors = vectors / np.maximum(norms, 1e-12)
             batches.append(vectors)
-        return np.concatenate(batches) if batches else np.zeros((0, 0), np.float32)
+        if not batches:
+            return np.zeros((0, 0), np.float32)
+        stacked = np.concatenate(batches)
+        result = np.empty_like(stacked)
+        result[order] = stacked
+        return result
 
 
 class OnnxCrossEncoder:
@@ -200,9 +234,10 @@ class OnnxCrossEncoder:
         self._session = _session(root / spec.model.path)
         self._tokenizer = _tokenizer(root, spec, max_length)
 
-    def predict(
-        self, pairs: list[tuple[str, str]], batch_size: int = 16
-    ) -> list[float]:
+    def predict(self, pairs: list[tuple[str, str]], batch_size: int = 1) -> list[float]:
+        """One pair per run by default: passages near the 512-token cap gain
+        nothing from batching on CPU and lose to padding (10 pairs: 305 ms at
+        1, 373 ms at 4, 598 ms at 16, same scores)."""
         scores: list[float] = []
         for start in range(0, len(pairs), batch_size):
             encodings = self._tokenizer.encode_batch(pairs[start : start + batch_size])

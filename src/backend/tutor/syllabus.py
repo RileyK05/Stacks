@@ -18,11 +18,13 @@ schedule gets no note.
 
 from __future__ import annotations
 
+import copy
 import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from typing import Any
 from uuid import UUID
 
 from src.backend.common.db import Connection
@@ -258,26 +260,61 @@ def match(weeks: Sequence[Week], filenames: dict[UUID, str]) -> None:
                 break
 
 
+_SCHEDULES: dict[UUID, tuple[tuple[Any, ...], list[Week]]] = {}
+
+
 def course_schedule(conn: Connection, course_id: UUID) -> list[Week]:
-    """The schedule of the course's syllabus, matched against its uploads."""
-    rows = conn.execute(
-        "SELECT s.source_id, s.filename, c.text FROM chunks c "
-        "JOIN sources s ON s.source_id = c.source_id "
-        "WHERE s.course_id = ? ORDER BY s.source_id, c.chunk_index",
-        (course_id,),
-    ).fetchall()
-    texts: dict[UUID, list[str]] = {}
-    filenames: dict[UUID, str] = {}
-    for row in rows:
-        texts.setdefault(row["source_id"], []).append(row["text"])
-        filenames[row["source_id"]] = row["filename"] or ""
+    """The schedule of the course's syllabus, matched against its uploads.
+
+    Only sources with an outline-shaped line are read (SQLite filters the
+    text, so a 100-file course no longer moves every chunk into Python), and
+    the result is reused until the course's sources or chunks change."""
+    fingerprint = tuple(
+        conn.execute(
+            "SELECT count(*), coalesce(max(c.chunk_rowid), 0), "
+            "group_concat(DISTINCT s.source_id || s.filename || s.status) "
+            "FROM chunks c JOIN sources s ON s.source_id = c.source_id "
+            "WHERE s.course_id = ?",
+            (course_id,),
+        )
+        .fetchone()
+        .values()
+    )
+    cached = _SCHEDULES.get(course_id)
+    if cached is not None and cached[0] == fingerprint:
+        return copy.deepcopy(cached[1])
+    candidates = [
+        row["source_id"]
+        for row in conn.execute(
+            "SELECT DISTINCT c.source_id FROM chunks c "
+            "JOIN sources s ON s.source_id = c.source_id "
+            "WHERE s.course_id = ? AND c.text LIKE '%Week %' "
+            "AND (c.text LIKE '%Week % - %' OR c.text LIKE '%Week %(%) -%' "
+            "OR c.text LIKE '%Week % –%' OR c.text LIKE '%Week % —%')",
+            (course_id,),
+        )
+    ]
+    filenames = {
+        row["source_id"]: row["filename"] or ""
+        for row in conn.execute(
+            "SELECT source_id, filename FROM sources WHERE course_id = ?", (course_id,)
+        )
+    }
     best: list[Week] = []
-    for parts in texts.values():
-        weeks = parse_schedule("\n".join(parts))
+    for source_id in candidates:
+        text = "\n".join(
+            row["text"]
+            for row in conn.execute(
+                "SELECT text FROM chunks WHERE source_id = ? ORDER BY chunk_index",
+                (source_id,),
+            )
+        )
+        weeks = parse_schedule(text)
         if sum(len(w.readings) for w in weeks) > sum(len(w.readings) for w in best):
             best = weeks
     if best:
         match(best, filenames)
+    _SCHEDULES[course_id] = (fingerprint, copy.deepcopy(best))
     return best
 
 

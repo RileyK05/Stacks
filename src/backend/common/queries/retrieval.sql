@@ -130,3 +130,23 @@ SELECT span.chunk_id, locator.label
 FROM chunk_locators AS span
 JOIN locators AS locator ON locator.locator_id = span.locator_id
 WHERE span.chunk_id IN (SELECT value FROM json_each(:chunk_ids));
+
+-- name: embedding_fingerprint
+-- Changes whenever embedding_rows would: rows added or removed, sources
+-- re-indexed, renamed or deleted, the course trashed. Reads no vectors.
+SELECT
+  (SELECT count(*) || ':' || coalesce(max(window.rowid), 0)
+     FROM passage_windows AS window
+     JOIN chunks AS chunk ON chunk.chunk_id = window.chunk_id
+     JOIN sources AS source ON source.source_id = chunk.source_id
+    WHERE source.course_id = :course_id AND window.model = :model) AS windows,
+  (SELECT count(*) || ':' || coalesce(max(emb.rowid), 0)
+     FROM chunk_embeddings AS emb
+     JOIN chunks AS chunk ON chunk.chunk_id = emb.chunk_id
+     JOIN sources AS source ON source.source_id = chunk.source_id
+    WHERE source.course_id = :course_id AND emb.model = :model) AS legacy,
+  (SELECT group_concat(source.source_id || source.status || coalesce(idx.revision, ''))
+     FROM sources AS source
+     LEFT JOIN source_indexes AS idx ON idx.source_id = source.source_id
+    WHERE source.course_id = :course_id) AS sources,
+  (SELECT coalesce(deleted_at, '') FROM courses WHERE course_id = :course_id) AS deleted;

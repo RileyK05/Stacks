@@ -347,6 +347,73 @@ def _merge_pins(
     return tuple(ordered)
 
 
+_EMBEDDING_INDEX: dict[
+    tuple[Any, ...], tuple[tuple[Any, ...], list[dict[str, Any]], np.ndarray]
+] = {}
+_EMBEDDING_INDEX_LIMIT = 4
+
+
+def _embedding_index(
+    conn: Connection,
+    course_id: UUID,
+    model: str,
+    dimension: int,
+    source_ids: Collection[UUID] | None,
+) -> tuple[list[dict[str, Any]], np.ndarray]:
+    """The course's valid stored vectors as one matrix, with their row
+    metadata. Every question used to read every vector back from SQLite and
+    rebuild it (5,700 windows: ~63,000 UUID parses per question); it is now
+    rebuilt only when `embedding_fingerprint` changes."""
+    scope = (
+        tuple(sorted(str(source) for source in source_ids))
+        if source_ids is not None
+        else None
+    )
+    key = (course_id, model, dimension, scope)
+    fingerprint = tuple(
+        conn.execute(
+            get(_FILE, "embedding_fingerprint"),
+            {"course_id": course_id, "model": model},
+        )
+        .fetchone()
+        .values()
+    )
+    cached = _EMBEDDING_INDEX.get(key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1], cached[2]
+    rows = conn.execute(
+        get(_FILE, "embedding_rows"),
+        {
+            "course_id": course_id,
+            "model": model,
+            "source_ids": json_ids(source_ids) if source_ids is not None else None,
+        },
+    ).fetchall()
+    rows = [
+        row
+        for row in rows
+        if row["dimension"] == dimension
+        and len(row["embedding"]) == dimension * np.dtype("<f4").itemsize
+    ]
+    if rows:
+        matrix = np.frombuffer(
+            b"".join(row["embedding"] for row in rows), dtype="<f4"
+        ).reshape(len(rows), dimension)
+        valid = np.isfinite(matrix).all(axis=1)
+        rows = [
+            {k: v for k, v in row.items() if k != "embedding"}
+            for row, keep in zip(rows, valid, strict=True)
+            if keep
+        ]
+        matrix = np.ascontiguousarray(matrix[valid])
+    else:
+        matrix = np.zeros((0, dimension), dtype=np.float32)
+    if len(_EMBEDDING_INDEX) >= _EMBEDDING_INDEX_LIMIT:
+        _EMBEDDING_INDEX.pop(next(iter(_EMBEDDING_INDEX)))
+    _EMBEDDING_INDEX[key] = (fingerprint, rows, matrix)
+    return rows, matrix
+
+
 def embedding_seam(
     conn: Connection,
     course_id: UUID,
@@ -364,32 +431,12 @@ def embedding_seam(
     comparing mismatched vector spaces would rank garbage silently."""
     if not query_embedding:
         return {}
-    rows = conn.execute(
-        get(_FILE, "embedding_rows"),
-        {
-            "course_id": course_id,
-            "model": model,
-            "source_ids": json_ids(source_ids) if source_ids is not None else None,
-        },
-    ).fetchall()
-    dimension = len(query_embedding)
-    rows = [
-        row
-        for row in rows
-        if row["dimension"] == dimension
-        and len(row["embedding"]) == dimension * np.dtype("<f4").itemsize
-    ]
-    if not rows:
-        return {}
-    matrix = np.frombuffer(
-        b"".join(row["embedding"] for row in rows), dtype="<f4"
-    ).reshape(len(rows), dimension)
     query_vector = np.asarray(query_embedding, dtype=np.float32)
     if not np.isfinite(query_vector).all():
         return {}
-    valid = np.isfinite(matrix).all(axis=1)
-    rows = [row for row, keep in zip(rows, valid, strict=True) if keep]
-    matrix = matrix[valid]
+    rows, matrix = _embedding_index(
+        conn, course_id, model, len(query_embedding), source_ids
+    )
     if not rows:
         return {}
     scores = matrix @ query_vector

@@ -9,6 +9,7 @@ fix for STK-025/044, STK-039 and R5-NEW-p. Pure functions except
 
 from __future__ import annotations
 
+import functools
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -97,12 +98,21 @@ def filename_names(filename: str, policy: RoutePolicy | None = None) -> frozense
     words and their camel-case parts ("GarciaSanchez_2021_Ch2" -> garcia,
     sanchez, garciasanchez), minus short and generic words."""
     policy = policy or load_route_policy()
-    stop = {_fold(word) for word in policy.name_stopwords}
+    return _filename_names(filename, policy.name_min_chars, policy.name_stopwords)
+
+
+@functools.lru_cache(maxsize=4096)
+def _filename_names(
+    filename: str, min_chars: int, stopwords: tuple[str, ...]
+) -> frozenset[str]:
+    # Cached: every message asked for every source's names (1,060 parses
+    # for two messages in a 100-file course).
+    stop = {_fold(word) for word in stopwords}
     names: set[str] = set()
     for word in _WORD.findall(PurePath(filename).stem):
         for part in (word, *_CAMEL_PART.findall(word)):
             folded = _fold(part)
-            if len(folded) >= policy.name_min_chars and folded not in stop:
+            if len(folded) >= min_chars and folded not in stop:
                 names.add(folded)
     return frozenset(names)
 

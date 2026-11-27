@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 DEFAULT_BACKUPS_PATH = PROJECT_ROOT / "configs" / "backups.toml"
 
@@ -22,8 +22,7 @@ class BackupPolicy(BaseModel):
 
 
 def load_backup_policy(path: Path = DEFAULT_BACKUPS_PATH) -> BackupPolicy:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     return BackupPolicy(
         backup_config_version=raw["version"]["backup_config_version"],
         default_enabled=raw["defaults"]["enabled"],

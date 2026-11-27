@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 
 class PassagePolicy(BaseModel):
@@ -33,5 +33,6 @@ class PassagePolicy(BaseModel):
 
 
 def load_policy(path: Path | None = None) -> PassagePolicy:
-    with (path or PROJECT_ROOT / "configs" / "passages.toml").open("rb") as handle:
-        return PassagePolicy.model_validate(tomllib.load(handle))
+    return PassagePolicy.model_validate(
+        load_toml(path or PROJECT_ROOT / "configs" / "passages.toml")
+    )

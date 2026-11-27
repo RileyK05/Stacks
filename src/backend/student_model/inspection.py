@@ -27,7 +27,32 @@ def rows(conn: Connection, name: str, **params: Any) -> list[dict[str, Any]]:
     return conn.execute(get("learning", name), params).fetchall()
 
 
+def _database_state(conn: Connection) -> tuple[int, int]:
+    """Changes to the database as this connection sees them: its own writes
+    (`total_changes`) and other connections' commits (`data_version`)."""
+    version = conn.execute("PRAGMA data_version").fetchone()
+    value = next(iter(version.values())) if isinstance(version, dict) else version[0]
+    return (conn.total_changes, int(value))
+
+
 def targets(conn: Connection, course_id: UUID) -> list[TargetMemory]:
+    """Capability memory, recomputed only when the database has changed: one
+    chat message asked for it up to four times (practice plan, adaptation,
+    allocation, course memory), re-reading every observation each time. The
+    memo lives on the connection (db.AppConnection), so it dies with it."""
+    memo = getattr(conn, "memo", None)
+    if memo is None:
+        return _targets(conn, course_id)
+    key = ("targets", course_id, *_database_state(conn))
+    cached = memo.get(key)
+    if cached is None:
+        for stale in [k for k in memo if k[:2] == ("targets", course_id)]:
+            del memo[stale]
+        cached = memo[key] = _targets(conn, course_id)
+    return list(cached)
+
+
+def _targets(conn: Connection, course_id: UUID) -> list[TargetMemory]:
     policy = load_learning_policy().scoring
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for observation in rows(conn, "observations", course_id=course_id):

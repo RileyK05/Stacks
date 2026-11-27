@@ -14,13 +14,13 @@ budget thinking when allowed (decision 012); a reasoning-first model
 
 from __future__ import annotations
 
-import tomllib
 from functools import cache
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 PROFILES_DIR = PROJECT_ROOT / "configs" / "models"
 
@@ -56,8 +56,7 @@ def _load(directory: Path) -> dict[str, ModelProfile]:
     if not directory.is_dir():
         return profiles
     for path in sorted(directory.glob("*.toml")):
-        with path.open("rb") as handle:
-            raw = tomllib.load(handle)
+        raw = load_toml(path)
         profile = ModelProfile(
             model=raw.get("model", path.stem),
             **{key: value for key, value in raw.items() if key != "model"},

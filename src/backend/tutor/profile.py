@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 from src.backend.common.config import PROJECT_ROOT
 from src.backend.common.schemas.tutor import TutorProfile
+from src.backend.common.toml_cache import load_toml
 
 DEFAULT_PROFILE_PATH = PROJECT_ROOT / "configs" / "tutor.toml"
 
@@ -12,8 +12,7 @@ DEFAULT_PROFILE_PATH = PROJECT_ROOT / "configs" / "tutor.toml"
 def load_generic_tutor_profile(
     path: Path = DEFAULT_PROFILE_PATH,
 ) -> TutorProfile:
-    with path.open("rb") as profile_file:
-        return TutorProfile.model_validate(tomllib.load(profile_file))
+    return TutorProfile.model_validate(load_toml(path))
 
 
 def select_tutor_profile(

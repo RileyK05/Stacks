@@ -14,7 +14,9 @@
     SheetContent,
     SlidesContent
   } from '$lib/stores/artifact.svelte';
-  import DocEditor from './DocEditor.svelte';
+  // The document editor (TipTap/ProseMirror, ~720 kB) loads when a document
+  // is first edited, not with every course page.
+  const loadDocEditor = () => import('./DocEditor.svelte');
   import FlashcardsArtifact from './FlashcardsArtifact.svelte';
   import QuizArtifact from './QuizArtifact.svelte';
   import type { PracticeContext } from '$lib/stores/practice.svelte';
@@ -59,15 +61,21 @@
 
 {#if kind === 'doc'}
   {#if editable}
-    <DocEditor
-      markdown={doc.markdown}
-      onchange={(markdown) => {
-        doc.markdown = markdown;
-        onchange();
-      }}
-      {oncite}
-      {onsection}
-    />
+    {#await loadDocEditor()}
+      <p class="text-sm text-subtle">Opening the editor…</p>
+    {:then { default: DocEditor }}
+      <DocEditor
+        markdown={doc.markdown}
+        onchange={(markdown) => {
+          doc.markdown = markdown;
+          onchange();
+        }}
+        {oncite}
+        {onsection}
+      />
+    {:catch}
+      <RichText text={doc.markdown} class="text-[15px] sm:prose-base" />
+    {/await}
   {:else if doc.markdown.trim()}
     <RichText text={doc.markdown} class="text-[15px] sm:prose-base" />
   {:else}
