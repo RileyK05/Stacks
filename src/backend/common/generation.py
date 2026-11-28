@@ -15,12 +15,17 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from src.backend.common import model_profiles, providers
+from src.backend.common import model_capabilities, model_profiles, providers
 from src.backend.common.generation_config import (
     GenerationPolicy,
     load_generation_policy,
 )
 from src.backend.common.providers import ResolvedProvider
+
+# The largest first request for a model whose ceiling is known: room for
+# thinking plus a long workspace item, while keeping the operation's
+# requested-token bound meaningful.
+FIRST_CALL_CAP = 32768
 
 
 class GenerationLimitError(RuntimeError):
@@ -93,6 +98,22 @@ def plan_call(
     else:
         desired = min(demand.desired_output_tokens, preferred)
     output = min(desired, ceiling)
+    if profile is None or profile.max_output_tokens is None:
+        # The provider states this model's ceiling (Anthropic's Models API):
+        # ask for what the task needs at once instead of the unknown-model
+        # default. Output is billed as generated, not as requested, and a
+        # thinking model spends part of it reasoning: a 5-question quiz on
+        # Claude Haiku 5.5 used ~5,000 tokens, so every 2048-token first
+        # call was cut off and redone.
+        known = model_capabilities.capabilities_for(endpoint).max_output_tokens
+        if known:
+            caps = model_capabilities.capabilities_for(endpoint)
+            thinks = caps.thinks and demand.reasoning is not False
+            want = demand.desired_output_tokens * (
+                demand.reasoning_multiplier if thinks else 1
+            )
+            output = min(known, max(output, min(want, FIRST_CALL_CAP)))
+            ceiling = min(known, max(output, demand.widen_to_output_tokens or 0, want))
     context = profile.context_window_tokens if profile else None
     if endpoint.name == "local":
         from src.backend.runtime.config import load_runtime_config

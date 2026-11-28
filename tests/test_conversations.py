@@ -266,16 +266,24 @@ def test_older_turns_are_folded_into_a_rolling_summary(
     course_id = _course(client)
     calls = configure_test_provider(monkeypatch, ANSWER)
     chat_id = _chat(client, course_id)
-    for question in ("What is linearity?", "Why?", "An example?"):
+    questions = ("What is linearity?", "Why?", "An example?", "And scaling?")
+    for question in questions:
         reply = _send(client, course_id, chat_id, question).json()["reply"]
         assert reply["no_match"] is False, "a follow-up chain keeps its topic"
+    assert not [c for c in calls if c["task"] == "conversation_summary"], (
+        "eight messages are still shown verbatim: no summary call yet"
+    )
+    prompt = str([c for c in calls if c["task"] == "tutor_answer"][-1]["prompt"])
+    assert "Student: What is linearity?" in prompt, "nothing dropped while waiting"
 
+    _send(client, course_id, chat_id, "One more?")
     summaries = [c for c in calls if c["task"] == "conversation_summary"]
-    assert len(summaries) == 1, "the first exchange left the recent window"
+    assert len(summaries) == 1, "three exchanges folded in one call"
     assert "Student: What is linearity?" in str(summaries[0]["prompt"])
+    assert "Student: An example?" in str(summaries[0]["prompt"])
     stored = conversations_repo.get_conversation(UUID(course_id), UUID(chat_id))
     assert stored is not None
-    assert stored.summary == ANSWER and stored.summary_through == 2
+    assert stored.summary == ANSWER and stored.summary_through == 6
 
     _send(client, course_id, chat_id, "More on linearity?")
     prompt = str([c for c in calls if c["task"] == "tutor_answer"][-1]["prompt"])

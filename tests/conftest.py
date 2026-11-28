@@ -96,6 +96,27 @@ def client() -> TestClient:
 
 
 @pytest.fixture(autouse=True)
+def _fresh_prompt_cache_history() -> Iterator[None]:
+    from src.backend.common import prompt_cache
+
+    prompt_cache.reset()
+    yield
+    prompt_cache.reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_capability_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests never ask a provider what a model can do."""
+    from src.backend.common import model_capabilities
+
+    monkeypatch.setattr(
+        model_capabilities,
+        "capabilities_for",
+        lambda endpoint: model_capabilities.UNKNOWN,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _memory_keyring(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, str]]:
     """Tests never touch the OS credential store."""
     from src.backend.common import secrets

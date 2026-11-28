@@ -107,11 +107,18 @@ def strip_fence_echo(text: str) -> str:
     return "\n".join(lines).strip()
 
 
-def grounded_prompt(instruction: str, material: str) -> str:
+def grounded_prompt(instruction: str, material: str, after: str = "") -> str:
     """Assemble a task prompt: trusted instruction first, then the course
     material fenced as data. Every prompt that embeds uploaded text goes
-    through here so input marking is structural, not a per-call habit."""
-    return f"{instruction}\n\n{fence_untrusted(material)}"
+    through here so input marking is structural, not a per-call habit.
+
+    `after` is trusted text placed after the fence: what differs between
+    calls that share the instruction and material (a repair note). Keeping
+    it last leaves the long shared prefix byte-identical, so a provider's
+    prompt cache can reuse it (provider.anthropic_request marks the fence's
+    end as the cache boundary)."""
+    prompt = f"{instruction}\n\n{fence_untrusted(material)}"
+    return f"{prompt}\n\n{after}" if after else prompt
 
 
 class PromptPolicy(BaseModel):

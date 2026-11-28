@@ -305,3 +305,155 @@ def test_ocr_budget_is_not_sized_for_reasoning() -> None:
     answer = generation.plan_call("tutor_answer", _ollama_cloud(), "q")
     assert ocr.output_tokens == 2048
     assert answer.output_tokens > ocr.output_tokens
+
+
+# --- model capabilities -------------------------------------------------------
+
+
+def _known(monkeypatch: pytest.MonkeyPatch, **values: Any) -> None:
+    from src.backend.common import model_capabilities
+
+    caps = model_capabilities.Capabilities(**values)
+    monkeypatch.setattr(model_capabilities, "capabilities_for", lambda endpoint: caps)
+
+
+def test_a_known_ceiling_sizes_the_first_call_for_the_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A thinking model's quiz used ~5,000 tokens; the 2048-token first call
+    for an "unknown" model was cut off and redone every time."""
+    from src.backend.common import generation
+
+    _known(monkeypatch, max_output_tokens=128000, thinks=True)
+    quiz = generation.plan_call("artifact_generation", _claude(), "p")
+    summary = generation.plan_call("conversation_summary", _claude(), "p")
+    assert quiz.output_tokens == generation.FIRST_CALL_CAP
+    assert summary.output_tokens == 1024, "reasoning off: no thinking room"
+    _known(monkeypatch)
+    assert (
+        generation.plan_call("artifact_generation", _claude(), "p").output_tokens
+        == 2048
+    )
+
+
+def test_tasks_without_deliberation_switch_thinking_off_where_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _known(monkeypatch, can_disable_thinking=True, thinks=True)
+    assert provider.anthropic_request("conversation_summary", _claude(), "p")[
+        "thinking"
+    ] == {"type": "disabled"}
+    assert "thinking" not in provider.anthropic_request("tutor_answer", _claude(), "p")
+    _known(monkeypatch, thinks=True)
+    assert "thinking" not in provider.anthropic_request(
+        "conversation_summary", _claude(), "p"
+    ), "a model that cannot switch it off is left alone"
+
+
+def test_capabilities_are_read_from_the_models_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.backend.common import model_capabilities
+
+    info = {
+        "max_tokens": 128000,
+        "capabilities": {
+            "effort": {
+                "supported": True,
+                "low": {"supported": True},
+                "max": {"supported": False},
+            },
+            "thinking": {"supported": True, "types": {"disabled": {"supported": True}}},
+        },
+    }
+    fake = SimpleNamespace(
+        models=SimpleNamespace(
+            retrieve=lambda model: SimpleNamespace(model_dump=lambda: info)
+        )
+    )
+    monkeypatch.setattr(provider, "anthropic_client", lambda *a, **k: fake)
+    caps = model_capabilities._lookup(_claude())
+    assert caps.max_output_tokens == 128000
+    assert caps.efforts == frozenset({"low"})
+    assert caps.can_disable_thinking and caps.thinks
+
+
+# --- prompt caching ------------------------------------------------------------
+
+
+def _grounded(after: str = "") -> str:
+    from src.backend.common.prompt_registry import grounded_prompt
+
+    return grounded_prompt("Instruction.", "material " * 800, after=after)
+
+
+def test_a_repeated_prefix_is_cached_and_the_repair_note_stays_outside_it() -> None:
+    """A quiz the checks rejected is regenerated from the same instruction and
+    material: the second attempt marks that prefix so later ones read it."""
+    first = provider.anthropic_request("artifact_generation", _claude(), _grounded())
+    blocks = first["messages"][0]["content"]
+    assert len(blocks) == 1 and "cache_control" not in blocks[0], "seen once: no write"
+    again = provider.anthropic_request(
+        "artifact_generation", _claude(), _grounded(after="Repair note.")
+    )
+    blocks = again["messages"][0]["content"]
+    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    assert blocks[0]["text"].endswith("<<<UNTRUSTED_COURSE_MATERIAL end>>>")
+    assert blocks[1]["text"].strip() == "Repair note."
+
+
+def test_short_or_one_off_prompts_are_never_marked() -> None:
+    for _ in range(3):
+        request = provider.anthropic_request("tutor_answer", _claude(), "short prompt")
+        assert "cache_control" not in request["messages"][0]["content"][0]
+
+
+def test_cache_tokens_reach_the_ledger(
+    fake_client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.backend.common.db import connection
+
+    monkeypatch.setattr(provider, "_call_provider", REAL_CALL)
+    fake_client(
+        _message(
+            "ok",
+            usage={"cache_read_input_tokens": 900, "cache_creation_input_tokens": 0},
+        )
+    )
+    provider._recorded_call(
+        "tutor_answer",
+        _claude(),
+        "prompt",
+        course_id=None,
+        images=None,
+        response_schema=None,
+    )
+    with connection() as conn:
+        row = conn.execute(
+            "SELECT input_tokens, cache_read_tokens, cache_write_tokens "
+            "FROM usage_ledger ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    assert (row["input_tokens"], row["cache_read_tokens"]) == (910, 900)
+
+
+def test_ollama_reports_thinking_and_its_context_as_the_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+    from src.backend.common import model_capabilities
+
+    shown = {
+        "capabilities": ["completion", "thinking"],
+        "model_info": {"inkling2.context_length": 1048576},
+    }
+    seen: dict[str, Any] = {}
+
+    def post(url: str, **kwargs: Any) -> Any:
+        seen["url"] = url
+        return SimpleNamespace(raise_for_status=lambda: None, json=lambda: shown)
+
+    monkeypatch.setattr(httpx, "post", post)
+    caps = model_capabilities._lookup(_ollama_cloud())
+    assert seen["url"] == "https://ollama.com/api/show"
+    assert caps.max_output_tokens == 1048576
+    assert caps.thinks and caps.can_disable_thinking

@@ -42,6 +42,8 @@ def record(
     course_id: UUID | None = None,
     is_local: bool | None = None,
     usage_reported: bool = True,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
 ) -> UsageLedgerEntry:
     with connection() as conn:
         row = conn.execute(
@@ -56,6 +58,8 @@ def record(
                 "output_tokens": output_tokens,
                 "is_local": int(provider == "local" if is_local is None else is_local),
                 "usage_reported": int(usage_reported),
+                "cache_read_tokens": cache_read_tokens,
+                "cache_write_tokens": cache_write_tokens,
             },
         ).fetchone()
         conn.commit()
