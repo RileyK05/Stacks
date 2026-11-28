@@ -36,6 +36,10 @@ reasoning = false
 [tasks.conversation_summary]
 desired_output_tokens = 1024
 max_recoveries = 0
+# A 120-word summary needs no deliberation. On Claude Haiku 5.5 (thinking on
+# by default) thinking used the whole 1024 tokens on every turn, the summary
+# was never written, and the chat lost everything older than four messages.
+reasoning = false
 
 [tasks.learning_research]
 desired_output_tokens = 2048

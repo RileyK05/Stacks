@@ -40,13 +40,26 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
-from src.backend.common import generation, model_profiles, providers, usage_repo
+from src.backend.common import (
+    generation,
+    model_capabilities,
+    model_profiles,
+    prompt_cache,
+    providers,
+    usage_repo,
+)
 from src.backend.common.embeddings_config import EmbeddingPolicy, load_embedding_policy
+from src.backend.common.generation_config import load_generation_policy
 from src.backend.common.providers import ProviderChoice, ResolvedProvider
 
 logger = logging.getLogger(__name__)
 _USAGE_RECORDER: ContextVar[Callable[[int, int, bool], None] | None] = ContextVar(
     "generation_usage_recorder", default=None
+)
+# (cache-read, cache-write) input tokens of the call being recorded, as the
+# provider reported them; part of the input count, kept apart in the ledger.
+_CACHE_USAGE: ContextVar[tuple[int, int]] = ContextVar(
+    "generation_cache_usage", default=(0, 0)
 )
 
 # Presets for servers the user runs (not the bundled one). They get the
@@ -344,6 +357,7 @@ def _recorded_call(
 
     def record(input_tokens: int, output_tokens: int, reported: bool = True) -> None:
         nonlocal recorded, usage_reported
+        cache_read, cache_write = _CACHE_USAGE.get()
         usage_repo.record(
             task=task,
             provider=endpoint.name,
@@ -353,12 +367,15 @@ def _recorded_call(
             course_id=course_id,
             is_local=endpoint.is_local,
             usage_reported=reported,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
         )
         recorded = True
         usage_reported = reported
         generation.record_usage(input_tokens, output_tokens, reported)
 
     token = _USAGE_RECORDER.set(record)
+    _CACHE_USAGE.set((0, 0))
     try:
         result = _call_provider(
             task, endpoint, prompt, images=images, response_schema=response_schema
@@ -583,6 +600,13 @@ def _call_provider(
         input_tokens, input_reported = _usage_count(usage.get("prompt_tokens"))
         output_tokens, output_reported = _usage_count(usage.get("completion_tokens"))
         reported = input_reported and output_reported
+        details = usage.get("prompt_tokens_details")
+        cached, _ = _usage_count(
+            details.get("cached_tokens") if isinstance(details, dict) else None
+        )
+        # OpenAI-compatible servers cache prefixes on their own and report
+        # the hits here (OpenAI, Ollama, DeepSeek, OpenRouter...).
+        _CACHE_USAGE.set((cached, 0))
         if recorder is not None:
             recorder(input_tokens, output_tokens, reported)
         if not isinstance(payload, dict):
@@ -732,10 +756,32 @@ def anthropic_request(
         }
         for img in images or ()
     ]
-    content.append({"type": "text", "text": prompt})
+    prefix, tail = prompt_cache.split(prompt)
+    block: dict[str, Any] = {"type": "text", "text": prefix}
+    if prompt_cache.should_cache(endpoint.model, task, prefix):
+        # This prefix (instruction + course material) was sent again within
+        # the cache's lifetime: a repair or a re-ask. Mark its end so later
+        # attempts read it at a tenth of the input price.
+        block["cache_control"] = {"type": "ephemeral"}
+    content.append(block)
+    if tail.strip():
+        content.append({"type": "text", "text": tail})
     output_config: dict[str, Any] = {}
     if profile and profile.effort:
         output_config["effort"] = profile.effort
+    demand = load_generation_policy().tasks.get(task)
+    thinking: dict[str, Any] | None = None
+    if (
+        demand is not None
+        and demand.reasoning is False
+        and output_config.get("effort") not in ("xhigh", "max")
+        and model_capabilities.capabilities_for(endpoint).can_disable_thinking
+    ):
+        # Tasks that gain nothing from deliberation (transcription, the chat
+        # summary) switch it off where the model allows: Claude models that
+        # think by default spent the whole 1024-token summary allowance
+        # thinking and never wrote the summary.
+        thinking = {"type": "disabled"}
     if response_schema is not None:
         output_config["format"] = {
             "type": "json_schema",
@@ -752,6 +798,8 @@ def anthropic_request(
     }
     if output_config:
         request["output_config"] = output_config
+    if thinking is not None:
+        request["thinking"] = thinking
     if profile and profile.refusal_fallback:
         request["betas"] = [_ANTHROPIC_FALLBACK_BETA]
         request["fallbacks"] = "default"
@@ -828,6 +876,12 @@ def _call_anthropic(
         + (getattr(usage, "cache_read_input_tokens", None) or 0)
     )
     output_tokens = usage.output_tokens or 0
+    _CACHE_USAGE.set(
+        (
+            getattr(usage, "cache_read_input_tokens", None) or 0,
+            getattr(usage, "cache_creation_input_tokens", None) or 0,
+        )
+    )
     recorder = _USAGE_RECORDER.get()
     if recorder is not None:
         recorder(input_tokens, output_tokens, True)

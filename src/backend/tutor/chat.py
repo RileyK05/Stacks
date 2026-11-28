@@ -42,6 +42,12 @@ logger = logging.getLogger(__name__)
 # The last two exchanges are shown verbatim; everything before them lives
 # in the rolling summary.
 RECENT_MESSAGES = 4
+# Turns not yet folded into the summary are shown verbatim, up to this many.
+# Folding waits until more than this have built up, then folds all but the
+# last RECENT_MESSAGES in one call: a summary call every two to three
+# exchanges instead of after every one, and a failed fold no longer drops
+# turns from what the tutor sees.
+UNSUMMARIZED_MAX = 8
 # How much of an earlier answer the model re-reads. Answers can be long;
 # the gist is enough to resolve "it" and "the second one".
 EXCERPT_CHARS = 600
@@ -171,7 +177,10 @@ def _turn_text(message: Message, limit: int = EXCERPT_CHARS) -> str:
 
 
 def context_for(conversation: Conversation, history: Sequence[Message]) -> ChatContext:
-    recent = history[-RECENT_MESSAGES:]
+    unsummarized = [m for m in history if m.seq > conversation.summary_through]
+    recent = (unsummarized or list(history))[-max(UNSUMMARIZED_MAX, RECENT_MESSAGES) :]
+    if len(recent) < RECENT_MESSAGES:
+        recent = list(history[-RECENT_MESSAGES:])
     # Small talk ("hi", "thanks") says nothing about the topic to search for.
     asked = [
         m.text
@@ -279,9 +288,17 @@ def pending_summary(
     summarized yet, they are summarized first and only — a topic-only
     summary (B-02) — so the model never re-asserts a fact from a source
     the student has since excluded."""
-    older = [
-        m for m in history[:-RECENT_MESSAGES] if m.seq > conversation.summary_through
-    ]
+    unsummarized = [m for m in history if m.seq > conversation.summary_through]
+    scope_changed_pending = bool(
+        conversation.scope_revised_seq
+        and conversation.summary_through < conversation.scope_revised_seq
+        and any(m.seq <= conversation.scope_revised_seq for m in unsummarized)
+        and len(unsummarized) > RECENT_MESSAGES
+    )
+    if len(unsummarized) <= UNSUMMARIZED_MAX and not scope_changed_pending:
+        # Still shown verbatim: no model call yet.
+        return None
+    older = unsummarized[:-RECENT_MESSAGES]
     scope_changed = False
     revised = conversation.scope_revised_seq
     if revised and conversation.summary_through < revised:

@@ -151,6 +151,7 @@ def test_old_annotations_and_history_survive_retiring_the_old_stores(
         "022",
         "023",
         "024",
+        "025",
     ]
     conn = connect(path)
     try:

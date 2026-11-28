@@ -4284,3 +4284,42 @@ Known limits: written answers are all-or-nothing per question (missed points
 are listed); with misses across several readings the review search leans to
 one; inkling still makes the correct option the longest one more often than
 chance.
+
+### 2026-11-28 — Fewer, smaller API calls per student action
+
+Measured with a scripted 12-turn student session (questions, follow-ups,
+two quizzes, a study guide, "quiz me on what I got wrong", "what's due"):
+
+| | Haiku 5.5 before → after | inkling-2-small before → after |
+|---|---|---|
+| API calls | 26 → 15 | 29 → 15 |
+| input tokens | 183k → 128k | 138k → 88k |
+| output tokens | 43.8k → 28.0k | 40.3k → 19.6k |
+| wall time | 178 s → 138 s | 98 s → 66 s |
+
+- Models without a profile were "unknown" and got a 2048-token first call.
+  With thinking on (Claude Haiku 5.5 thinks by default) a quiz needs ~5,000
+  tokens, so nearly every workspace item was cut off and redone. Providers
+  state their models' limits: Anthropic's Models API (`max_tokens`, effort
+  levels, thinking types) and Ollama's `/api/show` (thinking, context
+  length); common/model_capabilities.py reads and caches them, and the first
+  call is sized for the task (up to `generation.FIRST_CALL_CAP`).
+- The chat summary never saved on thinking models: thinking used its whole
+  1024 tokens, the call was cut off, and every turn tried again. Tasks with
+  `reasoning = false` (OCR, the summary) now switch thinking off where the
+  model allows it. Folding waits until more than 8 turns are unsummarized
+  and folds all but the last 4 in one call; until then they are shown
+  verbatim, so a failed fold loses nothing.
+- Thinking was measured, not assumed: on the real Holloway quiz prompt,
+  thinking off produced the same usable questions in 1/3 of the output and
+  time, but put the key in the longest option 14/20 times vs 3/20 at the
+  default effort. Workspace items keep the provider's default; answers too
+  (low vs medium differed by ~10%).
+- Prompt caching: repair and re-ask attempts now share the instruction and
+  material prefix (the varying note goes after the fence); the Anthropic
+  request marks that prefix only when this model and task recently sent it
+  again (prompt_cache.py), because one-shot RAG turns never repeat a prefix
+  and an unread cache write costs 1.25x. Cache reads/writes are recorded in
+  `usage_ledger` (migration 025). In the sessions above no prefix repeated:
+  with first calls sized correctly the retries that would have read it are
+  gone.

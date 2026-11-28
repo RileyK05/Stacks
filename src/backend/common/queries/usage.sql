@@ -1,11 +1,13 @@
 -- name: record
 INSERT INTO usage_ledger
     (ledger_id, course_id, course_label, task, provider, model,
-     input_tokens, output_tokens, is_local, usage_reported)
+     input_tokens, output_tokens, is_local, usage_reported,
+     cache_read_tokens, cache_write_tokens)
 VALUES
     (:ledger_id, :course_id,
      (SELECT name FROM courses WHERE course_id = :course_id),
-     :task, :provider, :model, :input_tokens, :output_tokens, :is_local, :usage_reported)
+     :task, :provider, :model, :input_tokens, :output_tokens, :is_local, :usage_reported,
+     :cache_read_tokens, :cache_write_tokens)
 RETURNING ledger_id, course_id, course_label, task, provider, model,
           input_tokens, output_tokens, usage_reported, created_at;
 

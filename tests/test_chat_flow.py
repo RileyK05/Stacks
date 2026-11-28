@@ -547,7 +547,7 @@ def test_the_chat_summary_is_written_by_the_chats_own_model(
         f"/courses/{course_id}/conversations/{chat_id}",
         json={"model_choice": {"connection": local.id, "model": "llama-test"}},
     )
-    for question in ("What is linearity?", "Why?", "An example?"):
+    for question in ("What is linearity?", "Why?", "An example?", "More?", "Last?"):
         assert _send(client, course_id, chat_id, question).status_code == 200
     summaries = [c for c in calls if c["task"] == "conversation_summary"]
     assert len(summaries) == 1

@@ -158,7 +158,7 @@ def test_reasoning_model_scales_output_by_task_size() -> None:
     summary = generation.plan_call("conversation_summary", endpoint, "task")
     answer = generation.plan_call("tutor_answer", endpoint, "task")
     document = generation.plan_call("artifact_generation", endpoint, "task")
-    assert summary.output_tokens == 4096
+    assert summary.output_tokens == 1024, "the summary task switches reasoning off"
     assert answer.output_tokens == 12288
     assert document.output_tokens == 16384
     assert summary.output_tokens < answer.output_tokens < document.output_tokens

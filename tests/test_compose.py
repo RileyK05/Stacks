@@ -826,7 +826,10 @@ def test_placeholder_slide_gets_one_repair_using_the_real_material() -> None:
 
     composed = compose_answer("Make slides", _candidates(), generate)
     assert len(calls) == 2
-    assert "Previous output to replace" in calls[1]
+    assert "previous output to replace" in calls[1]
+    assert calls[1].index("Course material:") < calls[1].index(
+        "previous output to replace"
+    ), "the shared material leads; the repair note follows"
     assert "Course material:" in calls[1]
     assert composed.structured
     assert "Preserves addition" in composed.text
