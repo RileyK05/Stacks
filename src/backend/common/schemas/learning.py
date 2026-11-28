@@ -139,6 +139,9 @@ class SuiteState(BaseModel):
 
 
 class TargetMemory(BaseModel):
+    # Shared from a per-connection cache (inspection.targets): never mutated.
+    model_config = ConfigDict(frozen=True)
+
     topic: str
     capability: Capability
     proficiency: int | None

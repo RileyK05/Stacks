@@ -42,7 +42,6 @@ import json
 import logging
 import os
 import re
-import tomllib
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cache
@@ -57,6 +56,7 @@ from src.backend.common.db import Connection as DbConnection
 from src.backend.common.db import connection as db_connection
 from src.backend.common.queries import get
 from src.backend.common.schemas.base import BACKGROUND_TASKS, KNOWN_GENERATION_TASKS
+from src.backend.common.toml_cache import load_toml
 
 DEFAULT_MODELS_PATH = PROJECT_ROOT / "configs" / "models.toml"
 LOCAL = "local"
@@ -108,8 +108,7 @@ class ModelsConfig(BaseModel):
 
 @cache
 def _load_models_config(path: Path) -> ModelsConfig:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     return ModelsConfig(
         models_config_version=raw["version"]["models_config_version"],
         presets={

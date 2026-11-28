@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 DEFAULT_LIFECYCLE_PATH = PROJECT_ROOT / "configs" / "lifecycle.toml"
 
@@ -30,8 +30,7 @@ class LifecyclePolicy(BaseModel):
 
 
 def load_lifecycle_policy(path: Path = DEFAULT_LIFECYCLE_PATH) -> LifecyclePolicy:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     return LifecyclePolicy(
         lifecycle_config_version=raw["version"]["lifecycle_config_version"],
         trash_retention_days=raw["trash"]["retention_days"],

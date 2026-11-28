@@ -79,8 +79,13 @@ def review_material(missed: Sequence[dict[str, str]]) -> str:
     return "Practice the student got wrong (newest first):\n" + "\n".join(lines)
 
 
-def review_search(missed: Sequence[dict[str, str]]) -> str:
-    return "\n".join(f"{m['question']} {m['correct_answer']}" for m in missed)
+def review_search(missed: Sequence[dict[str, str]], limit: int = 5) -> str:
+    """The latest missed questions as a search. Kept short: the cross-encoder
+    reads query and passage within 512 tokens, so a long query crowds the
+    passage out (and took ~0.75 s to rerank, ~0.4 s to embed)."""
+    return "\n".join(
+        f"{m['question']} {m['correct_answer']}"[:240] for m in missed[:limit]
+    )
 
 
 @dataclass(frozen=True)

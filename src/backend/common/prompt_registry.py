@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
 
 from pydantic import BaseModel, model_validator
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 # Prompts that are not generation tasks of their own: the per-kind
 # workspace prompts share the `artifact_generation` task for routing and
@@ -138,8 +138,7 @@ class PromptPolicy(BaseModel):
 def load_prompt_policy(
     path: Path = DEFAULT_PROMPTS_PATH,
 ) -> PromptPolicy:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     prompts: dict[str, str] = {}
     for name, section in raw["prompt"].items():
         body = section.get("text") if isinstance(section, dict) else None

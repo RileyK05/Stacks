@@ -1,8 +1,8 @@
-import tomllib
 from functools import cache
 
 from pydantic import BaseModel, Field
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 
 class OfficeLivePolicy(BaseModel):
@@ -50,5 +50,6 @@ class CompanionPolicy(BaseModel):
 
 @cache
 def load_companion_policy() -> CompanionPolicy:
-    with (PROJECT_ROOT / "configs/companion.toml").open("rb") as handle:
-        return CompanionPolicy.model_validate(tomllib.load(handle))
+    return CompanionPolicy.model_validate(
+        load_toml(PROJECT_ROOT / "configs/companion.toml")
+    )

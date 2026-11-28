@@ -390,3 +390,23 @@ def test_a_course_spread_of_a_few_readings_keeps_each_through_the_reranker(
         "study guide", spread.candidates, load_rerank_policy()
     )
     assert {c.source_id for c in chosen} == set(sources)
+
+
+def test_the_cached_vector_index_sees_new_material() -> None:
+    """Vectors are kept in memory between questions; a passage indexed after
+    the first question must still be found by the next one."""
+    from tests.factories import add_chunk
+
+    course = make_course("Vector Cache Course")
+    first = add_chunk(
+        course.course_id, "far away text", embedding=[0.0, 1.0], embedding_model="m"
+    )
+    with connection() as conn:
+        found = funnel.embedding_seam(conn, course.course_id, [1.0, 0.0], "m", 5)
+    assert list(found) == [first]
+    second = add_chunk(
+        course.course_id, "the closest text", embedding=[1.0, 0.0], embedding_model="m"
+    )
+    with connection() as conn:
+        found = funnel.embedding_seam(conn, course.course_id, [1.0, 0.0], "m", 5)
+    assert list(found)[0] == second

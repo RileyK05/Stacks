@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 from pydantic import BaseModel, Field, model_validator
 from src.backend.common.config import PROJECT_ROOT
 from src.backend.common.schemas.base import IngestionStage
+from src.backend.common.toml_cache import load_toml
 from src.backend.ingest.pipeline import PIPELINE_STAGES
 
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "ingestion.toml"
@@ -54,5 +54,4 @@ class IngestionConfig(BaseModel):
 
 
 def load_ingestion_config(path: Path = DEFAULT_CONFIG_PATH) -> IngestionConfig:
-    with path.open("rb") as config_file:
-        return IngestionConfig.model_validate(tomllib.load(config_file))
+    return IngestionConfig.model_validate(load_toml(path))

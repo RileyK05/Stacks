@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import tomllib
 from functools import cache
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 DEFAULT_RUNTIME_PATH = PROJECT_ROOT / "configs" / "runtime.toml"
 
@@ -72,8 +72,7 @@ class RuntimeConfig(BaseModel):
 
 @cache
 def _load(path: Path) -> RuntimeConfig:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     return RuntimeConfig(
         runtime_config_version=raw["version"]["runtime_config_version"],
         llama_cpp=LlamaCppConfig(**raw["llama_cpp"]),

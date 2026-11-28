@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 DEFAULT_RETRIEVAL_PATH = PROJECT_ROOT / "configs" / "retrieval.toml"
 
@@ -45,8 +45,7 @@ class ScorePolicy(BaseModel):
 
 
 def load_score_policy(path: Path = DEFAULT_RETRIEVAL_PATH) -> ScorePolicy:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     return ScorePolicy.model_validate(raw["score"])
 
 
@@ -65,22 +64,19 @@ class RoutePolicy(BaseModel):
 
 
 def load_route_policy(path: Path = DEFAULT_RETRIEVAL_PATH) -> RoutePolicy:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     return RoutePolicy.model_validate(raw["route"])
 
 
 def load_rerank_policy(path: Path = DEFAULT_RETRIEVAL_PATH) -> RerankPolicy:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     return RerankPolicy.model_validate(raw["rerank"])
 
 
 def load_retrieval_policy(
     path: Path = DEFAULT_RETRIEVAL_PATH,
 ) -> RetrievalPolicy:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     return RetrievalPolicy.model_validate(
         {
             "retrieval_config_version": raw["version"]["retrieval_config_version"],

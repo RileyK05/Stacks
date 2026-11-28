@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import tomllib
-
 from pydantic import BaseModel, Field
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 
 class ScoringPolicy(BaseModel):
@@ -46,8 +45,7 @@ class LearningPolicy(BaseModel):
 
 
 def load_learning_policy() -> LearningPolicy:
-    with (PROJECT_ROOT / "configs/learning.toml").open("rb") as stream:
-        raw = tomllib.load(stream)
+    raw = load_toml(PROJECT_ROOT / "configs/learning.toml")
     return LearningPolicy(
         version=raw["version"]["learning_policy_version"],
         scoring=raw["scoring"],

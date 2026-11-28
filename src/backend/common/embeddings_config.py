@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import tomllib
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 from src.backend.common.config import PROJECT_ROOT
+from src.backend.common.toml_cache import load_toml
 
 DEFAULT_EMBEDDINGS_PATH = PROJECT_ROOT / "configs" / "embeddings.toml"
 
@@ -26,8 +26,7 @@ class EmbeddingPolicy(BaseModel):
 def load_embedding_policy(
     path: Path = DEFAULT_EMBEDDINGS_PATH,
 ) -> EmbeddingPolicy:
-    with path.open("rb") as config_file:
-        raw = tomllib.load(config_file)
+    raw = load_toml(path)
     return EmbeddingPolicy.model_validate(
         {
             "embeddings_config_version": raw["version"]["embeddings_config_version"],

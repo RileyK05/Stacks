@@ -100,7 +100,11 @@ def is_thin(text: str, minimum: int) -> bool:
     A short complete sentence stays (a one-line definition is real
     evidence). A heading fragment, a blank, or a running head does not.
     """
-    alnum = sum(char.isalnum() for char in text)
+    # Most spans are long: settle them from a prefix instead of counting
+    # every character of every retrieved chunk (hot in retrieval).
+    if sum(map(str.isalnum, text[: minimum * 4])) >= minimum:
+        return False
+    alnum = sum(map(str.isalnum, text))
     if alnum >= minimum:
         return False
     words = _WORD.findall(text)

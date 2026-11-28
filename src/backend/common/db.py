@@ -33,6 +33,17 @@ from src.backend.common.config import get_settings
 
 Connection = sqlite3.Connection
 
+
+class AppConnection(sqlite3.Connection):
+    """The app's connections: a plain sqlite3 connection plus `memo`, a place
+    for values derived from the database that one request reads repeatedly
+    (student_model/inspection.targets). It dies with the connection."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.memo: dict[Any, Any] = {}
+
+
 BUSY_TIMEOUT_SECONDS = 30.0
 
 # Fixed-width UTC ISO-8601 with microseconds. Must match the schema's
@@ -90,6 +101,7 @@ def connect(path: Path | None = None) -> Connection:
         detect_types=sqlite3.PARSE_DECLTYPES,
         isolation_level="IMMEDIATE",
         check_same_thread=False,
+        factory=AppConnection,
     )
     conn.row_factory = _dict_row
     conn.execute("PRAGMA foreign_keys = ON")

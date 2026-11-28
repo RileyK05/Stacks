@@ -1,5 +1,5 @@
 <script lang="ts">
-  import hljs from 'highlight.js/lib/common';
+  import type { HLJSApi } from 'highlight.js';
   import { onDestroy } from 'svelte';
   import { toast } from '$lib/stores/toast.svelte';
   import 'highlight.js/styles/github-dark.css';
@@ -19,8 +19,15 @@
   let copyTimer: ReturnType<typeof setTimeout> | null = null;
   onDestroy(() => { if (copyTimer) clearTimeout(copyTimer); });
 
+  // highlight.js (37 languages, ~240 kB) loads with the first code item, not
+  // with every course page; until then the code shows unhighlighted.
+  let hljs = $state<HLJSApi | null>(null);
+  import('highlight.js/lib/common')
+    .then((module) => (hljs = module.default))
+    .catch(() => {});
+
   const highlighted = $derived.by(() => {
-    if (item.code.length > 20_000) return '';
+    if (!hljs || item.code.length > 20_000) return '';
     try {
       if (item.language && hljs.getLanguage(item.language)) {
         return hljs.highlight(item.code, { language: item.language }).value;

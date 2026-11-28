@@ -18,9 +18,11 @@ query_prefix = ""
 document_prefix = ""
 
 [ingest]
-# Chunks embedded per model.forward call. CPU batch sizes 32-64 are
-# typical; larger batches trade RAM for throughput.
-batch_size = 32
+# Chunks embedded per model.forward call. Texts are length-sorted before
+# batching. Measured on a 4-core CPU: 96 chunks took 58.9 s at 32 unsorted
+# and 22.9 s at 8 sorted; 2 is as fast as 8 and holds ~540 MB less
+# activation memory (encoders._session also drops the ORT arena).
+batch_size = 2
 
 [query]
 # The retrieval seam embeds one query per ask. Candidates must exceed
